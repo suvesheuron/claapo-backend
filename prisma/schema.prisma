@@ -1,0 +1,365 @@
+// CrewCall Backend — Prisma schema (Part 1 + 2: Auth + Profiles)
+// https://pris.ly/d/prisma-schema
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum UserRole {
+  individual
+  company
+  vendor
+  admin
+}
+
+enum OtpType {
+  registration
+  login
+  password_reset
+}
+
+enum VendorType {
+  equipment
+  lighting
+  transport
+  catering
+}
+
+model User {
+  id           String    @id @default(uuid()) @db.Uuid
+  email        String    @unique
+  phone        String    @unique
+  passwordHash String    @map("password_hash")
+  role         UserRole
+  isVerified   Boolean   @default(false) @map("is_verified")
+  isActive     Boolean   @default(true) @map("is_active")
+  fcmToken              String?   @map("fcm_token")
+  notificationPreferences Json?   @map("notification_preferences")
+  createdAt    DateTime  @default(now()) @map("created_at")
+  updatedAt    DateTime  @updatedAt @map("updated_at")
+  deletedAt    DateTime? @map("deleted_at")
+
+  otpSessions       OtpSession[]       @relation("UserOtpSessions")
+  refreshTokens     RefreshToken[]
+  individualProfile IndividualProfile?
+  companyProfile    CompanyProfile?
+  vendorProfile     VendorProfile?
+  availabilitySlots AvailabilitySlot[]
+  projectsOwned     Project[]         @relation("CompanyProjects")
+  bookingsRequested BookingRequest[]  @relation("RequesterBookings")
+  bookingsReceived  BookingRequest[]  @relation("TargetBookings")
+  notifications     Notification[]
+  invoicesIssued    Invoice[]         @relation("InvoiceIssuer")
+  invoicesReceived  Invoice[]         @relation("InvoiceRecipient")
+  conversationsAsA  Conversation[]    @relation("ConversationParticipantA")
+  conversationsAsB  Conversation[]    @relation("ConversationParticipantB")
+  messagesSent      Message[]
+
+  @@map("users")
+}
+
+model OtpSession {
+  id        String   @id @default(uuid()) @db.Uuid
+  userId    String?  @map("user_id") @db.Uuid
+  otpHash   String   @map("otp_hash")
+  type      OtpType
+  expiresAt DateTime @map("expires_at")
+  usedAt    DateTime? @map("used_at")
+  createdAt DateTime @default(now()) @map("created_at")
+
+  user User? @relation("UserOtpSessions", fields: [userId], references: [id], onDelete: SetNull)
+
+  @@map("otp_sessions")
+}
+
+model RefreshToken {
+  id        String   @id @default(uuid()) @db.Uuid
+  userId    String   @map("user_id") @db.Uuid
+  tokenHash String   @map("token_hash")
+  family    String   @db.Uuid
+  expiresAt DateTime @map("expires_at")
+  revoked   Boolean  @default(false)
+  createdAt DateTime @default(now()) @map("created_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("refresh_tokens")
+}
+
+model IndividualProfile {
+  id             String   @id @default(uuid()) @db.Uuid
+  userId         String   @unique @map("user_id") @db.Uuid
+  displayName    String   @map("display_name")
+  bio            String?
+  skills         String[] @default([])
+  locationCity   String?  @map("location_city")
+  locationState  String?  @map("location_state")
+  lat            Float?
+  lng            Float?
+  dailyRateMin   Int?     @map("daily_rate_min")
+  dailyRateMax   Int?     @map("daily_rate_max")
+  avatarKey      String?  @map("avatar_key")
+  showreelKey    String?  @map("showreel_key")
+  imdbUrl        String?  @map("imdb_url")
+  instagramUrl   String?  @map("instagram_url")
+  profileScore   Int      @default(0) @map("profile_score")
+  isAvailable    Boolean  @default(true) @map("is_available")
+  createdAt      DateTime @default(now()) @map("created_at")
+  updatedAt      DateTime @updatedAt @map("updated_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("individual_profiles")
+}
+
+model CompanyProfile {
+  id             String   @id @default(uuid()) @db.Uuid
+  userId         String   @unique @map("user_id") @db.Uuid
+  companyName    String   @map("company_name")
+  gstNumber      String?  @unique @map("gst_number")
+  panNumber      String?  @map("pan_number")
+  companyType    String?  @map("company_type")
+  website        String?
+  logoKey        String?  @map("logo_key")
+  isGstVerified  Boolean  @default(false) @map("is_gst_verified")
+  createdAt      DateTime @default(now()) @map("created_at")
+  updatedAt      DateTime @updatedAt @map("updated_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("company_profiles")
+}
+
+model VendorProfile {
+  id             String     @id @default(uuid()) @db.Uuid
+  userId         String     @unique @map("user_id") @db.Uuid
+  companyName    String     @map("company_name")
+  vendorType     VendorType @map("vendor_type")
+  gstNumber      String?    @unique @map("gst_number")
+  isGstVerified  Boolean    @default(false) @map("is_gst_verified")
+  logoKey        String?    @map("logo_key")
+  createdAt      DateTime   @default(now()) @map("created_at")
+  updatedAt      DateTime   @updatedAt @map("updated_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("vendor_profiles")
+}
+
+enum SlotStatus {
+  available
+  booked
+  blocked
+  past_work
+}
+
+model AvailabilitySlot {
+  id        String     @id @default(uuid()) @db.Uuid
+  userId    String     @map("user_id") @db.Uuid
+  date      DateTime
+  status    SlotStatus
+  notes     String?
+  createdAt DateTime   @default(now()) @map("created_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, date])
+  @@index([userId, date])
+  @@index([date, status])
+  @@map("availability_slots")
+}
+
+enum ProjectStatus {
+  draft
+  open
+  active
+  completed
+  cancelled
+}
+
+enum BookingStatus {
+  pending
+  accepted
+  declined
+  locked
+  cancelled
+  expired
+}
+
+model Project {
+  id              String        @id @default(uuid()) @db.Uuid
+  companyUserId   String        @map("company_user_id") @db.Uuid
+  title           String
+  description     String?
+  startDate       DateTime      @map("start_date")
+  endDate         DateTime      @map("end_date")
+  locationCity    String?       @map("location_city")
+  budgetMin       Int?          @map("budget_min")
+  budgetMax       Int?          @map("budget_max")
+  status          ProjectStatus @default(draft)
+  createdAt       DateTime      @default(now()) @map("created_at")
+  updatedAt       DateTime      @updatedAt @map("updated_at")
+
+  companyUser   User            @relation("CompanyProjects", fields: [companyUserId], references: [id])
+  roles         ProjectRole[]
+  bookings      BookingRequest[]
+  invoices      Invoice[]
+  conversations Conversation[]
+
+  @@index([companyUserId, status])
+  @@map("projects")
+}
+
+model ProjectRole {
+  id         String   @id @default(uuid()) @db.Uuid
+  projectId  String   @map("project_id") @db.Uuid
+  roleName   String   @map("role_name")
+  qty        Int      @default(1)
+  rateMin    Int?     @map("rate_min")
+  rateMax    Int?     @map("rate_max")
+  createdAt  DateTime @default(now()) @map("created_at")
+
+  project  Project          @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  bookings BookingRequest[]
+
+  @@map("project_roles")
+}
+
+model BookingRequest {
+  id                String        @id @default(uuid()) @db.Uuid
+  projectId         String        @map("project_id") @db.Uuid
+  requesterUserId   String        @map("requester_user_id") @db.Uuid
+  targetUserId     String        @map("target_user_id") @db.Uuid
+  projectRoleId     String?       @map("project_role_id") @db.Uuid
+  status            BookingStatus @default(pending)
+  rateOffered       Int?          @map("rate_offered")
+  message           String?
+  lockedAt          DateTime?     @map("locked_at")
+  respondedAt       DateTime?     @map("responded_at")
+  expiresAt         DateTime?     @map("expires_at")
+  createdAt         DateTime      @default(now()) @map("created_at")
+  updatedAt         DateTime      @updatedAt @map("updated_at")
+
+  project      Project     @relation(fields: [projectId], references: [id])
+  requester    User        @relation("RequesterBookings", fields: [requesterUserId], references: [id])
+  target       User        @relation("TargetBookings", fields: [targetUserId], references: [id])
+  projectRole  ProjectRole? @relation(fields: [projectRoleId], references: [id])
+
+  @@index([projectId])
+  @@index([targetUserId, status])
+  @@map("booking_requests")
+}
+
+enum InvoiceStatus {
+  draft
+  sent
+  paid
+  overdue
+  cancelled
+}
+
+model Invoice {
+  id                String        @id @default(uuid()) @db.Uuid
+  projectId         String        @map("project_id") @db.Uuid
+  issuerUserId      String        @map("issuer_user_id") @db.Uuid
+  recipientUserId   String        @map("recipient_user_id") @db.Uuid
+  invoiceNumber     String        @unique @map("invoice_number")
+  amount            Int           // subtotal in paise (INR × 100)
+  gstAmount         Int           @default(0) @map("gst_amount")
+  totalAmount       Int           @map("total_amount")
+  currency          String        @default("INR")
+  status            InvoiceStatus @default(draft)
+  dueDate           DateTime?     @map("due_date")
+  pdfKey            String?       @map("pdf_key")
+  razorpayOrderId   String?       @map("razorpay_order_id")
+  paidAt            DateTime?    @map("paid_at")
+  createdAt         DateTime      @default(now()) @map("created_at")
+  updatedAt         DateTime      @updatedAt @map("updated_at")
+
+  project    Project             @relation(fields: [projectId], references: [id])
+  issuer     User                @relation("InvoiceIssuer", fields: [issuerUserId], references: [id])
+  recipient  User                @relation("InvoiceRecipient", fields: [recipientUserId], references: [id])
+  lineItems  InvoiceLineItem[]
+
+  @@map("invoices")
+}
+
+model InvoiceLineItem {
+  id          String   @id @default(uuid()) @db.Uuid
+  invoiceId   String   @map("invoice_id") @db.Uuid
+  description String
+  quantity    Decimal  @db.Decimal(10, 2)
+  unitPrice   Int      @map("unit_price") // in paise
+  amount      Int      // in paise
+
+  invoice Invoice @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
+
+  @@map("invoice_line_items")
+}
+
+model Notification {
+  id        String    @id @default(uuid()) @db.Uuid
+  userId    String    @map("user_id") @db.Uuid
+  type      String    // e.g. booking_request, booking_accepted, invoice_sent
+  title     String
+  body      String?
+  data      Json?     // optional payload for deep link
+  readAt    DateTime? @map("read_at")
+  createdAt DateTime  @default(now()) @map("created_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, readAt])
+  @@index([userId, createdAt])
+  @@map("notifications")
+}
+
+// Chat & Messaging (per crewcall_backend_plan.md 4.1.5)
+enum MessageType {
+  text
+  image
+  file
+  invoice_link
+}
+
+model Conversation {
+  id             String    @id @default(uuid()) @db.Uuid
+  projectId      String    @map("project_id") @db.Uuid
+  participantA   String    @map("participant_a") @db.Uuid
+  participantB   String    @map("participant_b") @db.Uuid
+  lastMessageAt  DateTime? @map("last_message_at")
+  createdAt      DateTime  @default(now()) @map("created_at")
+  updatedAt      DateTime  @updatedAt @map("updated_at")
+
+  project   Project   @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  participantAUser User @relation("ConversationParticipantA", fields: [participantA], references: [id], onDelete: Cascade)
+  participantBUser User @relation("ConversationParticipantB", fields: [participantB], references: [id], onDelete: Cascade)
+  messages  Message[]
+
+  @@unique([projectId, participantA, participantB])
+  @@index([participantA, lastMessageAt])
+  @@index([participantB, lastMessageAt])
+  @@map("conversations")
+}
+
+model Message {
+  id             String      @id @default(uuid()) @db.Uuid
+  conversationId String      @map("conversation_id") @db.Uuid
+  senderId       String      @map("sender_id") @db.Uuid
+  type           MessageType @default(text)
+  content        String?
+  mediaKey       String?     @map("media_key")
+  isRead         Boolean     @default(false) @map("is_read")
+  createdAt      DateTime    @default(now()) @map("created_at")
+
+  conversation Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  sender       User         @relation(fields: [senderId], references: [id], onDelete: Cascade)
+
+  @@index([conversationId, createdAt])
+  @@map("messages")
+}

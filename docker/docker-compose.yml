@@ -1,0 +1,37 @@
+# CrewCall Backend — local dev (Postgres + Redis)
+# Usage: from repo root: docker compose -f docker/docker-compose.yml up -d
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: crewcall-postgres
+    environment:
+      POSTGRES_USER: crewcall_app
+      POSTGRES_PASSWORD: crewcall_dev_password
+      POSTGRES_DB: crewcall
+    ports:
+      - "5432:5432"
+    volumes:
+      - crewcall_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U crewcall_app -d crewcall"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    container_name: crewcall-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - crewcall_redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+volumes:
+  crewcall_pgdata:
+  crewcall_redis_data:

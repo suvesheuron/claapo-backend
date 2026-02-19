@@ -1,0 +1,132 @@
+import { Injectable, ForbiddenException } from '@nestjs/common';
+import { UserRole } from '@prisma/client';
+import { PrismaService } from '../../database/prisma.service';
+import type { SearchCrewQueryDto, SearchVendorsQueryDto } from './dto/search-query.dto';
+
+@Injectable()
+export class SearchService {
+  constructor(private readonly prisma: PrismaService) {}
+
+  async searchCrew(viewerId: string, viewerRole: UserRole, query: SearchCrewQueryDto) {
+    if (viewerRole !== 'company') {
+      throw new ForbiddenException('Only companies can search crew');
+    }
+    const page = query.page ?? 1;
+    const limit = Math.min(query.limit ?? 20, 50);
+    const skip = (page - 1) * limit;
+
+    const skillsFilter = query.skill
+      ? query.skill.split(',').map((s) => s.trim().toUpperCase()).filter(Boolean)
+      : null;
+
+    const startDate = query.startDate ? new Date(query.startDate) : null;
+    const endDate = query.endDate ? new Date(query.endDate) : null;
+
+    const where: Record<string, unknown> = {
+      user: { deletedAt: null, isActive: true },
+    };
+    if (query.city) {
+      (where as any).locationCity = { equals: query.city, mode: 'insensitive' };
+    }
+    if (query.state) {
+      (where as any).locationState = { equals: query.state, mode: 'insensitive' };
+    }
+    if (skillsFilter?.length) {
+      (where as any).skills = { hasSome: skillsFilter };
+    }
+    if (query.rateMin != null || query.rateMax != null) {
+      (where as any).AND = (where as any).AND ?? [];
+      if (query.rateMin != null) (where as any).AND.push({ OR: [{ dailyRateMax: { gte: query.rateMin } }, { dailyRateMax: null }] });
+      if (query.rateMax != null) (where as any).AND.push({ OR: [{ dailyRateMin: { lte: query.rateMax } }, { dailyRateMin: null }] });
+    }
+    if (query.availableOnly === true) {
+      (where as any).isAvailable = true;
+    }
+
+    const takeSize = startDate && endDate ? limit * 3 : limit + 1;
+    const profiles = await this.prisma.individualProfile.findMany({
+      where,
+      include: {
+        user: { select: { id: true, email: true } },
+      },
+      orderBy: { profileScore: 'desc' },
+      skip,
+      take: takeSize,
+    });
+
+    let filtered = profiles;
+    if (startDate && endDate) {
+      const userIdsWithBooked = await this.prisma.availabilitySlot.findMany({
+        where: {
+          date: { gte: startDate, lte: endDate },
+          status: 'booked',
+        },
+        select: { userId: true },
+        distinct: ['userId'],
+      });
+      const bookedSet = new Set(userIdsWithBooked.map((s) => s.userId));
+      filtered = profiles.filter((p) => !bookedSet.has(p.userId));
+    }
+
+    const items = filtered.slice(0, limit);
+    const hasMore = filtered.length > limit;
+    const total = await this.prisma.individualProfile.count({ where });
+
+    return {
+      items: items.map((p) => ({
+        userId: p.userId,
+        displayName: p.displayName,
+        bio: p.bio,
+        skills: p.skills,
+        locationCity: p.locationCity,
+        locationState: p.locationState,
+        dailyRateMin: p.dailyRateMin,
+        dailyRateMax: p.dailyRateMax,
+        profileScore: p.profileScore,
+        isAvailable: p.isAvailable,
+        email: p.user.email,
+      })),
+      meta: { total, page, limit, pages: Math.ceil(total / limit), hasMore },
+    };
+  }
+
+  async searchVendors(viewerId: string, viewerRole: UserRole, query: SearchVendorsQueryDto) {
+    if (viewerRole !== 'company') {
+      throw new ForbiddenException('Only companies can search vendors');
+    }
+    const page = query.page ?? 1;
+    const limit = Math.min(query.limit ?? 20, 50);
+    const skip = (page - 1) * limit;
+
+    const where: Record<string, unknown> = {
+      user: { deletedAt: null, isActive: true },
+    };
+    if (query.type) {
+      (where as any).vendorType = query.type;
+    }
+
+    const [items, total] = await Promise.all([
+      this.prisma.vendorProfile.findMany({
+        where,
+        include: {
+          user: { select: { id: true, email: true } },
+        },
+        orderBy: { companyName: 'asc' },
+        skip,
+        take: limit,
+      }),
+      this.prisma.vendorProfile.count({ where }),
+    ]);
+
+    return {
+      items: items.map((p) => ({
+        userId: p.userId,
+        companyName: p.companyName,
+        vendorType: p.vendorType,
+        isGstVerified: p.isGstVerified,
+        email: p.user.email,
+      })),
+      meta: { total, page, limit, pages: Math.ceil(total / limit) },
+    };
+  }
+}
