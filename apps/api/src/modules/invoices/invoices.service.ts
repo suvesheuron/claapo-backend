@@ -6,6 +6,7 @@ import Razorpay from 'razorpay';
 import crypto from 'crypto';
 import { CreateInvoiceDto } from './dto/create-invoice.dto';
 import { UpdateInvoiceDto } from './dto/update-invoice.dto';
+import { NotificationsService } from '../notifications/notifications.service';
 
 @Injectable()
 export class InvoicesService {
@@ -14,6 +15,7 @@ export class InvoicesService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly config: ConfigService,
+    private readonly notifications: NotificationsService,
   ) {
     const keyId = this.config.get<string>('razorpay.keyId');
     const keySecret = this.config.get<string>('razorpay.keySecret');
@@ -160,15 +162,41 @@ export class InvoicesService {
 
   async send(invoiceId: string, userId: string, role: UserRole) {
     if (role !== 'individual' && role !== 'vendor') throw new ForbiddenException('Only issuer can send');
-    const invoice = await this.prisma.invoice.findUnique({ where: { id: invoiceId } });
+    const invoice = await this.prisma.invoice.findUnique({
+      where: { id: invoiceId },
+      include: {
+        project: { select: { id: true, title: true } },
+        issuer: {
+          select: {
+            individualProfile: { select: { displayName: true } },
+            companyProfile: { select: { companyName: true } },
+            vendorProfile: { select: { companyName: true } },
+          },
+        },
+      },
+    });
     if (!invoice) throw new NotFoundException('Invoice not found');
     if (invoice.issuerUserId !== userId) throw new ForbiddenException('Not your invoice');
     if (invoice.status !== 'draft') throw new BadRequestException('Only draft can be sent');
-    return this.prisma.invoice.update({
+    const updated = await this.prisma.invoice.update({
       where: { id: invoiceId },
       data: { status: 'sent' },
       include: { lineItems: true },
     });
+    const issuerName =
+      invoice.issuer.individualProfile?.displayName ??
+      invoice.issuer.vendorProfile?.companyName ??
+      invoice.issuer.companyProfile?.companyName ??
+      'A crew member';
+    const amountFormatted = `₹${(invoice.totalAmount / 100).toLocaleString('en-IN')}`;
+    await this.notifications.createForUser(
+      invoice.recipientUserId,
+      'invoice_sent',
+      'New invoice received',
+      `${issuerName} sent you an invoice for ${amountFormatted} for project "${invoice.project.title}".`,
+      { invoiceId: invoice.id, projectId: invoice.projectId },
+    );
+    return updated;
   }
 
   async cancel(invoiceId: string, userId: string, role: UserRole) {

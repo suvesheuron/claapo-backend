@@ -9,7 +9,7 @@ export class NotificationsService {
 
   async list(userId: string, page = 1, limit = 20) {
     const skip = (page - 1) * limit;
-    const [items, total, unreadCount] = await Promise.all([
+    const [rawItems, total, unreadCount] = await Promise.all([
       this.prisma.notification.findMany({
         where: { userId },
         orderBy: { createdAt: 'desc' },
@@ -19,6 +19,23 @@ export class NotificationsService {
       this.prisma.notification.count({ where: { userId } }),
       this.prisma.notification.count({ where: { userId, readAt: null } }),
     ]);
+    const bookingRequestIds = rawItems
+      .filter((n) => n.type === 'booking_request' && n.data && typeof (n.data as Record<string, unknown>).bookingId === 'string')
+      .map((n) => (n.data as Record<string, unknown>).bookingId as string);
+    const bookingStatuses = bookingRequestIds.length
+      ? await this.prisma.bookingRequest.findMany({
+          where: { id: { in: bookingRequestIds } },
+          select: { id: true, status: true },
+        })
+      : [];
+    const statusByBookingId = new Map(bookingStatuses.map((b) => [b.id, b.status]));
+    const items = rawItems.map((n) => {
+      if (n.type !== 'booking_request' || !n.data) return n;
+      const data = n.data as Record<string, unknown>;
+      const bookingId = data.bookingId as string | undefined;
+      const status = bookingId ? statusByBookingId.get(bookingId) : undefined;
+      return { ...n, data: { ...data, bookingStatus: status ?? null } };
+    });
     return {
       items,
       meta: { total, page, limit, pages: Math.ceil(total / limit), unreadCount },

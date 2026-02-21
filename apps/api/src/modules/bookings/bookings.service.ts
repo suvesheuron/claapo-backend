@@ -27,9 +27,21 @@ export class BookingsService {
       throw new BadRequestException('Target must be individual or vendor');
     }
     const existing = await this.prisma.bookingRequest.findFirst({
-      where: { projectId: dto.projectId, targetUserId: dto.targetUserId, status: { in: ['pending', 'accepted'] } },
+      where: {
+        projectId: dto.projectId,
+        targetUserId: dto.targetUserId,
+        status: { in: ['pending', 'accepted', 'locked'] },
+      },
     });
-    if (existing) throw new BadRequestException('A request already exists for this crew/vendor on this project');
+    if (existing) {
+      const msg =
+        existing.status === 'locked'
+          ? 'This crew/vendor is already locked for this project.'
+          : existing.status === 'accepted'
+            ? 'This crew/vendor has already accepted a request for this project.'
+            : 'A pending request already exists for this crew/vendor on this project.';
+      throw new BadRequestException(msg);
+    }
     const expiresAt = new Date(Date.now() + 48 * 60 * 60 * 1000);
     const booking = await this.prisma.bookingRequest.create({
       data: {
@@ -106,23 +118,42 @@ export class BookingsService {
         update: { status: 'booked' },
       });
     }
-    return this.prisma.bookingRequest.update({
+    const updated = await this.prisma.bookingRequest.update({
       where: { id: bookingId },
       data: { status: 'accepted', respondedAt: new Date() },
       include: { project: true },
     });
+    await this.notifications.createForUser(
+      booking.requesterUserId,
+      'booking_accepted',
+      'Booking accepted',
+      `Your booking request for project "${booking.project.title}" was accepted.`,
+      { bookingId: booking.id, projectId: booking.projectId },
+    );
+    return updated;
   }
 
   async decline(bookingId: string, userId: string, role: UserRole) {
-    const booking = await this.prisma.bookingRequest.findUnique({ where: { id: bookingId } });
+    const booking = await this.prisma.bookingRequest.findUnique({
+      where: { id: bookingId },
+      include: { project: true },
+    });
     if (!booking) throw new NotFoundException('Booking not found');
     if (booking.targetUserId !== userId) throw new ForbiddenException('Not your booking');
     if (role !== 'individual' && role !== 'vendor') throw new ForbiddenException('Only crew/vendor can decline');
     if (booking.status !== 'pending') throw new BadRequestException('Booking is not pending');
-    return this.prisma.bookingRequest.update({
+    const updated = await this.prisma.bookingRequest.update({
       where: { id: bookingId },
       data: { status: 'declined', respondedAt: new Date() },
     });
+    await this.notifications.createForUser(
+      booking.requesterUserId,
+      'booking_declined',
+      'Booking declined',
+      `Your booking request for project "${booking.project.title}" was declined.`,
+      { bookingId: booking.id, projectId: booking.projectId },
+    );
+    return updated;
   }
 
   async lock(bookingId: string, companyUserId: string) {
