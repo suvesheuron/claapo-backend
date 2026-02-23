@@ -1,0 +1,13 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "outDir": "./dist/workers",
+    "rootDir": "./apps/workers",
+    "emitDecoratorMetadata": false,
+    "experimentalDecorators": false,
+    "declaration": false,
+    "paths": {}
+  },
+  "include": ["apps/workers/**/*.ts"],
+  "exclude": ["node_modules"]
+}

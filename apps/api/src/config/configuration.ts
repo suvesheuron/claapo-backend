@@ -23,4 +23,12 @@ export default () => ({
     keySecret: process.env.RAZORPAY_KEY_SECRET ?? '',
     webhookSecret: process.env.RAZORPAY_WEBHOOK_SECRET ?? '',
   },
+  redis: {
+    url: process.env.REDIS_URL ?? 'redis://localhost:6379',
+  },
+  sendgrid: {
+    apiKey: process.env.SENDGRID_API_KEY ?? '',
+    fromEmail: process.env.SENDGRID_FROM_EMAIL ?? 'noreply@crewcall.in',
+    fromName: process.env.SENDGRID_FROM_NAME ?? 'CrewCall',
+  },
 });

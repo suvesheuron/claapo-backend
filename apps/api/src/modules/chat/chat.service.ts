@@ -274,6 +274,16 @@ export class ChatService {
     return conv;
   }
 
+  /** Get the other participant's user id in a conversation (for offline push). */
+  async getOtherParticipantId(conversationId: string, currentUserId: string): Promise<string | null> {
+    const conv = await this.prisma.conversation.findUnique({
+      where: { id: conversationId },
+    });
+    if (!conv) return null;
+    if (conv.participantA !== currentUserId && conv.participantB !== currentUserId) return null;
+    return conv.participantA === currentUserId ? conv.participantB : conv.participantA;
+  }
+
   /** Get presigned URL for chat media upload */
   async getMediaUploadUrl(userId: string, conversationId: string, contentType?: string) {
     const conv = await this.prisma.conversation.findUnique({

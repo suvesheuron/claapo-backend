@@ -6,10 +6,14 @@ import {
 } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
 import { ConfigService } from '@nestjs/config';
+import { InjectQueue } from '@nestjs/bullmq';
+import { Queue } from 'bullmq';
 import * as bcrypt from 'bcrypt';
 import { randomBytes, createHash } from 'crypto';
 import { UserRole, OtpType } from '@prisma/client';
 import { PrismaService } from '../../database/prisma.service';
+import { QUEUE_SMS, DEFAULT_JOB_OPTS } from '../../queue/queue.constants';
+import type { SmsJobPayload } from '../../queue/job-payloads';
 import { RegisterIndividualDto } from './dto/register-individual.dto';
 import { RegisterCompanyDto } from './dto/register-company.dto';
 import { RegisterVendorDto } from './dto/register-vendor.dto';
@@ -37,6 +41,7 @@ export class AuthService {
     private readonly prisma: PrismaService,
     private readonly jwtService: JwtService,
     private readonly config: ConfigService,
+    @InjectQueue(QUEUE_SMS) private readonly smsQueue: Queue,
   ) {}
 
   private async hashPassword(password: string): Promise<string> {
@@ -130,7 +135,8 @@ export class AuthService {
         expiresAt,
       },
     });
-    // TODO: enqueue SMS via BullMQ (MSG91/Twilio). For now just log in dev.
+    const payload: SmsJobPayload = { phone, otp, type: 'registration' };
+    await this.smsQueue.add('otp', payload, { priority: 1, ...DEFAULT_JOB_OPTS });
     if (this.config.get('env') === 'development') {
       console.log(`[DEV] OTP for ${phone}: ${otp} (expires in ${OTP_EXPIRY_MINUTES} min)`);
     }
@@ -262,6 +268,8 @@ export class AuthService {
     await this.prisma.otpSession.create({
       data: { userId: user.id, otpHash, type: OtpType.password_reset, expiresAt },
     });
+    const payload: SmsJobPayload = { phone, otp, type: 'password_reset' };
+    await this.smsQueue.add('otp', payload, { priority: 1, ...DEFAULT_JOB_OPTS });
     if (this.config.get('env') === 'development') {
       console.log(`[DEV] Password reset OTP for ${phone}: ${otp}`);
     }
