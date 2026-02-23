@@ -1,4 +1,4 @@
-# CrewCall Backend — local dev (Postgres + Redis + optional Workers)
+# CrewCall Backend — local dev (Postgres + Redis)
 # Usage: from repo root: docker compose -f docker/docker-compose.yml up -d
 
 services:
@@ -31,20 +31,6 @@ services:
       interval: 5s
       timeout: 3s
       retries: 5
-
-  workers:
-    build:
-      context: ..
-      dockerfile: docker/Dockerfile.worker
-    container_name: crewcall-workers
-    env_file: ../.env
-    environment:
-      REDIS_URL: redis://redis:6379
-      # DATABASE_URL from .env (use host.docker.internal for Postgres on host)
-    depends_on:
-      redis:
-        condition: service_healthy
-    restart: unless-stopped
 
 volumes:
   crewcall_pgdata:

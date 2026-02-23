@@ -1,20 +1,13 @@
 import { Controller, Get, Post, Patch, Body, Param, Query, UseGuards } from '@nestjs/common';
-import { InjectQueue } from '@nestjs/bullmq';
-import { Queue } from 'bullmq';
 import { ApiTags, ApiOperation, ApiBearerAuth } from '@nestjs/swagger';
 import { ChatService } from './chat.service';
 import { ChatGateway } from './chat.gateway';
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { AuthUser } from '../auth/auth.service';
-import { QUEUE_PUSH } from '../../queue/queue.constants';
-import { DEFAULT_JOB_OPTS } from '../../queue/queue.constants';
-import type { PushJobPayload } from '../../queue/job-payloads';
 import { CreateConversationDto } from './dto/create-conversation.dto';
 import { CreateMessageDto } from './dto/create-message.dto';
 import { GetMessagesQueryDto } from './dto/get-messages-query.dto';
-
-const OFFLINE_PUSH_DELAY_MS = 30_000;
 
 @ApiTags('conversations')
 @Controller('conversations')
@@ -24,7 +17,6 @@ export class ChatController {
   constructor(
     private readonly chatService: ChatService,
     private readonly chatGateway: ChatGateway,
-    @InjectQueue(QUEUE_PUSH) private readonly pushQueue: Queue,
   ) {}
 
   @Post()
@@ -64,26 +56,6 @@ export class ChatController {
   ) {
     const message = await this.chatService.sendMessage(user.id, id, dto);
     this.chatGateway.emitToConversation(id, 'new_message', message);
-
-    const recipientId = await this.chatService.getOtherParticipantId(id, user.id);
-    if (recipientId) {
-      const senderName = (message as { sender?: { displayName?: string } }).sender?.displayName ?? 'Someone';
-      const body =
-        dto.type === 'text' && dto.content
-          ? `${senderName}: ${dto.content.slice(0, 80)}${dto.content.length > 80 ? '…' : ''}`
-          : `${senderName} sent a message`;
-      const pushPayload: PushJobPayload = {
-        userId: recipientId,
-        title: 'New message',
-        body,
-        data: { conversationId: id, messageId: message.id },
-      };
-      await this.pushQueue.add('chat_offline', pushPayload, {
-        delay: OFFLINE_PUSH_DELAY_MS,
-        priority: 2,
-        ...DEFAULT_JOB_OPTS,
-      });
-    }
     return message;
   }
 

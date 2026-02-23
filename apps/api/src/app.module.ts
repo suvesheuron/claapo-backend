@@ -13,7 +13,6 @@ import { WebhooksModule } from './modules/webhooks/webhooks.module';
 import { NotificationsModule } from './modules/notifications/notifications.module';
 import { AdminModule } from './modules/admin/admin.module';
 import { ChatModule } from './modules/chat/chat.module';
-import { QueueModule } from './queue/queue.module';
 import { AppController } from './app.controller';
 
 @Module({
@@ -23,7 +22,6 @@ import { AppController } from './app.controller';
       load: [configuration],
     }),
     DatabaseModule,
-    QueueModule,
     AuthModule,
     ProfilesModule,
     AvailabilityModule,

@@ -7,18 +7,12 @@ import {
   OnGatewayInit,
 } from '@nestjs/websockets';
 import { Logger } from '@nestjs/common';
-import { InjectQueue } from '@nestjs/bullmq';
-import { Queue } from 'bullmq';
 import { Server } from 'socket.io';
 import { JwtService } from '@nestjs/jwt';
 import { ConfigService } from '@nestjs/config';
 import { MessageType } from '@prisma/client';
-import { QUEUE_PUSH, DEFAULT_JOB_OPTS } from '../../queue/queue.constants';
-import type { PushJobPayload } from '../../queue/job-payloads';
 import { ChatService } from './chat.service';
 import type { AuthUser } from '../auth/auth.service';
-
-const OFFLINE_PUSH_DELAY_MS = 30_000;
 
 export interface AuthenticatedSocket {
   id: string;
@@ -47,7 +41,6 @@ export class ChatGateway implements OnGatewayInit, OnGatewayConnection, OnGatewa
     private readonly jwtService: JwtService,
     private readonly config: ConfigService,
     private readonly chatService: ChatService,
-    @InjectQueue(QUEUE_PUSH) private readonly pushQueue: Queue,
   ) {}
 
   afterInit() {
@@ -118,35 +111,6 @@ export class ChatGateway implements OnGatewayInit, OnGatewayConnection, OnGatewa
       });
       const room = CONV_ROOM(payload.conversationId);
       this.server.to(room).emit('new_message', message);
-
-      const recipientId = await this.chatService.getOtherParticipantId(payload.conversationId, userId);
-      if (recipientId) {
-        const socketsInRoom = await this.server.in(room).fetchSockets();
-        const recipientInRoom = socketsInRoom.some(
-          (s) => (s.data as { userId?: string }).userId === recipientId,
-        );
-        if (!recipientInRoom) {
-          const title = 'New message';
-          const body =
-            payload.type === 'text' && payload.content
-              ? `${(message as { sender?: { displayName?: string } }).sender?.displayName ?? 'Someone'}: ${payload.content.slice(0, 80)}${payload.content.length > 80 ? '…' : ''}`
-              : `${(message as { sender?: { displayName?: string } }).sender?.displayName ?? 'Someone'} sent a message`;
-          const pushPayload: PushJobPayload = {
-            userId: recipientId,
-            title,
-            body,
-            data: {
-              conversationId: payload.conversationId,
-              messageId: message.id,
-            },
-          };
-          await this.pushQueue.add('chat_offline', pushPayload, {
-            delay: OFFLINE_PUSH_DELAY_MS,
-            priority: 2,
-            ...DEFAULT_JOB_OPTS,
-          });
-        }
-      }
       return { ok: true, message };
     } catch (err) {
       return { error: (err as Error).message };

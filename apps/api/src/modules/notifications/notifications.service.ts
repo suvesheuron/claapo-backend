@@ -1,20 +1,11 @@
 import { Injectable, ForbiddenException, NotFoundException } from '@nestjs/common';
-import { InjectQueue } from '@nestjs/bullmq';
-import { Queue } from 'bullmq';
 import { Prisma } from '@prisma/client';
 import { PrismaService } from '../../database/prisma.service';
-import { QUEUE_EMAIL, QUEUE_PUSH } from '../../queue/queue.constants';
-import { DEFAULT_JOB_OPTS } from '../../queue/queue.constants';
-import type { EmailJobPayload, PushJobPayload } from '../../queue/job-payloads';
 import { NotificationPreferencesDto } from './dto/preferences.dto';
 
 @Injectable()
 export class NotificationsService {
-  constructor(
-    private readonly prisma: PrismaService,
-    @InjectQueue(QUEUE_EMAIL) private readonly emailQueue: Queue,
-    @InjectQueue(QUEUE_PUSH) private readonly pushQueue: Queue,
-  ) {}
+  constructor(private readonly prisma: PrismaService) {}
 
   async list(userId: string, page = 1, limit = 20) {
     const skip = (page - 1) * limit;
@@ -103,9 +94,9 @@ export class NotificationsService {
     return { message: 'FCM token updated' };
   }
 
-  /** Call from other services to create a notification (e.g. on booking request, invoice sent). Also enqueues push and email per user preferences. */
+  /** Call from other services to create a notification (e.g. on booking request, invoice sent). */
   async createForUser(userId: string, type: string, title: string, body?: string, data?: Record<string, unknown>) {
-    const notification = await this.prisma.notification.create({
+    return this.prisma.notification.create({
       data: {
         userId,
         type,
@@ -114,36 +105,5 @@ export class NotificationsService {
         data: (data ?? undefined) as Prisma.InputJsonValue | undefined,
       },
     });
-
-    const user = await this.prisma.user.findUnique({
-      where: { id: userId },
-      select: { email: true, fcmToken: true, notificationPreferences: true },
-    });
-    if (!user) return notification;
-
-    const prefs = (user.notificationPreferences as Record<string, boolean>) ?? { push: true, email: true, sms: false };
-
-    if (prefs.email !== false && user.email) {
-      const html = body ? `<p>${body.replace(/\n/g, '<br>')}</p>` : '';
-      const emailPayload: EmailJobPayload = {
-        to: user.email,
-        subject: title,
-        html: html || `<p>${title}</p>`,
-        text: body ?? title,
-      };
-      await this.emailQueue.add('notification', emailPayload, { priority: 3, ...DEFAULT_JOB_OPTS });
-    }
-
-    if (prefs.push !== false && user.fcmToken) {
-      const pushPayload: PushJobPayload = {
-        userId,
-        title,
-        body: body ?? undefined,
-        data: data ? Object.fromEntries(Object.entries(data).map(([k, v]) => [k, String(v)])) : undefined,
-      };
-      await this.pushQueue.add('notification', pushPayload, { priority: 2, ...DEFAULT_JOB_OPTS });
-    }
-
-    return notification;
   }
 }
