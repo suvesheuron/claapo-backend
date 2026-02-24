@@ -1,4 +1,4 @@
-import { Controller, Get, Put, Body, Query, Param, UseGuards } from '@nestjs/common';
+import { Controller, Get, Put, Patch, Body, Query, Param, UseGuards } from '@nestjs/common';
 import { ApiTags, ApiOperation, ApiBearerAuth } from '@nestjs/swagger';
 import { AvailabilityService } from './availability.service';
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
@@ -7,6 +7,7 @@ import { Roles } from '../../common/decorators/roles.decorator';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { AuthUser } from '../auth/auth.service';
 import { BulkAvailabilityDto } from './dto/bulk-availability.dto';
+import { SetSlotNoteDto } from './dto/set-slot-note.dto';
 
 @ApiTags('availability')
 @Controller('availability')
@@ -33,6 +34,14 @@ export class AvailabilityController {
   @ApiOperation({ summary: 'Set availability for date range (bulk)' })
   bulkSet(@CurrentUser() user: AuthUser, @Body() body: BulkAvailabilityDto) {
     return this.availabilityService.bulkSet(user.id, user.role, body.slots);
+  }
+
+  @Patch('me/note')
+  @UseGuards(RolesGuard)
+  @Roles('individual', 'vendor')
+  @ApiOperation({ summary: 'Set work/equipment notes for a hired (booked) or past work date' })
+  setSlotNote(@CurrentUser() user: AuthUser, @Body() body: SetSlotNoteDto) {
+    return this.availabilityService.setSlotNote(user.id, user.role, body.date, body.notes);
   }
 
   @Get(':userId')

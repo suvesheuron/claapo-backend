@@ -10,23 +10,54 @@ const USER_SETTABLE_STATUSES = ['available', 'blocked'] as const;
 export class AvailabilityService {
   constructor(private readonly prisma: PrismaService) {}
 
-  /** Get own calendar for a month. Returns slots keyed by date (YYYY-MM-DD) for mobile/UI. */
+  private toUtcDateKey(date: Date): string {
+    const y = date.getUTCFullYear();
+    const m = String(date.getUTCMonth() + 1).padStart(2, '0');
+    const d = String(date.getUTCDate()).padStart(2, '0');
+    return `${y}-${m}-${d}`;
+  }
+
+  /**
+   * Parse YYYY-MM-DD as a stable UTC day (prevents timezone drift).
+   */
+  private parseDateOnlyAsUtc(dateOnly: string): Date {
+    const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(dateOnly);
+    if (!m) {
+      throw new BadRequestException(`Invalid date format "${dateOnly}". Expected YYYY-MM-DD.`);
+    }
+    const year = Number(m[1]);
+    const month = Number(m[2]);
+    const day = Number(m[3]);
+    const parsed = new Date(Date.UTC(year, month - 1, day));
+    if (
+      parsed.getUTCFullYear() !== year
+      || parsed.getUTCMonth() !== month - 1
+      || parsed.getUTCDate() !== day
+    ) {
+      throw new BadRequestException(`Invalid calendar date "${dateOnly}".`);
+    }
+    return parsed;
+  }
+
+  /** Get own calendar for a month. Returns slots and slotNotes keyed by date (YYYY-MM-DD) for mobile/UI. */
   async getMyCalendar(userId: string, year: number, month: number) {
-    const start = new Date(year, month, 1);
-    const end = new Date(year, month + 1, 0);
+    const start = new Date(Date.UTC(year, month, 1));
+    const endExclusive = new Date(Date.UTC(year, month + 1, 1));
     const slots = await this.prisma.availabilitySlot.findMany({
       where: {
         userId,
-        date: { gte: start, lte: end },
+        date: { gte: start, lt: endExclusive },
       },
       orderBy: { date: 'asc' },
     });
     const byDate: Record<string, string> = {};
+    const slotNotes: Record<string, string | null> = {};
     for (const s of slots) {
-      const key = s.date.toISOString().slice(0, 10);
+      const key = this.toUtcDateKey(s.date);
       byDate[key] = s.status;
+      slotNotes[key] = s.notes ?? null;
     }
-    return { year, month, slots: byDate };
+    return { year, month, slots: byDate, slotNotes };
   }
 
   /** Bulk set availability (individual/vendor). Only available/blocked; booked and past_work are system-managed. */
@@ -38,9 +69,7 @@ export class AvailabilityService {
       return { message: 'Availability updated', count: 0 };
     }
     const dates = slots.map((s) => {
-      const d = new Date(s.date);
-      d.setHours(0, 0, 0, 0);
-      return d;
+      return this.parseDateOnlyAsUtc(s.date);
     });
     const minDate = new Date(Math.min(...dates.map((d) => d.getTime())));
     const maxDate = new Date(Math.max(...dates.map((d) => d.getTime())));
@@ -59,12 +88,11 @@ export class AvailabilityService {
       },
       select: { date: true },
     });
-    const systemManagedDates = new Set(existing.map((s) => s.date.toISOString().slice(0, 10)));
+    const systemManagedDates = new Set(existing.map((s) => this.toUtcDateKey(s.date)));
     let updated = 0;
     for (const slot of slots) {
-      const date = new Date(slot.date);
-      date.setHours(0, 0, 0, 0);
-      const key = date.toISOString().slice(0, 10);
+      const date = this.parseDateOnlyAsUtc(slot.date);
+      const key = this.toUtcDateKey(date);
       if (systemManagedDates.has(key)) {
         continue;
       }
@@ -85,7 +113,7 @@ export class AvailabilityService {
     return { message: 'Availability updated', count: updated };
   }
 
-  /** Company views another user's calendar (masked: only available/booked/blocked, no project details). */
+  /** Company views another user's calendar (masked: only available/booked/blocked, no project details). Includes notes for booked/past_work. */
   async getOtherUserCalendar(viewerId: string, viewerRole: UserRole, targetUserId: string, year: number, month: number) {
     if (viewerRole !== 'company') {
       throw new ForbiddenException('Only companies can view another user calendar');
@@ -94,17 +122,45 @@ export class AvailabilityService {
       where: { id: targetUserId, deletedAt: null, isActive: true },
     });
     if (!target) throw new NotFoundException('User not found');
-    const start = new Date(year, month, 1);
-    const end = new Date(year, month + 1, 0);
+    const start = new Date(Date.UTC(year, month, 1));
+    const endExclusive = new Date(Date.UTC(year, month + 1, 1));
     const slots = await this.prisma.availabilitySlot.findMany({
-      where: { userId: targetUserId, date: { gte: start, lte: end } },
+      where: { userId: targetUserId, date: { gte: start, lt: endExclusive } },
       orderBy: { date: 'asc' },
-      select: { date: true, status: true },
+      select: { date: true, status: true, notes: true },
     });
     const byDate: Record<string, string> = {};
+    const slotNotes: Record<string, string | null> = {};
     for (const s of slots) {
-      byDate[s.date.toISOString().slice(0, 10)] = s.status;
+      const key = this.toUtcDateKey(s.date);
+      byDate[key] = s.status;
+      slotNotes[key] = s.notes ?? null;
     }
-    return { userId: targetUserId, year, month, slots: byDate };
+    return { userId: targetUserId, year, month, slots: byDate, slotNotes };
+  }
+
+  /** Individual/vendor sets work/equipment notes for a booked or past_work date. */
+  async setSlotNote(userId: string, role: UserRole, dateOnly: string, notes: string) {
+    if (role !== 'individual' && role !== 'vendor') {
+      throw new ForbiddenException('Only individuals and vendors can set work notes');
+    }
+    const startOfDayUtc = this.parseDateOnlyAsUtc(dateOnly);
+    const endOfDayUtc = new Date(startOfDayUtc);
+    endOfDayUtc.setUTCDate(endOfDayUtc.getUTCDate() + 1);
+    const slot = await this.prisma.availabilitySlot.findFirst({
+      where: {
+        userId,
+        status: { in: ['booked', 'past_work'] },
+        date: { gte: startOfDayUtc, lt: endOfDayUtc },
+      },
+    });
+    if (!slot) {
+      throw new BadRequestException(`No hired slot found for ${dateOnly}. That date must be part of an accepted booking.`);
+    }
+    await this.prisma.availabilitySlot.update({
+      where: { id: slot.id },
+      data: { notes: notes.trim() || null },
+    });
+    return { message: 'Notes updated' };
   }
 }
