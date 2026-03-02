@@ -128,12 +128,12 @@ Run: `npx prisma migrate dev --name add_availability`
 
 The **crewcall-mobile-app** is wired to this backend:
 
-- **API base URL**: `src/api/config.ts` — `http://localhost:3000/v1` in dev. Use your machine IP (e.g. `http://192.168.1.x:3000/v1`) when testing on a physical device.
+- **API base URL**: In dev the app uses `http://localhost:3000/v1` by default. For **physical device or APK**, use **Settings → Developer → API base URL** and paste your ngrok URL (e.g. `https://xxxx.ngrok-free.app/v1`) — no rebuild needed. See **[../docs/NGROK_SETUP.md](../docs/NGROK_SETUP.md)** for full steps.
 - **Auth**: Login screen calls `POST /auth/login`; Register calls `/auth/register/individual|company|vendor` then login. Tokens stored in memory; logout clears them and resets to Login screen.
 - **Profile**: Drawer and Profile screen show `user` from `GET /profile/me` (loaded after login).
 - **Availability**: `getMyCalendar(year, month)` and `setAvailability(slots)` in `src/api/availability.ts` for future Calendar screen integration.
 
-Ensure backend is running and CORS allows the app origin (e.g. `http://localhost:8081` for Metro, or your device IP).
+Ensure backend is running. CORS: in development, `.env.example` sets `CORS_ORIGINS=*,...` so ngrok and any origin are allowed; for production set explicit origins.
 
 ## Part 4 — Projects & Bookings ✓
 

@@ -109,9 +109,10 @@ export class BookingsService {
     }
     const start = new Date(booking.project.startDate);
     const end = new Date(booking.project.endDate);
-    for (let d = new Date(start); d <= end; d.setDate(d.getDate() + 1)) {
-      const dateKey = new Date(d);
-      dateKey.setHours(0, 0, 0, 0);
+    const startUtc = Date.UTC(start.getUTCFullYear(), start.getUTCMonth(), start.getUTCDate());
+    const endUtc = Date.UTC(end.getUTCFullYear(), end.getUTCMonth(), end.getUTCDate());
+    for (let t = startUtc; t <= endUtc; t += 24 * 60 * 60 * 1000) {
+      const dateKey = new Date(t);
       await this.prisma.availabilitySlot.upsert({
         where: { userId_date: { userId: booking.targetUserId, date: dateKey } },
         create: { userId: booking.targetUserId, date: dateKey, status: 'booked' },
@@ -187,9 +188,10 @@ export class BookingsService {
     if (booking.status === 'accepted') {
       const start = new Date(booking.project.startDate);
       const end = new Date(booking.project.endDate);
-      for (let d = new Date(start); d <= end; d.setDate(d.getDate() + 1)) {
-        const dateKey = new Date(d);
-        dateKey.setHours(0, 0, 0, 0);
+      const startUtc = Date.UTC(start.getUTCFullYear(), start.getUTCMonth(), start.getUTCDate());
+      const endUtc = Date.UTC(end.getUTCFullYear(), end.getUTCMonth(), end.getUTCDate());
+      for (let t = startUtc; t <= endUtc; t += 24 * 60 * 60 * 1000) {
+        const dateKey = new Date(t);
         await this.prisma.availabilitySlot.updateMany({
           where: { userId: booking.targetUserId, date: dateKey },
           data: { status: 'available' },

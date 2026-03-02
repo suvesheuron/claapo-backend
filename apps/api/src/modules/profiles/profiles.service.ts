@@ -60,10 +60,11 @@ export class ProfilesService {
   async updateIndividual(userId: string, dto: UpdateIndividualProfileDto) {
     await this.ensureRole(userId, UserRole.individual);
     const existing = await this.prisma.individualProfile.findUnique({ where: { userId } });
+    const skillsNormalized = dto.skills?.map((s) => String(s).trim().toUpperCase()).filter(Boolean);
     const data = {
       displayName: dto.displayName,
       bio: dto.bio,
-      skills: dto.skills,
+      skills: skillsNormalized,
       locationCity: dto.locationCity,
       locationState: dto.locationState,
       lat: dto.lat,

@@ -10,9 +10,16 @@ async function bootstrap() {
   const app = await NestFactory.create(AppModule);
   app.useWebSocketAdapter(new IoAdapter(app));
   const config = app.get(ConfigService);
+  const env = config.get<string>('env') ?? 'development';
   const corsOrigins = config.get<string | string[]>('corsOrigins') ?? ['http://localhost:3000'];
+  // In development, allow any origin so ngrok and local IPs work without reconfig
+  const allowAnyOrigin = env !== 'production' && corsOrigins.includes('*');
   app.enableCors({
-    origin: Array.isArray(corsOrigins) ? corsOrigins : [corsOrigins],
+    origin: allowAnyOrigin
+      ? true
+      : Array.isArray(corsOrigins)
+        ? corsOrigins
+        : [corsOrigins],
     credentials: true,
   });
   app.setGlobalPrefix('v1');
