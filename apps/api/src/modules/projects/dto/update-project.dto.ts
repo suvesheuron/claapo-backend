@@ -1,5 +1,5 @@
 import { ApiPropertyOptional } from '@nestjs/swagger';
-import { IsString, IsOptional, IsInt, Min, IsDateString, IsEnum } from 'class-validator';
+import { IsString, IsOptional, IsInt, Min, IsDateString, IsEnum, IsArray } from 'class-validator';
 import { ProjectStatus } from '@prisma/client';
 
 export class UpdateProjectDto {
@@ -15,6 +15,11 @@ export class UpdateProjectDto {
 
   @ApiPropertyOptional()
   @IsOptional()
+  @IsString()
+  productionHouseName?: string;
+
+  @ApiPropertyOptional()
+  @IsOptional()
   @IsDateString()
   startDate?: string;
 
@@ -22,6 +27,17 @@ export class UpdateProjectDto {
   @IsOptional()
   @IsDateString()
   endDate?: string;
+
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsDateString()
+  deliveryDate?: string;
+
+  @ApiPropertyOptional({ type: [String] })
+  @IsOptional()
+  @IsArray()
+  @IsString({ each: true })
+  shootLocations?: string[];
 
   @ApiPropertyOptional()
   @IsOptional()

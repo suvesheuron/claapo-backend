@@ -11,6 +11,8 @@ import { UpdateCompanyProfileDto } from './dto/update-company-profile.dto';
 import { UpdateVendorProfileDto } from './dto/update-vendor-profile.dto';
 import { PresignedUploadDto } from './dto/presigned-upload.dto';
 import { ConfirmUploadDto } from './dto/confirm-upload.dto';
+import { CreateSubUserDto } from './dto/create-sub-user.dto';
+import { AssignSubUserProjectDto } from './dto/assign-sub-user-project.dto';
 
 @ApiTags('profile')
 @Controller('profile')
@@ -49,10 +51,32 @@ export class ProfilesController {
     return this.profilesService.updateVendor(user.id, dto);
   }
 
-  @Get(':userId')
-  @ApiOperation({ summary: 'View another user public profile' })
-  getPublicProfile(@CurrentUser() user: AuthUser, @Param('userId') userId: string) {
-    return this.profilesService.getPublicProfile(user.id, user.role, userId);
+  @Get('sub-users/list')
+  @UseGuards(RolesGuard)
+  @Roles('company', 'vendor')
+  @ApiOperation({ summary: 'List sub-users under current Main ID (company/vendor)' })
+  listSubUsers(@CurrentUser() user: AuthUser) {
+    return this.profilesService.listSubUsers(user.id, user.role);
+  }
+
+  @Post('sub-users')
+  @UseGuards(RolesGuard)
+  @Roles('company', 'vendor')
+  @ApiOperation({ summary: 'Create a sub-user under current Main ID (company/vendor)' })
+  createSubUser(@CurrentUser() user: AuthUser, @Body() dto: CreateSubUserDto) {
+    return this.profilesService.createSubUser(user.id, user.role, dto);
+  }
+
+  @Post('sub-users/:subUserId/assign-project')
+  @UseGuards(RolesGuard)
+  @Roles('company', 'vendor')
+  @ApiOperation({ summary: 'Assign a project to a sub-user (company/vendor)' })
+  assignProjectToSubUser(
+    @CurrentUser() user: AuthUser,
+    @Param('subUserId') subUserId: string,
+    @Body() dto: AssignSubUserProjectDto,
+  ) {
+    return this.profilesService.assignProjectToSubUser(user.id, user.role, subUserId, dto.projectId);
   }
 
   @Post('avatar')
@@ -81,5 +105,11 @@ export class ProfilesController {
   @ApiOperation({ summary: 'Confirm showreel upload and set key on profile' })
   confirmShowreel(@CurrentUser() user: AuthUser, @Body() body: ConfirmUploadDto) {
     return this.profilesService.setShowreelKey(user.id, body.key);
+  }
+
+  @Get(':userId')
+  @ApiOperation({ summary: 'View another user public profile' })
+  getPublicProfile(@CurrentUser() user: AuthUser, @Param('userId') userId: string) {
+    return this.profilesService.getPublicProfile(user.id, user.role, userId);
   }
 }

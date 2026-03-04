@@ -1,13 +1,17 @@
-import { Injectable, ForbiddenException, NotFoundException } from '@nestjs/common';
+import { Injectable, ForbiddenException, NotFoundException, ConflictException, BadRequestException } from '@nestjs/common';
 import { UserRole, VendorType } from '@prisma/client';
+import * as bcrypt from 'bcrypt';
 import { PrismaService } from '../../database/prisma.service';
 import { StorageService } from '../storage/storage.service';
 import { UpdateIndividualProfileDto } from './dto/update-individual-profile.dto';
 import { UpdateCompanyProfileDto } from './dto/update-company-profile.dto';
 import { UpdateVendorProfileDto } from './dto/update-vendor-profile.dto';
+import { CreateSubUserDto } from './dto/create-sub-user.dto';
 
 @Injectable()
 export class ProfilesService {
+  private static readonly SUB_USER_PASSWORD_ROUNDS = 12;
+
   constructor(
     private readonly prisma: PrismaService,
     private readonly storage: StorageService,
@@ -20,6 +24,13 @@ export class ProfilesService {
         individualProfile: true,
         companyProfile: true,
         vendorProfile: true,
+        vendorEquipment: {
+          include: {
+            availabilities: {
+              orderBy: { availableFrom: 'asc' },
+            },
+          },
+        },
       },
     });
     if (!user) throw new NotFoundException('User not found');
@@ -35,13 +46,26 @@ export class ProfilesService {
     const logoUrl = p?.logoKey
       ? (await this.storage.getSignedUrl(p.logoKey)) ?? this.storage.getPublicUrl(p.logoKey)
       : null;
+    const profilePayload = profile
+      ? {
+          ...profile,
+          avatarUrl,
+          showreelUrl: showreelUrl ?? undefined,
+          logoUrl: logoUrl ?? undefined,
+          ...(user.role === UserRole.vendor && (user as { vendorEquipment?: unknown[] }).vendorEquipment
+            ? { equipment: (user as { vendorEquipment: unknown[] }).vendorEquipment }
+            : {}),
+        }
+      : null;
     return {
       id: user.id,
       email: user.email,
       phone: user.phone,
       role: user.role,
+      mainUserId: user.mainUserId ?? null,
+      isMainUser: !user.mainUserId,
       isVerified: user.isVerified,
-      profile: profile ? { ...profile, avatarUrl, showreelUrl: showreelUrl ?? undefined, logoUrl: logoUrl ?? undefined } : null,
+      profile: profilePayload,
     };
   }
 
@@ -65,6 +89,7 @@ export class ProfilesService {
       displayName: dto.displayName,
       bio: dto.bio,
       skills: skillsNormalized,
+      genre: dto.genre,
       locationCity: dto.locationCity,
       locationState: dto.locationState,
       lat: dto.lat,
@@ -100,6 +125,8 @@ export class ProfilesService {
       panNumber: dto.panNumber,
       companyType: dto.companyType,
       website: dto.website,
+      instagramUrl: dto.instagramUrl,
+      address: dto.address,
     };
     const filtered = Object.fromEntries(Object.entries(data).filter(([, v]) => v !== undefined));
     if (existing) {
@@ -124,6 +151,8 @@ export class ProfilesService {
       companyName: dto.companyName,
       vendorType: dto.vendorType,
       gstNumber: dto.gstNumber,
+      website: dto.website,
+      instagramUrl: dto.instagramUrl,
     };
     const filtered = Object.fromEntries(Object.entries(data).filter(([, v]) => v !== undefined));
     if (existing) {
@@ -158,6 +187,13 @@ export class ProfilesService {
         individualProfile: true,
         companyProfile: true,
         vendorProfile: true,
+        vendorEquipment: {
+          include: {
+            availabilities: {
+              orderBy: { availableFrom: 'asc' },
+            },
+          },
+        },
       },
     });
     if (!target) throw new NotFoundException('User not found');
@@ -179,10 +215,13 @@ export class ProfilesService {
     const logoUrl = base.logoKey
       ? await this.storage.getSignedUrl(base.logoKey as string) ?? this.storage.getPublicUrl(base.logoKey as string)
       : null;
+    const equipment = target.role === UserRole.vendor && (target as { vendorEquipment?: unknown[] }).vendorEquipment
+      ? (target as { vendorEquipment: unknown[] }).vendorEquipment
+      : undefined;
     return {
       id: target.id,
       role: target.role,
-      profile: { ...sanitized, avatarUrl, showreelUrl, logoUrl },
+      profile: { ...sanitized, avatarUrl, showreelUrl, logoUrl, ...(equipment ? { equipment } : {}) },
     };
   }
 
@@ -236,5 +275,130 @@ export class ProfilesService {
       update: { showreelKey: key },
     });
     return { key };
+  }
+
+  async listSubUsers(userId: string, role: UserRole) {
+    if (role !== UserRole.company && role !== UserRole.vendor) {
+      throw new ForbiddenException('Only company/vendor accounts support sub-users');
+    }
+    const me = await this.prisma.user.findFirst({
+      where: { id: userId, deletedAt: null },
+      select: { id: true, role: true, mainUserId: true },
+    });
+    if (!me || me.mainUserId) {
+      throw new ForbiddenException('Only Main ID can list sub-users');
+    }
+    const items = await this.prisma.user.findMany({
+      where: {
+        mainUserId: me.id,
+        role: me.role,
+        deletedAt: null,
+      },
+      select: {
+        id: true,
+        email: true,
+        phone: true,
+        isActive: true,
+        createdAt: true,
+      },
+      orderBy: { createdAt: 'desc' },
+    });
+    return { items };
+  }
+
+  async createSubUser(userId: string, role: UserRole, dto: CreateSubUserDto) {
+    if (role !== UserRole.company && role !== UserRole.vendor) {
+      throw new ForbiddenException('Only company/vendor accounts support sub-users');
+    }
+    const me = await this.prisma.user.findFirst({
+      where: { id: userId, deletedAt: null },
+      select: { id: true, role: true, mainUserId: true },
+    });
+    if (!me || me.mainUserId) {
+      throw new ForbiddenException('Only Main ID can create sub-users');
+    }
+    const existing = await this.prisma.user.findFirst({
+      where: {
+        OR: [{ email: dto.email }, { phone: dto.phone }],
+        deletedAt: null,
+      },
+      select: { id: true, email: true, phone: true },
+    });
+    if (existing) {
+      if (existing.email === dto.email) throw new ConflictException('Email already registered');
+      throw new ConflictException('Phone already registered');
+    }
+    const passwordHash = await bcrypt.hash(dto.password, ProfilesService.SUB_USER_PASSWORD_ROUNDS);
+    const sub = await this.prisma.user.create({
+      data: {
+        email: dto.email,
+        phone: dto.phone,
+        passwordHash,
+        role: me.role,
+        mainUserId: me.id,
+        isVerified: true,
+      },
+      select: { id: true, email: true, phone: true, role: true, mainUserId: true, isActive: true, createdAt: true },
+    });
+    return sub;
+  }
+
+  async assignProjectToSubUser(userId: string, role: UserRole, subUserId: string, projectId: string) {
+    if (role !== UserRole.company && role !== UserRole.vendor) {
+      throw new ForbiddenException('Only company/vendor accounts support sub-users');
+    }
+    const me = await this.prisma.user.findFirst({
+      where: { id: userId, deletedAt: null },
+      select: { id: true, role: true, mainUserId: true },
+    });
+    if (!me || me.mainUserId) {
+      throw new ForbiddenException('Only Main ID can assign projects');
+    }
+    const subUser = await this.prisma.user.findFirst({
+      where: {
+        id: subUserId,
+        role: me.role,
+        mainUserId: me.id,
+        deletedAt: null,
+      },
+      select: { id: true },
+    });
+    if (!subUser) throw new NotFoundException('Sub-user not found');
+
+    const project = await this.prisma.project.findUnique({
+      where: { id: projectId },
+      select: { id: true, companyUserId: true },
+    });
+    if (!project) throw new NotFoundException('Project not found');
+
+    if (me.role === UserRole.company) {
+      if (project.companyUserId !== me.id) throw new ForbiddenException('Project is not owned by your company account');
+    } else {
+      const bookingExists = await this.prisma.bookingRequest.findFirst({
+        where: {
+          projectId,
+          targetUserId: me.id,
+          status: { in: ['pending', 'accepted', 'locked'] },
+        },
+        select: { id: true },
+      });
+      if (!bookingExists) {
+        throw new BadRequestException('Vendor account can assign only projects where it has a request/booking');
+      }
+    }
+
+    return this.prisma.subUserProjectAssignment.upsert({
+      where: { subUserId_projectId: { subUserId, projectId } },
+      create: {
+        accountUserId: me.id,
+        subUserId,
+        projectId,
+      },
+      update: {},
+      include: {
+        project: { select: { id: true, title: true } },
+        subUser: { select: { id: true, email: true } },
+      },
+    });
   }
 }

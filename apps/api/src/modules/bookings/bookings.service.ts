@@ -12,12 +12,23 @@ export class BookingsService {
   ) {}
 
   async createRequest(companyUserId: string, dto: CreateBookingRequestDto) {
+    const companyCtx = await this.getCompanyAccountContext(companyUserId);
     const project = await this.prisma.project.findUnique({
       where: { id: dto.projectId },
       include: { roles: true },
     });
     if (!project) throw new NotFoundException('Project not found');
-    if (project.companyUserId !== companyUserId) throw new ForbiddenException('Not your project');
+    if (project.companyUserId !== companyCtx.accountOwnerId) throw new ForbiddenException('Not your project');
+    if (!companyCtx.isMainUser) {
+      const assigned = await this.prisma.subUserProjectAssignment.findFirst({
+        where: {
+          accountUserId: companyCtx.accountOwnerId,
+          subUserId: companyUserId,
+          projectId: dto.projectId,
+        },
+      });
+      if (!assigned) throw new ForbiddenException('This project is not assigned to your Sub-User ID');
+    }
     if (project.status !== 'draft' && project.status !== 'open') {
       throw new BadRequestException('Project must be draft or open to send requests');
     }
@@ -26,10 +37,11 @@ export class BookingsService {
     if (target.role !== 'individual' && target.role !== 'vendor') {
       throw new BadRequestException('Target must be individual or vendor');
     }
+    const targetAccountUserId = target.mainUserId ?? target.id;
     const existing = await this.prisma.bookingRequest.findFirst({
       where: {
         projectId: dto.projectId,
-        targetUserId: dto.targetUserId,
+        targetUserId: targetAccountUserId,
         status: { in: ['pending', 'accepted', 'locked'] },
       },
     });
@@ -46,8 +58,8 @@ export class BookingsService {
     const booking = await this.prisma.bookingRequest.create({
       data: {
         projectId: dto.projectId,
-        requesterUserId: companyUserId,
-        targetUserId: dto.targetUserId,
+        requesterUserId: companyCtx.accountOwnerId,
+        targetUserId: targetAccountUserId,
         projectRoleId: dto.projectRoleId,
         rateOffered: dto.rateOffered,
         message: dto.message,
@@ -56,11 +68,11 @@ export class BookingsService {
       include: { project: true, target: { select: { id: true, email: true, role: true } } },
     });
     await this.notifications.createForUser(
-      dto.targetUserId,
+      targetAccountUserId,
       'booking_request',
       'New booking request',
       `You have a new booking request for project: ${booking.project.title}`,
-      { bookingId: booking.id, projectId: booking.projectId },
+      { bookingId: booking.id, projectId: booking.projectId, projectTitle: booking.project.title },
     );
     return booking;
   }
@@ -69,8 +81,21 @@ export class BookingsService {
     if (role !== 'individual' && role !== 'vendor') {
       throw new ForbiddenException('Only individuals and vendors have incoming requests');
     }
+    const incomingCtx = role === UserRole.vendor ? await this.getVendorAccountContext(userId) : null;
     const items = await this.prisma.bookingRequest.findMany({
-      where: { targetUserId: userId, status: { in: ['pending', 'accepted', 'locked'] } },
+      where: {
+        targetUserId: incomingCtx ? incomingCtx.accountOwnerId : userId,
+        status: { in: ['pending', 'accepted', 'locked'] },
+        ...(incomingCtx && !incomingCtx.isMainUser
+          ? {
+              project: {
+                subUserAssignments: {
+                  some: { accountUserId: incomingCtx.accountOwnerId, subUserId: userId },
+                },
+              },
+            }
+          : {}),
+      },
       include: {
         project: true,
         requester: { select: { id: true, email: true, companyProfile: true } },
@@ -82,8 +107,20 @@ export class BookingsService {
   }
 
   async listOutgoing(companyUserId: string) {
+    const ctx = await this.getCompanyAccountContext(companyUserId);
     const items = await this.prisma.bookingRequest.findMany({
-      where: { requesterUserId: companyUserId },
+      where: {
+        requesterUserId: ctx.accountOwnerId,
+        ...(ctx.isMainUser
+          ? {}
+          : {
+              project: {
+                subUserAssignments: {
+                  some: { accountUserId: ctx.accountOwnerId, subUserId: companyUserId },
+                },
+              },
+            }),
+      },
       include: {
         project: true,
         target: { select: { id: true, email: true, role: true, individualProfile: true, vendorProfile: true } },
@@ -100,8 +137,19 @@ export class BookingsService {
       include: { project: true },
     });
     if (!booking) throw new NotFoundException('Booking not found');
-    if (booking.targetUserId !== userId) throw new ForbiddenException('Not your booking');
     if (role !== 'individual' && role !== 'vendor') throw new ForbiddenException('Only crew/vendor can accept');
+    if (role === UserRole.vendor) {
+      const vendorCtx = await this.getVendorAccountContext(userId);
+      if (booking.targetUserId !== vendorCtx.accountOwnerId) throw new ForbiddenException('Not your booking');
+      if (!vendorCtx.isMainUser) {
+        const assigned = await this.prisma.subUserProjectAssignment.findFirst({
+          where: { accountUserId: vendorCtx.accountOwnerId, subUserId: userId, projectId: booking.projectId },
+        });
+        if (!assigned) throw new ForbiddenException('This project is not assigned to your Sub-User ID');
+      }
+    } else if (booking.targetUserId !== userId) {
+      throw new ForbiddenException('Not your booking');
+    }
     if (booking.status !== 'pending') throw new BadRequestException('Booking is not pending');
     if (booking.expiresAt && booking.expiresAt < new Date()) {
       await this.prisma.bookingRequest.update({ where: { id: bookingId }, data: { status: 'expired' } });
@@ -129,7 +177,7 @@ export class BookingsService {
       'booking_accepted',
       'Booking accepted',
       `Your booking request for project "${booking.project.title}" was accepted.`,
-      { bookingId: booking.id, projectId: booking.projectId },
+      { bookingId: booking.id, projectId: booking.projectId, projectTitle: booking.project.title },
     );
     return updated;
   }
@@ -140,8 +188,19 @@ export class BookingsService {
       include: { project: true },
     });
     if (!booking) throw new NotFoundException('Booking not found');
-    if (booking.targetUserId !== userId) throw new ForbiddenException('Not your booking');
     if (role !== 'individual' && role !== 'vendor') throw new ForbiddenException('Only crew/vendor can decline');
+    if (role === UserRole.vendor) {
+      const vendorCtx = await this.getVendorAccountContext(userId);
+      if (booking.targetUserId !== vendorCtx.accountOwnerId) throw new ForbiddenException('Not your booking');
+      if (!vendorCtx.isMainUser) {
+        const assigned = await this.prisma.subUserProjectAssignment.findFirst({
+          where: { accountUserId: vendorCtx.accountOwnerId, subUserId: userId, projectId: booking.projectId },
+        });
+        if (!assigned) throw new ForbiddenException('This project is not assigned to your Sub-User ID');
+      }
+    } else if (booking.targetUserId !== userId) {
+      throw new ForbiddenException('Not your booking');
+    }
     if (booking.status !== 'pending') throw new BadRequestException('Booking is not pending');
     const updated = await this.prisma.bookingRequest.update({
       where: { id: bookingId },
@@ -152,18 +211,25 @@ export class BookingsService {
       'booking_declined',
       'Booking declined',
       `Your booking request for project "${booking.project.title}" was declined.`,
-      { bookingId: booking.id, projectId: booking.projectId },
+      { bookingId: booking.id, projectId: booking.projectId, projectTitle: booking.project.title },
     );
     return updated;
   }
 
   async lock(bookingId: string, companyUserId: string) {
+    const ctx = await this.getCompanyAccountContext(companyUserId);
     const booking = await this.prisma.bookingRequest.findUnique({
       where: { id: bookingId },
       include: { project: true },
     });
     if (!booking) throw new NotFoundException('Booking not found');
-    if (booking.requesterUserId !== companyUserId) throw new ForbiddenException('Only the company can lock');
+    if (booking.requesterUserId !== ctx.accountOwnerId) throw new ForbiddenException('Only the company can lock');
+    if (!ctx.isMainUser) {
+      const assigned = await this.prisma.subUserProjectAssignment.findFirst({
+        where: { accountUserId: ctx.accountOwnerId, subUserId: companyUserId, projectId: booking.projectId },
+      });
+      if (!assigned) throw new ForbiddenException('This project is not assigned to your Sub-User ID');
+    }
     if (booking.status !== 'accepted') throw new BadRequestException('Only accepted bookings can be locked');
     return this.prisma.bookingRequest.update({
       where: { id: bookingId },
@@ -172,15 +238,29 @@ export class BookingsService {
     });
   }
 
-  async cancel(bookingId: string, userId: string, _reason?: string) {
+  async cancel(bookingId: string, userId: string, reason?: string) {
     const booking = await this.prisma.bookingRequest.findUnique({
       where: { id: bookingId },
       include: { project: true },
     });
     if (!booking) throw new NotFoundException('Booking not found');
-    const isRequester = booking.requesterUserId === userId;
-    const isTarget = booking.targetUserId === userId;
+    const requesterCtx = await this.getCompanyAccountContextOrNull(userId);
+    const targetVendorCtx = await this.getVendorAccountContextOrNull(userId);
+    const isRequester = booking.requesterUserId === (requesterCtx?.accountOwnerId ?? userId);
+    const isTarget = booking.targetUserId === (targetVendorCtx?.accountOwnerId ?? userId) || booking.targetUserId === userId;
     if (!isRequester && !isTarget) throw new ForbiddenException('Not your booking');
+    if (requesterCtx && !requesterCtx.isMainUser && isRequester) {
+      const assigned = await this.prisma.subUserProjectAssignment.findFirst({
+        where: { accountUserId: requesterCtx.accountOwnerId, subUserId: userId, projectId: booking.projectId },
+      });
+      if (!assigned) throw new ForbiddenException('This project is not assigned to your Sub-User ID');
+    }
+    if (targetVendorCtx && !targetVendorCtx.isMainUser && isTarget) {
+      const assigned = await this.prisma.subUserProjectAssignment.findFirst({
+        where: { accountUserId: targetVendorCtx.accountOwnerId, subUserId: userId, projectId: booking.projectId },
+      });
+      if (!assigned) throw new ForbiddenException('This project is not assigned to your Sub-User ID');
+    }
     if (booking.status === 'locked') throw new BadRequestException('Locked bookings cannot be cancelled here');
     if (booking.status !== 'pending' && booking.status !== 'accepted') {
       throw new BadRequestException('Booking cannot be cancelled');
@@ -198,9 +278,70 @@ export class BookingsService {
         });
       }
     }
-    return this.prisma.bookingRequest.update({
+    const updated = await this.prisma.bookingRequest.update({
       where: { id: bookingId },
-      data: { status: 'cancelled' },
+      data: {
+        status: 'cancelled',
+        cancelReason: reason,
+        cancelledByUserId: userId,
+        cancelledAt: new Date(),
+      },
     });
+    const notifyUserId = isRequester ? booking.targetUserId : booking.requesterUserId;
+    const cancelledBySide = isRequester ? 'company' : 'crew_or_vendor';
+    const reasonLine = reason?.trim() ? ` Reason: ${reason.trim()}` : '';
+    await this.notifications.createForUser(
+      notifyUserId,
+      'booking_cancelled',
+      'Booking request withdrawn/cancelled',
+      `A booking request for project "${booking.project.title}" was cancelled.${reasonLine}`,
+      {
+        bookingId: booking.id,
+        projectId: booking.projectId,
+        cancelledByUserId: userId,
+        cancelledBySide,
+        cancelReason: reason ?? null,
+        projectTitle: booking.project.title,
+      },
+    );
+    return updated;
+  }
+
+  private async getCompanyAccountContext(userId: string) {
+    const user = await this.prisma.user.findFirst({
+      where: { id: userId, deletedAt: null, isActive: true },
+    });
+    if (!user || user.role !== UserRole.company) {
+      throw new ForbiddenException('Only company users can perform this action');
+    }
+    const accountOwnerId = user.mainUserId ?? user.id;
+    return { accountOwnerId, isMainUser: !user.mainUserId };
+  }
+
+  private async getCompanyAccountContextOrNull(userId: string) {
+    const user = await this.prisma.user.findFirst({
+      where: { id: userId, deletedAt: null, isActive: true },
+    });
+    if (!user || user.role !== UserRole.company) return null;
+    return { accountOwnerId: user.mainUserId ?? user.id, isMainUser: !user.mainUserId };
+  }
+
+  private async getVendorAccountContext(userId: string) {
+    const user = await this.prisma.user.findFirst({
+      where: { id: userId, deletedAt: null, isActive: true },
+    });
+    if (!user || user.role !== UserRole.vendor) {
+      throw new ForbiddenException('Only vendor users can perform this action');
+    }
+    const accountOwnerId = user.mainUserId ?? user.id;
+    return { accountOwnerId, isMainUser: !user.mainUserId };
+  }
+
+  private async getVendorAccountContextOrNull(userId: string) {
+    const user = await this.prisma.user.findFirst({
+      where: { id: userId, deletedAt: null, isActive: true },
+    });
+    if (!user || user.role !== UserRole.vendor) return null;
+    return { accountOwnerId: user.mainUserId ?? user.id, isMainUser: !user.mainUserId };
   }
 }

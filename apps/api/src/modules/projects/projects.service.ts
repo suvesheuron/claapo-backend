@@ -13,13 +13,18 @@ export class ProjectsService {
     if (new Date(dto.startDate) > new Date(dto.endDate)) {
       throw new BadRequestException('startDate must be before endDate');
     }
+    const ctx = await this.getCompanyAccountContext(companyUserId);
+    if (!ctx.isMainUser) throw new ForbiddenException('Only Main ID can create projects');
     return this.prisma.project.create({
       data: {
-        companyUserId,
+        companyUserId: ctx.accountOwnerId,
         title: dto.title,
+        productionHouseName: dto.productionHouseName,
         description: dto.description,
         startDate: new Date(dto.startDate),
         endDate: new Date(dto.endDate),
+        deliveryDate: dto.deliveryDate ? new Date(dto.deliveryDate) : undefined,
+        shootLocations: dto.shootLocations?.map((s) => s.trim()).filter(Boolean) ?? [],
         locationCity: dto.locationCity,
         budgetMin: dto.budgetMin,
         budgetMax: dto.budgetMax,
@@ -30,16 +35,25 @@ export class ProjectsService {
   }
 
   async listOwn(companyUserId: string, page = 1, limit = 20) {
+    const ctx = await this.getCompanyAccountContext(companyUserId);
     const skip = (page - 1) * limit;
+    const where = ctx.isMainUser
+      ? { companyUserId: ctx.accountOwnerId }
+      : {
+          companyUserId: ctx.accountOwnerId,
+          subUserAssignments: {
+            some: { subUserId: companyUserId },
+          },
+        };
     const [items, total] = await Promise.all([
       this.prisma.project.findMany({
-        where: { companyUserId },
+        where,
         include: { roles: true, _count: { select: { bookings: true } } },
         orderBy: { createdAt: 'desc' },
         skip,
         take: limit,
       }),
-      this.prisma.project.count({ where: { companyUserId } }),
+      this.prisma.project.count({ where }),
     ]);
     return {
       items,
@@ -53,7 +67,41 @@ export class ProjectsService {
       include: { roles: true, companyUser: { select: { id: true, email: true } } },
     });
     if (!project) throw new NotFoundException('Project not found');
-    if (project.companyUserId === userId) return project;
+
+    if (role === UserRole.company) {
+      const ctx = await this.getCompanyAccountContext(userId);
+      if (project.companyUserId === ctx.accountOwnerId) {
+        if (ctx.isMainUser) return project;
+        const assigned = await this.prisma.subUserProjectAssignment.findFirst({
+          where: { accountUserId: ctx.accountOwnerId, subUserId: userId, projectId },
+        });
+        if (assigned) return project;
+      }
+      throw new ForbiddenException('You do not have access to this project');
+    }
+
+    if (role === UserRole.vendor) {
+      const vendorCtx = await this.getVendorAccountContext(userId);
+      const hasBooking = await this.prisma.bookingRequest.findFirst({
+        where: {
+          projectId,
+          targetUserId: vendorCtx.accountOwnerId,
+          status: { in: ['accepted', 'locked'] },
+          ...(vendorCtx.isMainUser
+            ? {}
+            : {
+                project: {
+                  subUserAssignments: {
+                    some: { subUserId: userId, accountUserId: vendorCtx.accountOwnerId },
+                  },
+                },
+              }),
+        },
+      });
+      if (hasBooking) return project;
+      throw new ForbiddenException('You do not have access to this project');
+    }
+
     const hasBooking = await this.prisma.bookingRequest.findFirst({
       where: { projectId, targetUserId: userId, status: { in: ['accepted', 'locked'] } },
     });
@@ -62,12 +110,17 @@ export class ProjectsService {
   }
 
   async update(projectId: string, companyUserId: string, dto: UpdateProjectDto) {
-    await this.ensureOwnProject(projectId, companyUserId);
+    const ctx = await this.getCompanyAccountContext(companyUserId);
+    if (!ctx.isMainUser) throw new ForbiddenException('Only Main ID can update project settings');
+    await this.ensureOwnProject(projectId, ctx.accountOwnerId);
     const data: Record<string, unknown> = {};
     if (dto.title !== undefined) data.title = dto.title;
+    if (dto.productionHouseName !== undefined) data.productionHouseName = dto.productionHouseName;
     if (dto.description !== undefined) data.description = dto.description;
     if (dto.startDate !== undefined) data.startDate = new Date(dto.startDate);
     if (dto.endDate !== undefined) data.endDate = new Date(dto.endDate);
+    if (dto.deliveryDate !== undefined) data.deliveryDate = dto.deliveryDate ? new Date(dto.deliveryDate) : null;
+    if (dto.shootLocations !== undefined) data.shootLocations = dto.shootLocations.map((s) => s.trim()).filter(Boolean);
     if (dto.locationCity !== undefined) data.locationCity = dto.locationCity;
     if (dto.budgetMin !== undefined) data.budgetMin = dto.budgetMin;
     if (dto.budgetMax !== undefined) data.budgetMax = dto.budgetMax;
@@ -80,9 +133,11 @@ export class ProjectsService {
   }
 
   async remove(projectId: string, companyUserId: string) {
+    const ctx = await this.getCompanyAccountContext(companyUserId);
+    if (!ctx.isMainUser) throw new ForbiddenException('Only Main ID can delete projects');
     const project = await this.prisma.project.findUnique({ where: { id: projectId } });
     if (!project) throw new NotFoundException('Project not found');
-    if (project.companyUserId !== companyUserId) throw new ForbiddenException('Not your project');
+    if (project.companyUserId !== ctx.accountOwnerId) throw new ForbiddenException('Not your project');
     if (project.status !== 'draft') {
       throw new BadRequestException('Only draft projects can be deleted');
     }
@@ -91,7 +146,9 @@ export class ProjectsService {
   }
 
   async addRole(projectId: string, companyUserId: string, dto: AddProjectRoleDto) {
-    await this.ensureOwnProject(projectId, companyUserId);
+    const ctx = await this.getCompanyAccountContext(companyUserId);
+    if (!ctx.isMainUser) throw new ForbiddenException('Only Main ID can edit role requirements');
+    await this.ensureOwnProject(projectId, ctx.accountOwnerId);
     return this.prisma.projectRole.create({
       data: {
         projectId,
@@ -107,5 +164,27 @@ export class ProjectsService {
     const project = await this.prisma.project.findUnique({ where: { id: projectId } });
     if (!project) throw new NotFoundException('Project not found');
     if (project.companyUserId !== companyUserId) throw new ForbiddenException('Not your project');
+  }
+
+  private async getCompanyAccountContext(userId: string) {
+    const user = await this.prisma.user.findFirst({
+      where: { id: userId, deletedAt: null, isActive: true },
+    });
+    if (!user || user.role !== UserRole.company) {
+      throw new ForbiddenException('Only company users can perform this action');
+    }
+    const accountOwnerId = user.mainUserId ?? user.id;
+    return { accountOwnerId, isMainUser: !user.mainUserId };
+  }
+
+  private async getVendorAccountContext(userId: string) {
+    const user = await this.prisma.user.findFirst({
+      where: { id: userId, deletedAt: null, isActive: true },
+    });
+    if (!user || user.role !== UserRole.vendor) {
+      throw new ForbiddenException('Only vendor users can perform this action');
+    }
+    const accountOwnerId = user.mainUserId ?? user.id;
+    return { accountOwnerId, isMainUser: !user.mainUserId };
   }
 }

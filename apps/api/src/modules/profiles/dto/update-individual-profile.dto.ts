@@ -19,6 +19,11 @@ export class UpdateIndividualProfileDto {
   @IsString({ each: true })
   skills?: string[];
 
+  @ApiPropertyOptional({ example: 'Action' })
+  @IsOptional()
+  @IsString()
+  genre?: string;
+
   @ApiPropertyOptional()
   @IsOptional()
   @IsString()

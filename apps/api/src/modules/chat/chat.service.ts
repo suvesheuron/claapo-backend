@@ -1,5 +1,5 @@
 import { Injectable, ForbiddenException, NotFoundException, BadRequestException } from '@nestjs/common';
-import { MessageType } from '@prisma/client';
+import { MessageType, UserRole } from '@prisma/client';
 import { PrismaService } from '../../database/prisma.service';
 import { StorageService } from '../storage/storage.service';
 import { CreateConversationDto } from './dto/create-conversation.dto';
@@ -18,7 +18,7 @@ export class ChatService {
   }
 
   /** Create or get existing conversation (1-to-1, project-scoped) */
-  async createOrGetConversation(userId: string, dto: CreateConversationDto) {
+  async createOrGetConversation(userId: string, role: UserRole, dto: CreateConversationDto) {
     const [participantA, participantB] = this.orderParticipants(userId, dto.otherUserId);
 
     // Verify user is one of the participants
@@ -26,16 +26,36 @@ export class ChatService {
       throw new BadRequestException('Invalid other user');
     }
 
-    // Verify project exists and user has access (company owner, or crew/vendor in project)
+    // Verify project exists and user has access (main/sub account scope + assignment checks)
     const project = await this.prisma.project.findUnique({
       where: { id: dto.projectId },
       include: { bookings: true },
     });
     if (!project) throw new NotFoundException('Project not found');
 
-    const hasAccess =
-      project.companyUserId === userId ||
-      project.bookings.some((b) => (b.requesterUserId === userId || b.targetUserId === userId) && b.status !== 'declined' && b.status !== 'expired');
+    let hasAccess = false;
+    const companyCtx = await this.getCompanyAccountContextOrNull(userId);
+    if (companyCtx && project.companyUserId === companyCtx.accountOwnerId) {
+      if (!companyCtx.isMainUser) {
+        await this.ensureProjectAssignedToSubUser(companyCtx.accountOwnerId, userId, dto.projectId);
+      }
+      hasAccess = true;
+    }
+    if (!hasAccess) {
+      const vendorCtx = role === UserRole.vendor ? await this.getVendorAccountContextOrNull(userId) : null;
+      const bookingActorId = vendorCtx ? vendorCtx.accountOwnerId : userId;
+      const hasBooking = project.bookings.some(
+        (b) =>
+          (b.requesterUserId === bookingActorId || b.targetUserId === bookingActorId)
+          && b.status !== 'declined'
+          && b.status !== 'expired'
+          && b.status !== 'cancelled',
+      );
+      if (hasBooking && vendorCtx && !vendorCtx.isMainUser) {
+        await this.ensureProjectAssignedToSubUser(vendorCtx.accountOwnerId, userId, dto.projectId);
+      }
+      hasAccess = hasBooking;
+    }
     if (!hasAccess) throw new ForbiddenException('No access to this project');
 
     let conv = await this.prisma.conversation.findUnique({
@@ -290,6 +310,30 @@ export class ChatService {
     const ext = contentType?.includes('image') ? 'jpg' : contentType?.includes('video') ? 'mp4' : 'bin';
     const key = `chat/${conversationId}/${userId}/${Date.now()}.${ext}`;
     return this.storage.getPresignedPutUrl(key, contentType ?? 'application/octet-stream');
+  }
+
+  private async ensureProjectAssignedToSubUser(accountUserId: string, subUserId: string, projectId: string) {
+    const assigned = await this.prisma.subUserProjectAssignment.findFirst({
+      where: { accountUserId, subUserId, projectId },
+      select: { id: true },
+    });
+    if (!assigned) throw new ForbiddenException('This project is not assigned to your Sub-User ID');
+  }
+
+  private async getCompanyAccountContextOrNull(userId: string) {
+    const user = await this.prisma.user.findFirst({
+      where: { id: userId, deletedAt: null, isActive: true },
+    });
+    if (!user || user.role !== UserRole.company) return null;
+    return { accountOwnerId: user.mainUserId ?? user.id, isMainUser: !user.mainUserId };
+  }
+
+  private async getVendorAccountContextOrNull(userId: string) {
+    const user = await this.prisma.user.findFirst({
+      where: { id: userId, deletedAt: null, isActive: true },
+    });
+    if (!user || user.role !== UserRole.vendor) return null;
+    return { accountOwnerId: user.mainUserId ?? user.id, isMainUser: !user.mainUserId };
   }
 
   private formatConversation(conv: {

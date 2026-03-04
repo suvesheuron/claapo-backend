@@ -1,5 +1,5 @@
 import { ApiPropertyOptional } from '@nestjs/swagger';
-import { IsString, IsOptional, IsEnum } from 'class-validator';
+import { IsString, IsOptional, IsEnum, IsUrl } from 'class-validator';
 import { VendorType } from '@prisma/client';
 
 export class UpdateVendorProfileDto {
@@ -17,4 +17,14 @@ export class UpdateVendorProfileDto {
   @IsOptional()
   @IsString()
   gstNumber?: string;
+
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsUrl()
+  website?: string;
+
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsUrl()
+  instagramUrl?: string;
 }

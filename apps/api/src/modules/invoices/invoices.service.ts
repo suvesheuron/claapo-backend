@@ -35,11 +35,26 @@ export class InvoicesService {
     if (role !== 'individual' && role !== 'vendor') {
       throw new ForbiddenException('Only individuals and vendors can create invoices');
     }
+    const vendorCtx = role === UserRole.vendor ? await this.getVendorAccountContext(issuerUserId) : null;
+    const issuerAccountUserId = vendorCtx ? vendorCtx.accountOwnerId : issuerUserId;
     const project = await this.prisma.project.findUnique({
       where: { id: dto.projectId },
     });
     if (!project) throw new NotFoundException('Project not found');
-    if (project.companyUserId !== dto.recipientUserId) throw new BadRequestException('Recipient must be the project company');
+    if (vendorCtx && !vendorCtx.isMainUser) {
+      await this.ensureProjectAssignedToSubUser(vendorCtx.accountOwnerId, issuerUserId, dto.projectId);
+    }
+    const relatedBooking = await this.prisma.bookingRequest.findFirst({
+      where: {
+        projectId: dto.projectId,
+        targetUserId: issuerAccountUserId,
+        status: { in: ['accepted', 'locked'] },
+      },
+      select: { id: true },
+    });
+    if (!relatedBooking) {
+      throw new ForbiddenException('You can create invoices only for projects where you are booked');
+    }
     let amount = 0;
     const lineItemsData = dto.lineItems.map((item) => {
       const itemAmount = item.quantity * item.unitPrice;
@@ -57,8 +72,8 @@ export class InvoicesService {
     const invoice = await this.prisma.invoice.create({
       data: {
         projectId: dto.projectId,
-        issuerUserId,
-        recipientUserId: dto.recipientUserId,
+        issuerUserId: issuerAccountUserId,
+        recipientUserId: project.companyUserId,
         invoiceNumber,
         amount,
         gstAmount,
@@ -74,12 +89,41 @@ export class InvoicesService {
   }
 
   async list(userId: string, page = 1, limit = 20) {
+    const companyCtx = await this.getCompanyAccountContextOrNull(userId);
+    const vendorCtx = await this.getVendorAccountContextOrNull(userId);
     const skip = (page - 1) * limit;
+    const where = companyCtx
+      ? {
+          recipientUserId: companyCtx.accountOwnerId,
+          ...(companyCtx.isMainUser
+            ? {}
+            : {
+                project: {
+                  subUserAssignments: {
+                    some: { accountUserId: companyCtx.accountOwnerId, subUserId: userId },
+                  },
+                },
+              }),
+        }
+      : vendorCtx
+        ? {
+            issuerUserId: vendorCtx.accountOwnerId,
+            ...(vendorCtx.isMainUser
+              ? {}
+              : {
+                  project: {
+                    subUserAssignments: {
+                      some: { accountUserId: vendorCtx.accountOwnerId, subUserId: userId },
+                    },
+                  },
+                }),
+          }
+        : {
+            OR: [{ issuerUserId: userId }, { recipientUserId: userId }],
+          };
     const [items, total] = await Promise.all([
       this.prisma.invoice.findMany({
-        where: {
-          OR: [{ issuerUserId: userId }, { recipientUserId: userId }],
-        },
+        where,
         include: {
           lineItems: true,
           project: { select: { id: true, title: true, startDate: true, endDate: true } },
@@ -104,11 +148,7 @@ export class InvoicesService {
         skip,
         take: limit,
       }),
-      this.prisma.invoice.count({
-        where: {
-          OR: [{ issuerUserId: userId }, { recipientUserId: userId }],
-        },
-      }),
+      this.prisma.invoice.count({ where }),
     ]);
     return { items, meta: { total, page, limit, pages: Math.ceil(total / limit) } };
   }
@@ -119,17 +159,20 @@ export class InvoicesService {
       include: { lineItems: true, project: true },
     });
     if (!invoice) throw new NotFoundException('Invoice not found');
-    if (invoice.issuerUserId !== userId && invoice.recipientUserId !== userId) {
-      throw new ForbiddenException('Not your invoice');
-    }
+    await this.ensureInvoiceAccess(invoice.issuerUserId, invoice.recipientUserId, invoice.projectId, userId);
     return invoice;
   }
 
   async update(invoiceId: string, userId: string, role: UserRole, dto: UpdateInvoiceDto) {
     if (role !== 'individual' && role !== 'vendor') throw new ForbiddenException('Only issuer can update');
+    const vendorCtx = role === UserRole.vendor ? await this.getVendorAccountContext(userId) : null;
+    const issuerAccountUserId = vendorCtx ? vendorCtx.accountOwnerId : userId;
     const invoice = await this.prisma.invoice.findUnique({ where: { id: invoiceId } });
     if (!invoice) throw new NotFoundException('Invoice not found');
-    if (invoice.issuerUserId !== userId) throw new ForbiddenException('Not your invoice');
+    if (invoice.issuerUserId !== issuerAccountUserId) throw new ForbiddenException('Not your invoice');
+    if (vendorCtx && !vendorCtx.isMainUser) {
+      await this.ensureProjectAssignedToSubUser(vendorCtx.accountOwnerId, userId, invoice.projectId);
+    }
     if (invoice.status !== 'draft') throw new BadRequestException('Only draft invoices can be updated');
     const data: Record<string, unknown> = {};
     if (dto.dueDate !== undefined) data.dueDate = new Date(dto.dueDate);
@@ -162,6 +205,8 @@ export class InvoicesService {
 
   async send(invoiceId: string, userId: string, role: UserRole) {
     if (role !== 'individual' && role !== 'vendor') throw new ForbiddenException('Only issuer can send');
+    const vendorCtx = role === UserRole.vendor ? await this.getVendorAccountContext(userId) : null;
+    const issuerAccountUserId = vendorCtx ? vendorCtx.accountOwnerId : userId;
     const invoice = await this.prisma.invoice.findUnique({
       where: { id: invoiceId },
       include: {
@@ -176,7 +221,10 @@ export class InvoicesService {
       },
     });
     if (!invoice) throw new NotFoundException('Invoice not found');
-    if (invoice.issuerUserId !== userId) throw new ForbiddenException('Not your invoice');
+    if (invoice.issuerUserId !== issuerAccountUserId) throw new ForbiddenException('Not your invoice');
+    if (vendorCtx && !vendorCtx.isMainUser) {
+      await this.ensureProjectAssignedToSubUser(vendorCtx.accountOwnerId, userId, invoice.projectId);
+    }
     if (invoice.status !== 'draft') throw new BadRequestException('Only draft can be sent');
     const updated = await this.prisma.invoice.update({
       where: { id: invoiceId },
@@ -194,15 +242,20 @@ export class InvoicesService {
       'invoice_sent',
       'New invoice received',
       `${issuerName} sent you an invoice for ${amountFormatted} for project "${invoice.project.title}".`,
-      { invoiceId: invoice.id, projectId: invoice.projectId },
+      { invoiceId: invoice.id, projectId: invoice.projectId, projectTitle: invoice.project.title },
     );
     return updated;
   }
 
   async cancel(invoiceId: string, userId: string, role: UserRole) {
+    const vendorCtx = role === UserRole.vendor ? await this.getVendorAccountContextOrNull(userId) : null;
+    const issuerAccountUserId = vendorCtx ? vendorCtx.accountOwnerId : userId;
     const invoice = await this.prisma.invoice.findUnique({ where: { id: invoiceId } });
     if (!invoice) throw new NotFoundException('Invoice not found');
-    if (invoice.issuerUserId !== userId) throw new ForbiddenException('Only issuer can cancel');
+    if (invoice.issuerUserId !== issuerAccountUserId) throw new ForbiddenException('Only issuer can cancel');
+    if (vendorCtx && !vendorCtx.isMainUser) {
+      await this.ensureProjectAssignedToSubUser(vendorCtx.accountOwnerId, userId, invoice.projectId);
+    }
     if (invoice.status !== 'draft' && invoice.status !== 'sent') {
       throw new BadRequestException('Only draft or sent invoices can be cancelled');
     }
@@ -216,7 +269,7 @@ export class InvoicesService {
   async getPdfUrl(invoiceId: string, userId: string) {
     const invoice = await this.prisma.invoice.findUnique({ where: { id: invoiceId } });
     if (!invoice) throw new NotFoundException('Invoice not found');
-    if (invoice.issuerUserId !== userId && invoice.recipientUserId !== userId) throw new ForbiddenException('Not your invoice');
+    await this.ensureInvoiceAccess(invoice.issuerUserId, invoice.recipientUserId, invoice.projectId, userId);
     if (!invoice.pdfKey) {
       return { message: 'PDF not yet generated. It will be available after the invoice is sent.', pdfUrl: null };
     }
@@ -225,9 +278,13 @@ export class InvoicesService {
 
   async initiatePayment(invoiceId: string, userId: string, role: UserRole) {
     if (role !== 'company') throw new ForbiddenException('Only company (recipient) can pay');
+    const companyCtx = await this.getCompanyAccountContext(userId);
     const invoice = await this.prisma.invoice.findUnique({ where: { id: invoiceId } });
     if (!invoice) throw new NotFoundException('Invoice not found');
-    if (invoice.recipientUserId !== userId) throw new ForbiddenException('Not your invoice');
+    if (invoice.recipientUserId !== companyCtx.accountOwnerId) throw new ForbiddenException('Not your invoice');
+    if (!companyCtx.isMainUser) {
+      await this.ensureProjectAssignedToSubUser(companyCtx.accountOwnerId, userId, invoice.projectId);
+    }
     if (invoice.status !== 'sent') throw new BadRequestException('Invoice must be sent to pay');
     if (!this.razorpay) throw new BadRequestException('Razorpay is not configured');
     const amountInPaise = invoice.totalAmount;
@@ -262,5 +319,76 @@ export class InvoicesService {
       where: { id: invoice.id },
       data: { status: 'paid', paidAt: new Date() },
     });
+  }
+
+  private async ensureInvoiceAccess(
+    issuerUserId: string,
+    recipientUserId: string,
+    projectId: string,
+    userId: string,
+  ) {
+    const companyCtx = await this.getCompanyAccountContextOrNull(userId);
+    if (companyCtx && recipientUserId === companyCtx.accountOwnerId) {
+      if (!companyCtx.isMainUser) {
+        await this.ensureProjectAssignedToSubUser(companyCtx.accountOwnerId, userId, projectId);
+      }
+      return;
+    }
+    const vendorCtx = await this.getVendorAccountContextOrNull(userId);
+    if (vendorCtx && issuerUserId === vendorCtx.accountOwnerId) {
+      if (!vendorCtx.isMainUser) {
+        await this.ensureProjectAssignedToSubUser(vendorCtx.accountOwnerId, userId, projectId);
+      }
+      return;
+    }
+    if (issuerUserId !== userId && recipientUserId !== userId) {
+      throw new ForbiddenException('Not your invoice');
+    }
+  }
+
+  private async ensureProjectAssignedToSubUser(accountUserId: string, subUserId: string, projectId: string) {
+    const assigned = await this.prisma.subUserProjectAssignment.findFirst({
+      where: { accountUserId, subUserId, projectId },
+      select: { id: true },
+    });
+    if (!assigned) {
+      throw new ForbiddenException('This project is not assigned to your Sub-User ID');
+    }
+  }
+
+  private async getCompanyAccountContext(userId: string) {
+    const user = await this.prisma.user.findFirst({
+      where: { id: userId, deletedAt: null, isActive: true },
+    });
+    if (!user || user.role !== UserRole.company) {
+      throw new ForbiddenException('Only company users can perform this action');
+    }
+    return { accountOwnerId: user.mainUserId ?? user.id, isMainUser: !user.mainUserId };
+  }
+
+  private async getCompanyAccountContextOrNull(userId: string) {
+    const user = await this.prisma.user.findFirst({
+      where: { id: userId, deletedAt: null, isActive: true },
+    });
+    if (!user || user.role !== UserRole.company) return null;
+    return { accountOwnerId: user.mainUserId ?? user.id, isMainUser: !user.mainUserId };
+  }
+
+  private async getVendorAccountContext(userId: string) {
+    const user = await this.prisma.user.findFirst({
+      where: { id: userId, deletedAt: null, isActive: true },
+    });
+    if (!user || user.role !== UserRole.vendor) {
+      throw new ForbiddenException('Only vendor users can perform this action');
+    }
+    return { accountOwnerId: user.mainUserId ?? user.id, isMainUser: !user.mainUserId };
+  }
+
+  private async getVendorAccountContextOrNull(userId: string) {
+    const user = await this.prisma.user.findFirst({
+      where: { id: userId, deletedAt: null, isActive: true },
+    });
+    if (!user || user.role !== UserRole.vendor) return null;
+    return { accountOwnerId: user.mainUserId ?? user.id, isMainUser: !user.mainUserId };
   }
 }

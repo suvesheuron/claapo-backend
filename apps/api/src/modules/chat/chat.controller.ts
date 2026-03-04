@@ -22,7 +22,7 @@ export class ChatController {
   @Post()
   @ApiOperation({ summary: 'Create or get conversation (project-scoped 1-to-1)' })
   createOrGet(@CurrentUser() user: AuthUser, @Body() dto: CreateConversationDto) {
-    return this.chatService.createOrGetConversation(user.id, dto);
+    return this.chatService.createOrGetConversation(user.id, user.role, dto);
   }
 
   @Get()

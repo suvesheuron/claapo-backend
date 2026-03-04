@@ -97,6 +97,11 @@ export class SearchService {
     const page = query.page ?? 1;
     const limit = Math.min(query.limit ?? 20, 50);
     const skip = (page - 1) * limit;
+    const requestedStart = query.startDate ? new Date(query.startDate) : null;
+    const requestedEnd = query.endDate ? new Date(query.endDate) : null;
+    const requestedCity = query.city?.trim().toLowerCase();
+    const equipmentName = query.equipmentName?.trim().toLowerCase();
+    const hasEquipmentAvailabilityFilter = !!(requestedCity || requestedStart || requestedEnd || equipmentName);
 
     const where: Record<string, unknown> = {
       user: { deletedAt: null, isActive: true },
@@ -105,27 +110,59 @@ export class SearchService {
       (where as any).vendorType = query.type;
     }
 
-    const [items, total] = await Promise.all([
-      this.prisma.vendorProfile.findMany({
-        where,
-        include: {
-          user: { select: { id: true, email: true } },
+    const rawItems = await this.prisma.vendorProfile.findMany({
+      where,
+      include: {
+        user: {
+          select: {
+            id: true,
+            email: true,
+            vendorEquipment: {
+              include: {
+                availabilities: {
+                  orderBy: { availableFrom: 'asc' },
+                },
+              },
+            },
+          },
         },
-        orderBy: { companyName: 'asc' },
-        skip,
-        take: limit,
-      }),
-      this.prisma.vendorProfile.count({ where }),
-    ]);
+      },
+      orderBy: { companyName: 'asc' },
+    });
+
+    const filteredItems = rawItems
+      .map((p) => {
+        const allEquipment = p.user.vendorEquipment ?? [];
+        const matchedEquipment = allEquipment.filter((eq) => {
+          if (equipmentName && !eq.name.toLowerCase().includes(equipmentName)) return false;
+          if (!requestedCity && !requestedStart && !requestedEnd) return true;
+          return (eq.availabilities ?? []).some((slot) => {
+            const slotCity = slot.locationCity.trim().toLowerCase();
+            if (requestedCity && slotCity !== requestedCity) return false;
+            if (requestedStart && requestedEnd) {
+              return slot.availableFrom <= requestedEnd && slot.availableTo >= requestedStart;
+            }
+            if (requestedStart) return slot.availableFrom <= requestedStart && slot.availableTo >= requestedStart;
+            if (requestedEnd) return slot.availableFrom <= requestedEnd && slot.availableTo >= requestedEnd;
+            return true;
+          });
+        });
+        return {
+          userId: p.userId,
+          companyName: p.companyName,
+          vendorType: p.vendorType,
+          isGstVerified: p.isGstVerified,
+          email: p.user.email,
+          equipment: matchedEquipment,
+          _equipmentCount: matchedEquipment.length,
+        };
+      })
+      .filter((item) => !hasEquipmentAvailabilityFilter || item._equipmentCount > 0);
+    const total = filteredItems.length;
+    const items = filteredItems.slice(skip, skip + limit);
 
     return {
-      items: items.map((p) => ({
-        userId: p.userId,
-        companyName: p.companyName,
-        vendorType: p.vendorType,
-        isGstVerified: p.isGstVerified,
-        email: p.user.email,
-      })),
+      items: items.map(({ _equipmentCount, ...rest }) => rest),
       meta: { total, page, limit, pages: Math.ceil(total / limit) },
     };
   }

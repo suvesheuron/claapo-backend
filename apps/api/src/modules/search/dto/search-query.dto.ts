@@ -69,6 +69,26 @@ export class SearchVendorsQueryDto {
   @IsEnum(VendorType)
   type?: VendorType;
 
+  @ApiPropertyOptional({ description: 'Search equipment available in this city/location' })
+  @IsOptional()
+  @IsString()
+  city?: string;
+
+  @ApiPropertyOptional({ example: '2026-03-10' })
+  @IsOptional()
+  @IsDateString()
+  startDate?: string;
+
+  @ApiPropertyOptional({ example: '2026-03-15' })
+  @IsOptional()
+  @IsDateString()
+  endDate?: string;
+
+  @ApiPropertyOptional({ description: 'Filter by equipment item name' })
+  @IsOptional()
+  @IsString()
+  equipmentName?: string;
+
   @ApiPropertyOptional({ default: 1 })
   @IsOptional()
   @Type(() => Number)

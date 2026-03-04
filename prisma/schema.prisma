@@ -32,6 +32,7 @@ enum VendorType {
 
 model User {
   id           String    @id @default(uuid()) @db.Uuid
+  mainUserId   String?   @map("main_user_id") @db.Uuid
   email        String    @unique
   phone        String    @unique
   passwordHash String    @map("password_hash")
@@ -49,6 +50,7 @@ model User {
   individualProfile IndividualProfile?
   companyProfile    CompanyProfile?
   vendorProfile     VendorProfile?
+  vendorEquipment  VendorEquipment[]
   availabilitySlots AvailabilitySlot[]
   projectsOwned     Project[]         @relation("CompanyProjects")
   bookingsRequested BookingRequest[]  @relation("RequesterBookings")
@@ -59,7 +61,12 @@ model User {
   conversationsAsA  Conversation[]    @relation("ConversationParticipantA")
   conversationsAsB  Conversation[]    @relation("ConversationParticipantB")
   messagesSent      Message[]
+  mainUser          User?            @relation("UserSubUsers", fields: [mainUserId], references: [id], onDelete: SetNull)
+  subUsers          User[]           @relation("UserSubUsers")
+  subUserProjectAssignments SubUserProjectAssignment[] @relation("SubUserAssignments")
+  accountProjectAssignments SubUserProjectAssignment[] @relation("AccountAssignments")
 
+  @@index([mainUserId])
   @@map("users")
 }
 
@@ -97,6 +104,7 @@ model IndividualProfile {
   displayName    String   @map("display_name")
   bio            String?
   skills         String[] @default([])
+  genre          String?
   locationCity   String?  @map("location_city")
   locationState  String?  @map("location_state")
   lat            Float?
@@ -125,6 +133,8 @@ model CompanyProfile {
   panNumber      String?  @map("pan_number")
   companyType    String?  @map("company_type")
   website        String?
+  instagramUrl   String?  @map("instagram_url")
+  address        String?  @map("address")
   logoKey        String?  @map("logo_key")
   isGstVerified  Boolean  @default(false) @map("is_gst_verified")
   createdAt      DateTime @default(now()) @map("created_at")
@@ -142,6 +152,8 @@ model VendorProfile {
   vendorType     VendorType @map("vendor_type")
   gstNumber      String?    @unique @map("gst_number")
   isGstVerified  Boolean    @default(false) @map("is_gst_verified")
+  website        String?
+  instagramUrl   String?    @map("instagram_url")
   logoKey        String?    @map("logo_key")
   createdAt      DateTime   @default(now()) @map("created_at")
   updatedAt      DateTime   @updatedAt @map("updated_at")
@@ -149,6 +161,41 @@ model VendorProfile {
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@map("vendor_profiles")
+}
+
+model VendorEquipment {
+  id           String   @id @default(uuid()) @db.Uuid
+  vendorUserId String   @map("vendor_user_id") @db.Uuid
+  name         String
+  description  String?
+  currentCity  String?  @map("current_city")
+  dailyRateMin Int?     @map("daily_rate_min") // paise
+  dailyRateMax Int?     @map("daily_rate_max") // paise
+  createdAt    DateTime @default(now()) @map("created_at")
+  updatedAt    DateTime @updatedAt @map("updated_at")
+
+  vendor User @relation(fields: [vendorUserId], references: [id], onDelete: Cascade)
+  availabilities VendorEquipmentAvailability[]
+
+  @@index([vendorUserId])
+  @@map("vendor_equipment")
+}
+
+model VendorEquipmentAvailability {
+  id           String   @id @default(uuid()) @db.Uuid
+  equipmentId  String   @map("equipment_id") @db.Uuid
+  locationCity String   @map("location_city")
+  availableFrom DateTime @map("available_from")
+  availableTo   DateTime @map("available_to")
+  notes        String?
+  createdAt    DateTime @default(now()) @map("created_at")
+  updatedAt    DateTime @updatedAt @map("updated_at")
+
+  equipment VendorEquipment @relation(fields: [equipmentId], references: [id], onDelete: Cascade)
+
+  @@index([equipmentId, availableFrom, availableTo])
+  @@index([locationCity, availableFrom, availableTo])
+  @@map("vendor_equipment_availability")
 }
 
 enum SlotStatus {
@@ -195,9 +242,12 @@ model Project {
   id              String        @id @default(uuid()) @db.Uuid
   companyUserId   String        @map("company_user_id") @db.Uuid
   title           String
+  productionHouseName String?   @map("production_house_name")
   description     String?
   startDate       DateTime      @map("start_date")
   endDate         DateTime      @map("end_date")
+  deliveryDate    DateTime?     @map("delivery_date")
+  shootLocations  String[]      @default([]) @map("shoot_locations")
   locationCity    String?       @map("location_city")
   budgetMin       Int?          @map("budget_min")
   budgetMax       Int?          @map("budget_max")
@@ -210,9 +260,26 @@ model Project {
   bookings      BookingRequest[]
   invoices      Invoice[]
   conversations Conversation[]
+  subUserAssignments SubUserProjectAssignment[]
 
   @@index([companyUserId, status])
   @@map("projects")
+}
+
+model SubUserProjectAssignment {
+  id            String   @id @default(uuid()) @db.Uuid
+  accountUserId String   @map("account_user_id") @db.Uuid
+  subUserId     String   @map("sub_user_id") @db.Uuid
+  projectId     String   @map("project_id") @db.Uuid
+  createdAt     DateTime @default(now()) @map("created_at")
+
+  accountUser User    @relation("AccountAssignments", fields: [accountUserId], references: [id], onDelete: Cascade)
+  subUser     User    @relation("SubUserAssignments", fields: [subUserId], references: [id], onDelete: Cascade)
+  project     Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  @@unique([subUserId, projectId])
+  @@index([accountUserId, subUserId])
+  @@map("sub_user_project_assignments")
 }
 
 model ProjectRole {
@@ -244,6 +311,9 @@ model BookingRequest {
   expiresAt         DateTime?     @map("expires_at")
   createdAt         DateTime      @default(now()) @map("created_at")
   updatedAt         DateTime      @updatedAt @map("updated_at")
+  cancelledByUserId String?       @map("cancelled_by_user_id") @db.Uuid
+  cancelReason      String?       @map("cancel_reason")
+  cancelledAt       DateTime?     @map("cancelled_at")
 
   project      Project     @relation(fields: [projectId], references: [id])
   requester    User        @relation("RequesterBookings", fields: [requesterUserId], references: [id])
@@ -252,6 +322,7 @@ model BookingRequest {
 
   @@index([projectId])
   @@index([targetUserId, status])
+  @@index([requesterUserId, status])
   @@map("booking_requests")
 }
 

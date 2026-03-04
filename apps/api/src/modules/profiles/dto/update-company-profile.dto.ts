@@ -26,4 +26,14 @@ export class UpdateCompanyProfileDto {
   @IsOptional()
   @IsUrl()
   website?: string;
+
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsUrl()
+  instagramUrl?: string;
+
+   @ApiPropertyOptional()
+   @IsOptional()
+   @IsString()
+   address?: string;
 }
