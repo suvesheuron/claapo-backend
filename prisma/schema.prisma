@@ -135,6 +135,9 @@ model CompanyProfile {
   website        String?
   instagramUrl   String?  @map("instagram_url")
   address        String?  @map("address")
+  locationCity   String?  @map("location_city")
+  locationState  String?  @map("location_state")
+  bio            String?
   logoKey        String?  @map("logo_key")
   isGstVerified  Boolean  @default(false) @map("is_gst_verified")
   createdAt      DateTime @default(now()) @map("created_at")

@@ -32,6 +32,14 @@ export class BookingsController {
     return this.bookingsService.listIncoming(user.id, user.role);
   }
 
+  @Get('past')
+  @UseGuards(RolesGuard)
+  @Roles('individual', 'vendor')
+  @ApiOperation({ summary: 'List past (completed) project bookings' })
+  listPast(@CurrentUser() user: AuthUser) {
+    return this.bookingsService.listPastBookings(user.id, user.role);
+  }
+
   @Get('outgoing')
   @UseGuards(RolesGuard)
   @Roles('company')

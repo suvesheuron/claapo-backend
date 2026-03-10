@@ -106,6 +106,38 @@ export class BookingsService {
     return { items };
   }
 
+  /** Past projects: bookings where user was crew/vendor and project is completed */
+  async listPastBookings(userId: string, role: UserRole) {
+    if (role !== 'individual' && role !== 'vendor') {
+      throw new ForbiddenException('Only individuals and vendors have past bookings');
+    }
+    const vendorCtx = role === UserRole.vendor ? await this.getVendorAccountContext(userId) : null;
+    const targetUserId = vendorCtx ? vendorCtx.accountOwnerId : userId;
+    const items = await this.prisma.bookingRequest.findMany({
+      where: {
+        targetUserId,
+        status: { in: ['accepted', 'locked'] },
+        project: {
+          status: 'completed',
+          ...(vendorCtx && !vendorCtx.isMainUser
+            ? {
+                subUserAssignments: {
+                  some: { accountUserId: vendorCtx.accountOwnerId, subUserId: userId },
+                },
+              }
+            : {}),
+        },
+      },
+      include: {
+        project: { select: { id: true, title: true, startDate: true, endDate: true, status: true } },
+        requester: { select: { id: true, email: true, companyProfile: { select: { companyName: true } } } },
+        projectRole: { select: { id: true, roleName: true } },
+      },
+      orderBy: { createdAt: 'desc' },
+    });
+    return { items };
+  }
+
   async listOutgoing(companyUserId: string) {
     const ctx = await this.getCompanyAccountContext(companyUserId);
     const items = await this.prisma.bookingRequest.findMany({

@@ -127,6 +127,9 @@ export class ProfilesService {
       website: dto.website,
       instagramUrl: dto.instagramUrl,
       address: dto.address,
+      locationCity: dto.locationCity,
+      locationState: dto.locationState,
+      bio: dto.bio,
     };
     const filtered = Object.fromEntries(Object.entries(data).filter(([, v]) => v !== undefined));
     if (existing) {
@@ -400,5 +403,33 @@ export class ProfilesService {
         subUser: { select: { id: true, email: true } },
       },
     });
+  }
+
+  async deleteSubUser(userId: string, role: UserRole, subUserId: string) {
+    if (role !== UserRole.company && role !== UserRole.vendor) {
+      throw new ForbiddenException('Only company/vendor accounts support sub-users');
+    }
+    const me = await this.prisma.user.findFirst({
+      where: { id: userId, deletedAt: null },
+      select: { id: true, role: true, mainUserId: true },
+    });
+    if (!me || me.mainUserId) {
+      throw new ForbiddenException('Only Main ID can delete sub-users');
+    }
+    const subUser = await this.prisma.user.findFirst({
+      where: {
+        id: subUserId,
+        role: me.role,
+        mainUserId: me.id,
+        deletedAt: null,
+      },
+      select: { id: true },
+    });
+    if (!subUser) throw new NotFoundException('Sub-user not found');
+    await this.prisma.user.update({
+      where: { id: subUserId },
+      data: { deletedAt: new Date(), isActive: false },
+    });
+    return { message: 'Sub-user removed' };
   }
 }

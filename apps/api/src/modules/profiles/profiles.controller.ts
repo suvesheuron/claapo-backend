@@ -1,4 +1,4 @@
-import { Controller, Get, Patch, Post, Body, Param, UseGuards } from '@nestjs/common';
+import { Controller, Get, Patch, Post, Delete, Body, Param, UseGuards } from '@nestjs/common';
 import { ApiTags, ApiOperation, ApiBearerAuth } from '@nestjs/swagger';
 import { ProfilesService } from './profiles.service';
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
@@ -77,6 +77,14 @@ export class ProfilesController {
     @Body() dto: AssignSubUserProjectDto,
   ) {
     return this.profilesService.assignProjectToSubUser(user.id, user.role, subUserId, dto.projectId);
+  }
+
+  @Delete('sub-users/:subUserId')
+  @UseGuards(RolesGuard)
+  @Roles('company', 'vendor')
+  @ApiOperation({ summary: 'Remove (soft-delete) a sub-user (company/vendor Main ID only)' })
+  deleteSubUser(@CurrentUser() user: AuthUser, @Param('subUserId') subUserId: string) {
+    return this.profilesService.deleteSubUser(user.id, user.role, subUserId);
   }
 
   @Post('avatar')

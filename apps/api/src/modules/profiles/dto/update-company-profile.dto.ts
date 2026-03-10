@@ -32,8 +32,23 @@ export class UpdateCompanyProfileDto {
   @IsUrl()
   instagramUrl?: string;
 
-   @ApiPropertyOptional()
-   @IsOptional()
-   @IsString()
-   address?: string;
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsString()
+  address?: string;
+
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsString()
+  locationCity?: string;
+
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsString()
+  locationState?: string;
+
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsString()
+  bio?: string;
 }
