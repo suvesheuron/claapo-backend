@@ -48,6 +48,14 @@ export class BookingsController {
     return this.bookingsService.listOutgoing(user.id);
   }
 
+  @Get('cancel-requests')
+  @UseGuards(RolesGuard)
+  @Roles('company')
+  @ApiOperation({ summary: 'List bookings where crew/vendor requested cancellation' })
+  listCancelRequests(@CurrentUser() user: AuthUser) {
+    return this.bookingsService.listCancelRequests(user.id);
+  }
+
   @Patch(':id/accept')
   @UseGuards(RolesGuard)
   @Roles('individual', 'vendor')
@@ -76,5 +84,29 @@ export class BookingsController {
   @ApiOperation({ summary: 'Cancel request' })
   cancel(@CurrentUser() user: AuthUser, @Param('id') id: string, @Body() body: CancelBookingDto) {
     return this.bookingsService.cancel(id, user.id, body.reason);
+  }
+
+  @Patch(':id/request-cancel')
+  @UseGuards(RolesGuard)
+  @Roles('individual', 'vendor')
+  @ApiOperation({ summary: 'Request cancellation of an accepted/locked booking (crew/vendor → awaits company approval)' })
+  requestCancellation(@CurrentUser() user: AuthUser, @Param('id') id: string, @Body() body: CancelBookingDto) {
+    return this.bookingsService.requestCancellation(id, user.id, body.reason);
+  }
+
+  @Patch(':id/accept-cancel')
+  @UseGuards(RolesGuard)
+  @Roles('company')
+  @ApiOperation({ summary: 'Company accepts the cancellation request' })
+  acceptCancellation(@CurrentUser() user: AuthUser, @Param('id') id: string) {
+    return this.bookingsService.respondToCancellation(id, user.id, true);
+  }
+
+  @Patch(':id/deny-cancel')
+  @UseGuards(RolesGuard)
+  @Roles('company')
+  @ApiOperation({ summary: 'Company denies the cancellation request' })
+  denyCancellation(@CurrentUser() user: AuthUser, @Param('id') id: string) {
+    return this.bookingsService.respondToCancellation(id, user.id, false);
   }
 }

@@ -156,11 +156,91 @@ export class InvoicesService {
   async getOne(invoiceId: string, userId: string) {
     const invoice = await this.prisma.invoice.findUnique({
       where: { id: invoiceId },
-      include: { lineItems: true, project: true },
+      include: {
+        lineItems: true,
+        project: { select: { id: true, title: true } },
+        issuer: {
+          select: {
+            id: true, email: true,
+            individualProfile: { select: { displayName: true, locationCity: true, skills: true } },
+            vendorProfile: { select: { companyName: true } },
+            companyProfile: { select: { companyName: true, locationCity: true } },
+          },
+        },
+        recipient: {
+          select: {
+            id: true, email: true,
+            individualProfile: { select: { displayName: true, locationCity: true } },
+            vendorProfile: { select: { companyName: true } },
+            companyProfile: { select: { companyName: true, locationCity: true } },
+          },
+        },
+      },
     });
     if (!invoice) throw new NotFoundException('Invoice not found');
     await this.ensureInvoiceAccess(invoice.issuerUserId, invoice.recipientUserId, invoice.projectId, userId);
-    return invoice;
+    return this.formatInvoiceDetail(invoice);
+  }
+
+  async markAsPaid(invoiceId: string, userId: string) {
+    const companyCtx = await this.getCompanyAccountContextOrNull(userId);
+    if (!companyCtx) throw new ForbiddenException('Only company users can mark invoices as paid');
+    const invoice = await this.prisma.invoice.findUnique({ where: { id: invoiceId } });
+    if (!invoice) throw new NotFoundException('Invoice not found');
+    if (invoice.recipientUserId !== companyCtx.accountOwnerId) throw new ForbiddenException('Not your invoice');
+    if (invoice.status !== 'sent') throw new BadRequestException('Invoice must be sent before marking as paid');
+    return this.prisma.invoice.update({
+      where: { id: invoiceId },
+      data: { status: 'paid', paidAt: new Date() },
+      select: { id: true, status: true, paidAt: true },
+    });
+  }
+
+  private formatInvoiceDetail(invoice: {
+    id: string; invoiceNumber: string; status: string; createdAt: Date; dueDate: Date | null;
+    paidAt: Date | null; currency: string; amount: number; gstAmount: number; totalAmount: number;
+    issuerUserId: string; recipientUserId: string; projectId: string;
+    project: { id: string; title: string } | null;
+    issuer: {
+      id: string; email: string;
+      individualProfile?: { displayName: string; locationCity?: string | null; skills: string[] } | null;
+      vendorProfile?: { companyName: string } | null;
+      companyProfile?: { companyName: string; locationCity?: string | null } | null;
+    };
+    recipient: {
+      id: string; email: string;
+      individualProfile?: { displayName: string; locationCity?: string | null } | null;
+      vendorProfile?: { companyName: string } | null;
+      companyProfile?: { companyName: string; locationCity?: string | null } | null;
+    };
+    lineItems: { description: string; quantity: unknown; unitPrice: number; amount: number }[];
+  }) {
+    const getName = (u: {
+      email: string;
+      individualProfile?: { displayName: string } | null;
+      vendorProfile?: { companyName: string } | null;
+      companyProfile?: { companyName: string } | null;
+    }) => u.individualProfile?.displayName ?? u.vendorProfile?.companyName ?? u.companyProfile?.companyName ?? u.email;
+    const getCity = (u: {
+      individualProfile?: { locationCity?: string | null } | null;
+      companyProfile?: { locationCity?: string | null } | null;
+    }) => u.individualProfile?.locationCity ?? u.companyProfile?.locationCity ?? null;
+    const taxRatePct = invoice.amount > 0 ? Math.round((invoice.gstAmount / invoice.amount) * 100) : 18;
+    return {
+      id: invoice.id, invoiceNumber: invoice.invoiceNumber, status: invoice.status,
+      issuedAt: invoice.createdAt.toISOString(), dueDate: invoice.dueDate?.toISOString() ?? null,
+      paidAt: invoice.paidAt?.toISOString() ?? null, currency: invoice.currency,
+      projectTitle: invoice.project?.title ?? null, projectId: invoice.projectId,
+      fromName: getName(invoice.issuer),
+      fromRole: (invoice.issuer.individualProfile as { skills?: string[] } | null)?.skills?.[0] ?? null,
+      fromCity: getCity(invoice.issuer), toName: getName(invoice.recipient), toCity: getCity(invoice.recipient),
+      lineItems: invoice.lineItems.map((li) => ({
+        description: li.description, quantity: Number(li.quantity), unitAmountPaise: li.unitPrice,
+      })),
+      subtotalPaise: invoice.amount, taxRatePct, taxAmountPaise: invoice.gstAmount,
+      totalPaise: invoice.totalAmount, notes: null,
+      issuerId: invoice.issuerUserId, recipientId: invoice.recipientUserId,
+    };
   }
 
   async update(invoiceId: string, userId: string, role: UserRole, dto: UpdateInvoiceDto) {

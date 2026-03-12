@@ -2,6 +2,7 @@ import { Injectable, ForbiddenException, NotFoundException, BadRequestException 
 import { UserRole } from '@prisma/client';
 import { PrismaService } from '../../database/prisma.service';
 import { NotificationsService } from '../notifications/notifications.service';
+import { ChatService } from '../chat/chat.service';
 import { CreateBookingRequestDto } from './dto/booking-request.dto';
 
 @Injectable()
@@ -9,6 +10,7 @@ export class BookingsService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly notifications: NotificationsService,
+    private readonly chat: ChatService,
   ) {}
 
   async createRequest(companyUserId: string, dto: CreateBookingRequestDto) {
@@ -74,6 +76,24 @@ export class BookingsService {
       `You have a new booking request for project: ${booking.project.title}`,
       { bookingId: booking.id, projectId: booking.projectId, projectTitle: booking.project.title },
     );
+
+    // Auto-create conversation and send booking request as a chat message
+    try {
+      const rateStr = booking.rateOffered
+        ? ` · Offered rate: ₹${(booking.rateOffered / 100).toLocaleString('en-IN')}/day`
+        : '';
+      const customMsg = dto.message?.trim() ? `\n\nMessage: "${dto.message.trim()}"` : '';
+      const chatContent = `Booking Request — ${booking.project.title}${rateStr}${customMsg}\n\nPlease accept or decline from your Bookings page.`;
+      await this.chat.sendBookingRequestMessage(
+        companyCtx.accountOwnerId,
+        targetAccountUserId,
+        booking.projectId,
+        chatContent,
+      );
+    } catch {
+      // Non-fatal: booking is created; chat message is best-effort
+    }
+
     return booking;
   }
 
@@ -85,7 +105,7 @@ export class BookingsService {
     const items = await this.prisma.bookingRequest.findMany({
       where: {
         targetUserId: incomingCtx ? incomingCtx.accountOwnerId : userId,
-        status: { in: ['pending', 'accepted', 'locked'] },
+        status: { in: ['pending', 'accepted', 'locked', 'cancel_requested'] as any },
         ...(incomingCtx && !incomingCtx.isMainUser
           ? {
               project: {
@@ -131,6 +151,30 @@ export class BookingsService {
       include: {
         project: { select: { id: true, title: true, startDate: true, endDate: true, status: true } },
         requester: { select: { id: true, email: true, companyProfile: { select: { companyName: true } } } },
+        projectRole: { select: { id: true, roleName: true } },
+      },
+      orderBy: { createdAt: 'desc' },
+    });
+    return { items };
+  }
+
+  /** List cancel-requested bookings for company to respond to */
+  async listCancelRequests(companyUserId: string) {
+    const ctx = await this.getCompanyAccountContext(companyUserId);
+    const items = await this.prisma.bookingRequest.findMany({
+      where: {
+        requesterUserId: ctx.accountOwnerId,
+        status: 'cancel_requested' as any,
+      },
+      include: {
+        project: { select: { id: true, title: true, startDate: true, endDate: true } },
+        target: {
+          select: {
+            id: true, email: true,
+            individualProfile: { select: { displayName: true } },
+            vendorProfile: { select: { companyName: true } },
+          },
+        },
         projectRole: { select: { id: true, roleName: true } },
       },
       orderBy: { createdAt: 'desc' },
@@ -268,6 +312,99 @@ export class BookingsService {
       data: { status: 'locked', lockedAt: new Date() },
       include: { project: true, target: { select: { id: true, email: true } } },
     });
+  }
+
+  /** Crew/vendor requests cancellation of an accepted/locked booking — needs company approval */
+  async requestCancellation(bookingId: string, userId: string, reason?: string) {
+    const booking = await this.prisma.bookingRequest.findUnique({
+      where: { id: bookingId },
+      include: { project: true },
+    });
+    if (!booking) throw new NotFoundException('Booking not found');
+    const vendorCtx = await this.getVendorAccountContextOrNull(userId);
+    const isTarget =
+      booking.targetUserId === (vendorCtx?.accountOwnerId ?? userId) ||
+      booking.targetUserId === userId;
+    if (!isTarget) throw new ForbiddenException('Only the assigned crew/vendor can request cancellation');
+    if (booking.status !== 'accepted' && booking.status !== 'locked') {
+      throw new BadRequestException('Only accepted or locked bookings can request cancellation');
+    }
+    const updated = await this.prisma.bookingRequest.update({
+      where: { id: bookingId },
+      data: {
+        status: 'cancel_requested' as any,
+        ...(({ cancelRequestReason: reason, cancelRequestedAt: new Date() } as any)),
+      },
+    });
+    await this.notifications.createForUser(
+      booking.requesterUserId,
+      'cancel_requested',
+      'Cancellation Request',
+      `A crew member/vendor has requested to cancel their booking for project "${booking.project.title}".${reason ? ` Reason: ${reason}` : ''}`,
+      {
+        bookingId: booking.id,
+        projectId: booking.projectId,
+        projectTitle: booking.project.title,
+        cancelRequestReason: reason ?? null,
+      },
+    );
+    return updated;
+  }
+
+  /** Company accepts or denies a cancellation request */
+  async respondToCancellation(bookingId: string, companyUserId: string, accept: boolean) {
+    const ctx = await this.getCompanyAccountContext(companyUserId);
+    const booking = await this.prisma.bookingRequest.findUnique({
+      where: { id: bookingId },
+      include: { project: true },
+    });
+    if (!booking) throw new NotFoundException('Booking not found');
+    if (booking.requesterUserId !== ctx.accountOwnerId) throw new ForbiddenException('Not your booking');
+    if ((booking.status as string) !== 'cancel_requested') {
+      throw new BadRequestException('Booking is not in cancel_requested state');
+    }
+    if (accept) {
+      // Free availability slots
+      const start = new Date(booking.project.startDate);
+      const end = new Date(booking.project.endDate);
+      const startUtc = Date.UTC(start.getUTCFullYear(), start.getUTCMonth(), start.getUTCDate());
+      const endUtc = Date.UTC(end.getUTCFullYear(), end.getUTCMonth(), end.getUTCDate());
+      for (let t = startUtc; t <= endUtc; t += 24 * 60 * 60 * 1000) {
+        const dateKey = new Date(t);
+        await this.prisma.availabilitySlot.updateMany({
+          where: { userId: booking.targetUserId, date: dateKey },
+          data: { status: 'available' },
+        });
+      }
+      const updated = await this.prisma.bookingRequest.update({
+        where: { id: bookingId },
+        data: { status: 'cancelled', cancelledByUserId: companyUserId, cancelledAt: new Date() },
+      });
+      await this.notifications.createForUser(
+        booking.targetUserId,
+        'cancel_accepted',
+        'Cancellation Accepted',
+        `Your cancellation request for project "${booking.project.title}" has been approved.`,
+        { bookingId: booking.id, projectId: booking.projectId, projectTitle: booking.project.title },
+      );
+      return updated;
+    } else {
+      const updated = await this.prisma.bookingRequest.update({
+        where: { id: bookingId },
+        data: {
+          status: 'accepted',
+          ...(({ cancelRequestReason: null, cancelRequestedAt: null } as any)),
+        },
+      });
+      await this.notifications.createForUser(
+        booking.targetUserId,
+        'cancel_denied',
+        'Cancellation Denied',
+        `Your cancellation request for project "${booking.project.title}" was not approved. You remain booked.`,
+        { bookingId: booking.id, projectId: booking.projectId, projectTitle: booking.project.title },
+      );
+      return updated;
+    }
   }
 
   async cancel(bookingId: string, userId: string, reason?: string) {

@@ -73,4 +73,12 @@ export class InvoicesController {
   initiatePay(@CurrentUser() user: AuthUser, @Param('id') id: string) {
     return this.invoicesService.initiatePayment(id, user.id, user.role);
   }
+
+  @Patch(':id/mark-paid')
+  @UseGuards(RolesGuard)
+  @Roles('company')
+  @ApiOperation({ summary: 'Mark invoice as paid (demo)' })
+  markPaid(@CurrentUser() user: AuthUser, @Param('id') id: string) {
+    return this.invoicesService.markAsPaid(id, user.id);
+  }
 }

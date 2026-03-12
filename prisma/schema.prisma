@@ -237,6 +237,7 @@ enum BookingStatus {
   accepted
   declined
   locked
+  cancel_requested
   cancelled
   expired
 }
@@ -314,9 +315,11 @@ model BookingRequest {
   expiresAt         DateTime?     @map("expires_at")
   createdAt         DateTime      @default(now()) @map("created_at")
   updatedAt         DateTime      @updatedAt @map("updated_at")
-  cancelledByUserId String?       @map("cancelled_by_user_id") @db.Uuid
-  cancelReason      String?       @map("cancel_reason")
-  cancelledAt       DateTime?     @map("cancelled_at")
+  cancelledByUserId    String?       @map("cancelled_by_user_id") @db.Uuid
+  cancelReason         String?       @map("cancel_reason")
+  cancelledAt          DateTime?     @map("cancelled_at")
+  cancelRequestReason  String?       @map("cancel_request_reason")
+  cancelRequestedAt    DateTime?     @map("cancel_requested_at")
 
   project      Project     @relation(fields: [projectId], references: [id])
   requester    User        @relation("RequesterBookings", fields: [requesterUserId], references: [id])

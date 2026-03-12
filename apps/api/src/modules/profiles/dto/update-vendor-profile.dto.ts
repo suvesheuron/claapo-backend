@@ -27,4 +27,19 @@ export class UpdateVendorProfileDto {
   @IsOptional()
   @IsUrl()
   instagramUrl?: string;
+
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsString()
+  locationCity?: string;
+
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsString()
+  locationState?: string;
+
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsString()
+  bio?: string;
 }

@@ -37,6 +37,27 @@ export class ChatController {
     return this.chatService.listConversations(user.id, pageNum, limitNum);
   }
 
+  @Get('with/:otherUserId')
+  @ApiOperation({ summary: 'Get messages for a direct conversation by user ID (newest first, up to limit)' })
+  getConversationWithUser(
+    @CurrentUser() user: AuthUser,
+    @Param('otherUserId') otherUserId: string,
+    @Query('limit') limit?: string,
+  ) {
+    return this.chatService.getConversationWithUser(user.id, otherUserId, parseInt(limit ?? '50', 10));
+  }
+
+  @Post('with/:otherUserId/messages')
+  @ApiOperation({ summary: 'Send a message to a user by userId (uses most recent shared conversation)' })
+  async sendMessageToUser(
+    @CurrentUser() user: AuthUser,
+    @Param('otherUserId') otherUserId: string,
+    @Body() body: { content: string },
+  ) {
+    const message = await this.chatService.sendMessageToUserByUserId(user.id, otherUserId, body.content);
+    return message;
+  }
+
   @Get(':id/messages')
   @ApiOperation({ summary: 'Get messages (cursor-based pagination, newest first)' })
   getMessages(

@@ -151,6 +151,11 @@ export class ChatService {
               vendorProfile: { select: { companyName: true } },
             },
           },
+          messages: {
+            orderBy: { createdAt: 'desc' },
+            take: 1,
+            select: { id: true, content: true, senderId: true, createdAt: true, isRead: true },
+          },
         },
         orderBy: { lastMessageAt: 'desc' },
         skip,
@@ -284,6 +289,108 @@ export class ChatService {
     return { message: 'Messages marked as read' };
   }
 
+  /**
+   * Called by BookingsService when a booking request is created.
+   * Creates a conversation (if none exists) scoped to the project and sends
+   * the booking request summary as the first message from the company.
+   */
+  async sendBookingRequestMessage(
+    companyUserId: string,
+    targetUserId: string,
+    projectId: string,
+    content: string,
+  ) {
+    const [participantA, participantB] = this.orderParticipants(companyUserId, targetUserId);
+
+    let conv = await this.prisma.conversation.findUnique({
+      where: {
+        projectId_participantA_participantB: { projectId, participantA, participantB },
+      },
+    });
+
+    if (!conv) {
+      conv = await this.prisma.conversation.create({
+        data: { projectId, participantA, participantB },
+      });
+    }
+
+    const [message] = await this.prisma.$transaction([
+      this.prisma.message.create({
+        data: { conversationId: conv.id, senderId: companyUserId, type: 'text', content },
+      }),
+      this.prisma.conversation.update({
+        where: { id: conv.id },
+        data: { lastMessageAt: new Date() },
+      }),
+    ]);
+
+    return message;
+  }
+
+  /** Find (or return empty) conversation between two users, for the /with/:userId convenience route */
+  async getConversationWithUser(userId: string, otherUserId: string, limit = 50) {
+    const [participantA, participantB] = this.orderParticipants(userId, otherUserId);
+    const conv = await this.prisma.conversation.findFirst({
+      where: { participantA, participantB },
+      orderBy: { lastMessageAt: 'desc' },
+    });
+    if (!conv) {
+      return { conversationId: null, items: [] };
+    }
+    const messages = await this.prisma.message.findMany({
+      where: { conversationId: conv.id },
+      include: {
+        sender: {
+          select: {
+            id: true,
+            email: true,
+            individualProfile: { select: { displayName: true } },
+            companyProfile: { select: { companyName: true } },
+            vendorProfile: { select: { companyName: true } },
+          },
+        },
+      },
+      orderBy: { createdAt: 'asc' },
+      take: limit,
+    });
+    return {
+      conversationId: conv.id,
+      items: messages.map((m) => ({
+        id: m.id,
+        conversationId: m.conversationId,
+        senderId: m.senderId,
+        type: m.type,
+        content: m.content,
+        mediaKey: m.mediaKey,
+        isRead: m.isRead,
+        createdAt: m.createdAt,
+        readAt: m.isRead ? m.createdAt : null,
+        sender: {
+          id: m.sender.id,
+          displayName:
+            m.sender.individualProfile?.displayName ??
+            m.sender.companyProfile?.companyName ??
+            m.sender.vendorProfile?.companyName ??
+            m.sender.email,
+        },
+      })),
+    };
+  }
+
+  /** Send a message to a user by their userId (finds the most recent shared conversation) */
+  async sendMessageToUserByUserId(userId: string, otherUserId: string, content: string) {
+    const [participantA, participantB] = this.orderParticipants(userId, otherUserId);
+    const conv = await this.prisma.conversation.findFirst({
+      where: { participantA, participantB },
+      orderBy: { lastMessageAt: 'desc' },
+    });
+    if (!conv) {
+      throw new NotFoundException('No conversation found. Start a chat from a shared project first.');
+    }
+    const dto: CreateMessageDto = { content, type: 'text' };
+    return this.sendMessage(userId, conv.id, dto);
+  }
+
   /** Verify user is a participant in the conversation (for WebSocket room join) */
   async verifyMembership(userId: string, conversationId: string) {
     const conv = await this.prisma.conversation.findUnique({
@@ -338,23 +445,29 @@ export class ChatService {
 
   private formatConversation(conv: {
     id: string;
-    projectId: string;
+    projectId: string | null;
     participantA: string;
     participantB: string;
     lastMessageAt: Date | null;
     participantAUser: { id: string; email: string; individualProfile?: { displayName: string } | null; companyProfile?: { companyName: string } | null; vendorProfile?: { companyName: string } | null };
     participantBUser: { id: string; email: string; individualProfile?: { displayName: string } | null; companyProfile?: { companyName: string } | null; vendorProfile?: { companyName: string } | null };
-    project: { id: string; title: string };
+    project: { id: string; title: string } | null;
+    messages?: { id: string; content: string | null; senderId: string; createdAt: Date; isRead: boolean }[];
   }, currentUserId: string) {
     const other = conv.participantA === currentUserId ? conv.participantBUser : conv.participantAUser;
     const displayName =
       other.individualProfile?.displayName ?? other.companyProfile?.companyName ?? other.vendorProfile?.companyName ?? other.email;
+    const lastMsg = conv.messages?.[0] ?? null;
     return {
       id: conv.id,
       projectId: conv.projectId,
       project: conv.project,
       otherParticipant: { id: other.id, email: other.email, displayName },
       lastMessageAt: conv.lastMessageAt,
+      lastMessage: lastMsg
+        ? { id: lastMsg.id, content: lastMsg.content, senderId: lastMsg.senderId, createdAt: lastMsg.createdAt, isRead: lastMsg.isRead }
+        : null,
+      unreadCount: conv.messages?.filter(m => !m.isRead && m.senderId !== currentUserId).length ?? 0,
     };
   }
 }
