@@ -103,11 +103,33 @@ export class SearchService {
     const equipmentName = query.equipmentName?.trim().toLowerCase();
     const hasEquipmentAvailabilityFilter = !!(requestedCity || requestedStart || requestedEnd || equipmentName);
 
+    // Equipment IDs that are already booked (accepted/locked) for shoots overlapping the requested date range
+    let bookedEquipmentIds = new Set<string>();
+    if (requestedStart && requestedEnd) {
+      const bookings = await this.prisma.bookingRequest.findMany({
+        where: {
+          vendorEquipmentId: { not: null },
+          status: { in: ['accepted', 'locked'] },
+          project: {
+            startDate: { lte: requestedEnd },
+            endDate: { gte: requestedStart },
+          },
+        },
+        select: { vendorEquipmentId: true },
+      });
+      bookings.forEach((b) => {
+        if (b.vendorEquipmentId) bookedEquipmentIds.add(b.vendorEquipmentId);
+      });
+    }
+
     const where: Record<string, unknown> = {
       user: { deletedAt: null, isActive: true },
     };
     if (query.type) {
-      (where as any).vendorType = query.type;
+      (where as any).OR = [
+        { vendorType: query.type },
+        { vendorType: 'all' },
+      ];
     }
 
     const rawItems = await this.prisma.vendorProfile.findMany({
@@ -135,27 +157,59 @@ export class SearchService {
         const allEquipment = p.user.vendorEquipment ?? [];
         const matchedEquipment = allEquipment.filter((eq) => {
           if (equipmentName && !eq.name.toLowerCase().includes(equipmentName)) return false;
+          // Exclude equipment that is already booked for another shoot in the requested date range
+          if (bookedEquipmentIds.has(eq.id)) return false;
+
+          // If no city or date filters, any matching equipment name is fine.
           if (!requestedCity && !requestedStart && !requestedEnd) return true;
-          return (eq.availabilities ?? []).some((slot) => {
-            const slotCity = slot.locationCity.trim().toLowerCase();
-            if (requestedCity && slotCity !== requestedCity) return false;
-            if (requestedStart && requestedEnd) {
-              return slot.availableFrom <= requestedEnd && slot.availableTo >= requestedStart;
-            }
-            if (requestedStart) return slot.availableFrom <= requestedStart && slot.availableTo >= requestedStart;
-            if (requestedEnd) return slot.availableFrom <= requestedEnd && slot.availableTo >= requestedEnd;
-            return true;
-          });
+
+          const availabilities = eq.availabilities ?? [];
+
+          // If vendor has defined availability slots, use them for city/date filtering.
+          if (availabilities.length > 0) {
+            return availabilities.some((slot) => {
+              const slotCity = slot.locationCity.trim().toLowerCase();
+              if (requestedCity && slotCity !== requestedCity) return false;
+              if (requestedStart && requestedEnd) {
+                return slot.availableFrom <= requestedEnd && slot.availableTo >= requestedStart;
+              }
+              if (requestedStart) {
+                return slot.availableFrom <= requestedStart && slot.availableTo >= requestedStart;
+              }
+              if (requestedEnd) {
+                return slot.availableFrom <= requestedEnd && slot.availableTo >= requestedEnd;
+              }
+              return true;
+            });
+          }
+
+          // No explicit availability rows yet: fall back to equipment.currentCity
+          if (requestedCity) {
+            const eqCity = eq.currentCity?.trim().toLowerCase();
+            return eqCity === requestedCity;
+          }
+
+          // Date-only filter without city and no availabilities ⇒ treat as not match
+          return false;
         });
+        // Display only the equipment's location (set by vendor on equipment/availability), never vendor profile location
+        const firstEq = matchedEquipment[0];
+        const firstAvail = firstEq?.availabilities?.[0];
+        const locationCity =
+          firstEq?.currentCity?.trim() ||
+          firstAvail?.locationCity?.trim() ||
+          null;
+
         return {
           userId: p.userId,
           companyName: p.companyName,
           vendorType: p.vendorType,
           isGstVerified: p.isGstVerified,
           email: p.user.email,
+          locationCity,
           equipment: matchedEquipment,
           _equipmentCount: matchedEquipment.length,
-        };
+        } as const;
       })
       .filter((item) => !hasEquipmentAvailabilityFilter || item._equipmentCount > 0);
     const total = filteredItems.length;

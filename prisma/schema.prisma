@@ -24,6 +24,7 @@ enum OtpType {
 }
 
 enum VendorType {
+  all
   equipment
   lighting
   transport
@@ -158,6 +159,9 @@ model VendorProfile {
   website        String?
   instagramUrl   String?    @map("instagram_url")
   logoKey        String?    @map("logo_key")
+  locationCity   String?    @map("location_city")
+  locationState  String?    @map("location_state")
+  bio            String?
   createdAt      DateTime   @default(now()) @map("created_at")
   updatedAt      DateTime   @updatedAt @map("updated_at")
 
@@ -179,6 +183,7 @@ model VendorEquipment {
 
   vendor User @relation(fields: [vendorUserId], references: [id], onDelete: Cascade)
   availabilities VendorEquipmentAvailability[]
+  bookingRequests BookingRequest[]
 
   @@index([vendorUserId])
   @@map("vendor_equipment")
@@ -307,6 +312,7 @@ model BookingRequest {
   requesterUserId   String        @map("requester_user_id") @db.Uuid
   targetUserId     String        @map("target_user_id") @db.Uuid
   projectRoleId     String?       @map("project_role_id") @db.Uuid
+  vendorEquipmentId String?      @map("vendor_equipment_id") @db.Uuid
   status            BookingStatus @default(pending)
   rateOffered       Int?          @map("rate_offered")
   message           String?
@@ -325,10 +331,11 @@ model BookingRequest {
   requester    User        @relation("RequesterBookings", fields: [requesterUserId], references: [id])
   target       User        @relation("TargetBookings", fields: [targetUserId], references: [id])
   projectRole  ProjectRole? @relation(fields: [projectRoleId], references: [id])
-
+  vendorEquipment VendorEquipment? @relation(fields: [vendorEquipmentId], references: [id])
   @@index([projectId])
   @@index([targetUserId, status])
   @@index([requesterUserId, status])
+  @@index([vendorEquipmentId])
   @@map("booking_requests")
 }
 

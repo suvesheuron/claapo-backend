@@ -1,6 +1,8 @@
 import { Injectable, ForbiddenException, NotFoundException, BadRequestException } from '@nestjs/common';
 import { UserRole } from '@prisma/client';
 import { PrismaService } from '../../database/prisma.service';
+
+const ONGOING_BOOKING_STATUSES = ['pending', 'accepted', 'locked', 'cancel_requested'] as const;
 import { NotificationsService } from '../notifications/notifications.service';
 import { ChatService } from '../chat/chat.service';
 import { CreateBookingRequestDto } from './dto/booking-request.dto';
@@ -56,6 +58,15 @@ export class BookingsService {
             : 'A pending request already exists for this crew/vendor on this project.';
       throw new BadRequestException(msg);
     }
+    let vendorEquipmentId: string | undefined;
+    if (dto.vendorEquipmentId?.trim()) {
+      const equipment = await this.prisma.vendorEquipment.findFirst({
+        where: { id: dto.vendorEquipmentId.trim(), vendorUserId: targetAccountUserId },
+      });
+      if (!equipment) throw new BadRequestException('Equipment not found or does not belong to this vendor.');
+      vendorEquipmentId = equipment.id;
+    }
+
     const expiresAt = new Date(Date.now() + 48 * 60 * 60 * 1000);
     const booking = await this.prisma.bookingRequest.create({
       data: {
@@ -63,6 +74,7 @@ export class BookingsService {
         requesterUserId: companyCtx.accountOwnerId,
         targetUserId: targetAccountUserId,
         projectRoleId: dto.projectRoleId,
+        vendorEquipmentId,
         rateOffered: dto.rateOffered,
         message: dto.message,
         expiresAt,
@@ -102,10 +114,11 @@ export class BookingsService {
       throw new ForbiddenException('Only individuals and vendors have incoming requests');
     }
     const incomingCtx = role === UserRole.vendor ? await this.getVendorAccountContext(userId) : null;
-    const items = await this.prisma.bookingRequest.findMany({
+    const targetUid = incomingCtx ? incomingCtx.accountOwnerId : userId;
+    const raw = await this.prisma.bookingRequest.findMany({
       where: {
-        targetUserId: incomingCtx ? incomingCtx.accountOwnerId : userId,
-        status: { in: ['pending', 'accepted', 'locked', 'cancel_requested'] as any },
+        targetUserId: targetUid,
+        status: { in: [...ONGOING_BOOKING_STATUSES] },
         ...(incomingCtx && !incomingCtx.isMainUser
           ? {
               project: {
@@ -117,13 +130,65 @@ export class BookingsService {
           : {}),
       },
       include: {
-        project: true,
+        project: { select: { id: true, title: true, startDate: true, endDate: true, status: true, locationCity: true, shootLocations: true } },
         requester: { select: { id: true, email: true, companyProfile: true } },
         projectRole: true,
+        vendorEquipment: { select: { id: true, name: true } },
       },
       orderBy: { createdAt: 'desc' },
     });
-    return { items };
+    const itemsFiltered = raw.filter((b) => b.project.status !== 'cancelled');
+
+    // For vendors: flag when requested equipment is already committed to another project
+    const withWarnings = await this.attachEquipmentAlreadyBookedFor(targetUid, itemsFiltered);
+    return { items: withWarnings };
+  }
+
+  /** For each booking that has vendorEquipmentId, attach equipmentAlreadyBookedFor if that equipment is committed to another project */
+  private async attachEquipmentAlreadyBookedFor(
+    targetUserId: string,
+    items: Array<{ id: string; projectId: string; vendorEquipmentId: string | null; vendorEquipment?: { id: string; name: string } | null; project: { id: string; title: string; startDate: Date; endDate: Date }; [k: string]: unknown }>,
+  ) {
+    const withEquipment = items.filter((b) => b.vendorEquipmentId);
+    if (withEquipment.length === 0) return items;
+
+    const equipmentIds = [...new Set(withEquipment.map((b) => b.vendorEquipmentId!))];
+    const otherBookings = await this.prisma.bookingRequest.findMany({
+      where: {
+        vendorEquipmentId: { in: equipmentIds },
+        status: { in: ['accepted', 'locked'] },
+        targetUserId: targetUserId,
+      },
+      select: {
+        id: true,
+        projectId: true,
+        vendorEquipmentId: true,
+        project: { select: { title: true, startDate: true, endDate: true } },
+      },
+    });
+
+    const byEquipment: Record<string, Array<{ projectId: string; projectTitle: string; startDate: Date; endDate: Date }>> = {};
+    for (const ob of otherBookings) {
+      if (!ob.vendorEquipmentId) continue;
+      if (!byEquipment[ob.vendorEquipmentId]) byEquipment[ob.vendorEquipmentId] = [];
+      byEquipment[ob.vendorEquipmentId].push({
+        projectId: ob.projectId,
+        projectTitle: ob.project.title,
+        startDate: ob.project.startDate,
+        endDate: ob.project.endDate,
+      });
+    }
+
+    return items.map((b) => {
+      const base = { ...b };
+      if (!b.vendorEquipmentId) return base;
+      const others = byEquipment[b.vendorEquipmentId]?.filter((o) => o.projectId !== b.projectId) ?? [];
+      const other = others[0];
+      (base as any).equipmentAlreadyBookedFor = other
+        ? { projectTitle: other.projectTitle, startDate: other.startDate, endDate: other.endDate }
+        : null;
+      return base;
+    });
   }
 
   /** Past projects: bookings where user was crew/vendor and project is completed */
@@ -149,9 +214,10 @@ export class BookingsService {
         },
       },
       include: {
-        project: { select: { id: true, title: true, startDate: true, endDate: true, status: true } },
+        project: { select: { id: true, title: true, startDate: true, endDate: true, status: true, locationCity: true, shootLocations: true } },
         requester: { select: { id: true, email: true, companyProfile: { select: { companyName: true } } } },
         projectRole: { select: { id: true, roleName: true } },
+        vendorEquipment: { select: { id: true, name: true } },
       },
       orderBy: { createdAt: 'desc' },
     });

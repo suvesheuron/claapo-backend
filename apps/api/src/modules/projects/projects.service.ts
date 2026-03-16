@@ -48,15 +48,32 @@ export class ProjectsService {
     const [items, total] = await Promise.all([
       this.prisma.project.findMany({
         where,
-        include: { roles: true, _count: { select: { bookings: true } } },
+        include: { roles: true },
         orderBy: { createdAt: 'desc' },
         skip,
         take: limit,
       }),
       this.prisma.project.count({ where }),
     ]);
+    const projectIds = items.map((p) => p.id);
+    const activeCounts =
+      projectIds.length === 0
+        ? []
+        : await this.prisma.bookingRequest.groupBy({
+            by: ['projectId'],
+            where: {
+              projectId: { in: projectIds },
+              status: { in: ['pending', 'accepted', 'locked'] },
+            },
+            _count: { id: true },
+          });
+    const countByProjectId = new Map(activeCounts.map((c) => [c.projectId, c._count.id]));
+    const itemsWithCount = items.map((p) => ({
+      ...p,
+      _count: { bookings: countByProjectId.get(p.id) ?? 0 },
+    }));
     return {
-      items,
+      items: itemsWithCount,
       meta: { total, page, limit, pages: Math.ceil(total / limit) },
     };
   }

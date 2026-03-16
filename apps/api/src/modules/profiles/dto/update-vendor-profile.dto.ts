@@ -8,7 +8,7 @@ export class UpdateVendorProfileDto {
   @IsString()
   companyName?: string;
 
-  @ApiPropertyOptional({ enum: ['equipment', 'lighting', 'transport', 'catering'] })
+  @ApiPropertyOptional({ enum: ['all', 'equipment', 'lighting', 'transport', 'catering'] })
   @IsOptional()
   @IsEnum(VendorType)
   vendorType?: VendorType;

@@ -156,6 +156,9 @@ export class ProfilesService {
       gstNumber: dto.gstNumber,
       website: dto.website,
       instagramUrl: dto.instagramUrl,
+      locationCity: dto.locationCity,
+      locationState: dto.locationState,
+      bio: dto.bio,
     };
     const filtered = Object.fromEntries(Object.entries(data).filter(([, v]) => v !== undefined));
     if (existing) {

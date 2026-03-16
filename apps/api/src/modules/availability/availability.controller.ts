@@ -24,8 +24,10 @@ export class AvailabilityController {
     @Query('month') month: string,
   ) {
     const y = parseInt(year ?? String(new Date().getFullYear()), 10);
-    const m = parseInt(month ?? String(new Date().getMonth()), 10);
-    return this.availabilityService.getMyCalendar(user.id, y, m);
+    const m = parseInt(month ?? String(new Date().getMonth() + 1), 10);
+    // Accept 1-12 (calendar month); service expects 0-indexed
+    const monthIndex = m >= 1 && m <= 12 ? m - 1 : Math.max(0, m);
+    return this.availabilityService.getMyCalendar(user.id, y, monthIndex);
   }
 
   @Put('bulk')

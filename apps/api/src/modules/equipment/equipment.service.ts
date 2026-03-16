@@ -18,6 +18,13 @@ export class EquipmentService {
         availabilities: {
           orderBy: { availableFrom: 'asc' },
         },
+        bookingRequests: {
+          where: { status: { in: ['accepted', 'locked'] } },
+          select: {
+            id: true,
+            project: { select: { title: true, startDate: true, endDate: true } },
+          },
+        },
       },
       orderBy: { name: 'asc' },
     });
