@@ -24,6 +24,7 @@ export class ProjectsService {
         startDate: new Date(dto.startDate),
         endDate: new Date(dto.endDate),
         deliveryDate: dto.deliveryDate ? new Date(dto.deliveryDate) : undefined,
+        shootDates: dto.shootDates?.map((d) => new Date(d)).filter((d) => !isNaN(d.getTime())) ?? [],
         shootLocations: dto.shootLocations?.map((s) => s.trim()).filter(Boolean) ?? [],
         locationCity: dto.locationCity,
         budgetMin: dto.budgetMin,
@@ -137,6 +138,7 @@ export class ProjectsService {
     if (dto.startDate !== undefined) data.startDate = new Date(dto.startDate);
     if (dto.endDate !== undefined) data.endDate = new Date(dto.endDate);
     if (dto.deliveryDate !== undefined) data.deliveryDate = dto.deliveryDate ? new Date(dto.deliveryDate) : null;
+    if (dto.shootDates !== undefined) data.shootDates = dto.shootDates.map((d) => new Date(d)).filter((d) => !isNaN(d.getTime()));
     if (dto.shootLocations !== undefined) data.shootLocations = dto.shootLocations.map((s) => s.trim()).filter(Boolean);
     if (dto.locationCity !== undefined) data.locationCity = dto.locationCity;
     if (dto.budgetMin !== undefined) data.budgetMin = dto.budgetMin;

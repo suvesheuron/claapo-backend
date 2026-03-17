@@ -7,6 +7,7 @@ import { Roles } from '../../common/decorators/roles.decorator';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { AuthUser } from '../auth/auth.service';
 import { CreateBookingRequestDto } from './dto/booking-request.dto';
+import { LockBookingDto } from './dto/lock-booking.dto';
 import { CancelBookingDto } from './dto/cancel-booking.dto';
 
 @ApiTags('bookings')
@@ -75,9 +76,9 @@ export class BookingsController {
   @Patch(':id/lock')
   @UseGuards(RolesGuard)
   @Roles('company')
-  @ApiOperation({ summary: 'Lock confirmed booking' })
-  lock(@CurrentUser() user: AuthUser, @Param('id') id: string) {
-    return this.bookingsService.lock(id, user.id);
+  @ApiOperation({ summary: 'Lock confirmed booking; optional shootDates/shootLocations' })
+  lock(@CurrentUser() user: AuthUser, @Param('id') id: string, @Body() body?: LockBookingDto) {
+    return this.bookingsService.lock(id, user.id, body);
   }
 
   @Patch(':id/cancel')

@@ -41,5 +41,15 @@ export class UpdateVendorProfileDto {
   @ApiPropertyOptional()
   @IsOptional()
   @IsString()
+  address?: string;
+
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsString()
   bio?: string;
+
+  @ApiPropertyOptional({ description: 'About Us section (longer text)' })
+  @IsOptional()
+  @IsString()
+  aboutUs?: string;
 }

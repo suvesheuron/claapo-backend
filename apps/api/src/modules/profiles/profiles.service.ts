@@ -7,6 +7,7 @@ import { UpdateIndividualProfileDto } from './dto/update-individual-profile.dto'
 import { UpdateCompanyProfileDto } from './dto/update-company-profile.dto';
 import { UpdateVendorProfileDto } from './dto/update-vendor-profile.dto';
 import { CreateSubUserDto } from './dto/create-sub-user.dto';
+import { TransferSubUserDto } from './dto/transfer-sub-user.dto';
 
 @Injectable()
 export class ProfilesService {
@@ -88,6 +89,7 @@ export class ProfilesService {
     const data = {
       displayName: dto.displayName,
       bio: dto.bio,
+      aboutMe: dto.aboutMe,
       skills: skillsNormalized,
       genre: dto.genre,
       locationCity: dto.locationCity,
@@ -99,6 +101,11 @@ export class ProfilesService {
       imdbUrl: dto.imdbUrl,
       instagramUrl: dto.instagramUrl,
       isAvailable: dto.isAvailable,
+      panNumber: dto.panNumber,
+      bankAccountName: dto.bankAccountName,
+      bankAccountNumber: dto.bankAccountNumber,
+      ifscCode: dto.ifscCode,
+      bankName: dto.bankName,
     };
     const filtered = Object.fromEntries(Object.entries(data).filter(([, v]) => v !== undefined));
     if (existing) {
@@ -130,6 +137,7 @@ export class ProfilesService {
       locationCity: dto.locationCity,
       locationState: dto.locationState,
       bio: dto.bio,
+      aboutUs: dto.aboutUs,
     };
     const filtered = Object.fromEntries(Object.entries(data).filter(([, v]) => v !== undefined));
     if (existing) {
@@ -156,9 +164,11 @@ export class ProfilesService {
       gstNumber: dto.gstNumber,
       website: dto.website,
       instagramUrl: dto.instagramUrl,
+      address: dto.address,
       locationCity: dto.locationCity,
       locationState: dto.locationState,
       bio: dto.bio,
+      aboutUs: dto.aboutUs,
     };
     const filtered = Object.fromEntries(Object.entries(data).filter(([, v]) => v !== undefined));
     if (existing) {
@@ -434,5 +444,56 @@ export class ProfilesService {
       data: { deletedAt: new Date(), isActive: false },
     });
     return { message: 'Sub-user removed' };
+  }
+
+  async transferSubUser(userId: string, role: UserRole, subUserId: string, dto: TransferSubUserDto) {
+    if (role !== UserRole.company && role !== UserRole.vendor) {
+      throw new ForbiddenException('Only company/vendor accounts support sub-users');
+    }
+
+    const me = await this.prisma.user.findFirst({
+      where: { id: userId, deletedAt: null },
+      select: { id: true, role: true, mainUserId: true },
+    });
+    if (!me || me.mainUserId) {
+      throw new ForbiddenException('Only Main ID can transfer sub-users');
+    }
+
+    const subUser = await this.prisma.user.findFirst({
+      where: {
+        id: subUserId,
+        role: me.role,
+        mainUserId: me.id,
+        deletedAt: null,
+      },
+      select: { id: true },
+    });
+    if (!subUser) {
+      throw new NotFoundException('Sub-user not found under your account');
+    }
+
+    if (dto.newMainUserId === me.id) {
+      throw new BadRequestException('Sub-user is already assigned to this main user');
+    }
+
+    const newMain = await this.prisma.user.findFirst({
+      where: {
+        id: dto.newMainUserId,
+        role: me.role,
+        mainUserId: null,
+        deletedAt: null,
+      },
+      select: { id: true },
+    });
+    if (!newMain) {
+      throw new NotFoundException('Target main user not found or not eligible');
+    }
+
+    await this.prisma.user.update({
+      where: { id: subUserId },
+      data: { mainUserId: newMain.id },
+    });
+
+    return { message: 'Sub-user transferred', subUserId, newMainUserId: newMain.id };
   }
 }

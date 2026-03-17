@@ -13,6 +13,11 @@ export class UpdateIndividualProfileDto {
   @IsString()
   bio?: string;
 
+  @ApiPropertyOptional({ description: 'About Me section (longer text)' })
+  @IsOptional()
+  @IsString()
+  aboutMe?: string;
+
   @ApiPropertyOptional({ example: ['DOP', 'Director'] })
   @IsOptional()
   @IsArray()
@@ -77,4 +82,29 @@ export class UpdateIndividualProfileDto {
   @Type(() => Boolean)
   @IsBoolean()
   isAvailable?: boolean;
+
+  @ApiPropertyOptional({ description: 'PAN number (for invoice details)' })
+  @IsOptional()
+  @IsString()
+  panNumber?: string;
+
+  @ApiPropertyOptional({ description: 'Bank account name (for invoice details)' })
+  @IsOptional()
+  @IsString()
+  bankAccountName?: string;
+
+  @ApiPropertyOptional({ description: 'Bank account number (for invoice details)' })
+  @IsOptional()
+  @IsString()
+  bankAccountNumber?: string;
+
+  @ApiPropertyOptional({ description: 'IFSC code (for invoice details)' })
+  @IsOptional()
+  @IsString()
+  ifscCode?: string;
+
+  @ApiPropertyOptional({ description: 'Bank name (for invoice details)' })
+  @IsOptional()
+  @IsString()
+  bankName?: string;
 }

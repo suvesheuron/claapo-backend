@@ -9,6 +9,11 @@ export class SearchCrewQueryDto {
   @IsString()
   skill?: string;
 
+  @ApiPropertyOptional({ description: 'Partial match on display name or email' })
+  @IsOptional()
+  @IsString()
+  name?: string;
+
   @ApiPropertyOptional()
   @IsOptional()
   @IsString()

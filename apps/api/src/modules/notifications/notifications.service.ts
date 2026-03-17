@@ -19,22 +19,89 @@ export class NotificationsService {
       this.prisma.notification.count({ where: { userId } }),
       this.prisma.notification.count({ where: { userId, readAt: null } }),
     ]);
-    const bookingRequestIds = rawItems
-      .filter((n) => n.type === 'booking_request' && n.data && typeof (n.data as Record<string, unknown>).bookingId === 'string')
+    const bookingIds = rawItems
+      .filter((n) => n.data && typeof (n.data as Record<string, unknown>).bookingId === 'string')
       .map((n) => (n.data as Record<string, unknown>).bookingId as string);
-    const bookingStatuses = bookingRequestIds.length
+
+    const bookingDetails = bookingIds.length
       ? await this.prisma.bookingRequest.findMany({
-          where: { id: { in: bookingRequestIds } },
-          select: { id: true, status: true },
+          where: { id: { in: bookingIds } },
+          select: {
+            id: true,
+            status: true,
+            project: {
+              select: {
+                id: true,
+                title: true,
+                startDate: true,
+                endDate: true,
+                shootDates: true,
+              },
+            },
+            requester: {
+              select: {
+                id: true,
+                email: true,
+                companyProfile: { select: { companyName: true } },
+              },
+            },
+            target: {
+              select: {
+                id: true,
+                email: true,
+                role: true,
+                individualProfile: { select: { displayName: true, bio: true } },
+                vendorProfile: { select: { companyName: true, aboutUs: true } },
+              },
+            },
+            projectRole: {
+              select: { roleName: true },
+            },
+          },
         })
       : [];
-    const statusByBookingId = new Map(bookingStatuses.map((b) => [b.id, b.status]));
+
+    const bookingById = new Map(bookingDetails.map((b) => [b.id, b]));
+
     const items = rawItems.map((n) => {
-      if (n.type !== 'booking_request' || !n.data) return n;
+      if (!n.data) return n;
       const data = n.data as Record<string, unknown>;
       const bookingId = data.bookingId as string | undefined;
-      const status = bookingId ? statusByBookingId.get(bookingId) : undefined;
-      return { ...n, data: { ...data, bookingStatus: status ?? null } };
+      if (!bookingId) return n;
+      const booking = bookingById.get(bookingId);
+      if (!booking) return n;
+
+      const project: any = booking.project;
+      const requester: any = booking.requester;
+      const target: any = booking.target;
+      const role: any = booking.projectRole;
+
+      // Derive a sensible date range for the project. Prefer explicit
+      // start/end dates; if missing, fall back to shootDates.
+      let projectStart: unknown = project?.startDate ?? null;
+      let projectEnd: unknown = project?.endDate ?? null;
+      if ((!projectStart || !projectEnd) && Array.isArray(project?.shootDates) && project.shootDates.length > 0) {
+        const sorted = [...project.shootDates].sort((a: Date, b: Date) => a.getTime() - b.getTime());
+        projectStart = sorted[0] ?? projectStart;
+        projectEnd = sorted[sorted.length - 1] ?? projectEnd;
+      }
+
+      const enrichedData: Record<string, unknown> = {
+        ...data,
+        bookingStatus: booking.status ?? null,
+        projectTitle: (data.projectTitle as string | undefined) ?? project?.title ?? null,
+        projectStartDate: projectStart ?? null,
+        projectEndDate: projectEnd ?? null,
+        requesterCompanyName: requester?.companyProfile?.companyName ?? null,
+        requesterEmail: requester?.email ?? null,
+        targetUserId: target?.id ?? null,
+        targetRole: target?.role ?? null,
+        targetDisplayName: target?.individualProfile?.displayName ?? target?.email ?? null,
+        targetCompanyName: target?.vendorProfile?.companyName ?? null,
+        roleName: role?.roleName ?? null,
+      };
+
+      return { ...n, data: enrichedData as Prisma.InputJsonValue };
     });
     return {
       items,

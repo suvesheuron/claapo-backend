@@ -29,6 +29,12 @@ export class CreateProjectDto {
   @IsDateString()
   deliveryDate?: string;
 
+  @ApiPropertyOptional({ type: [String], example: ['2024-12-15', '2024-12-18', '2024-12-22'] })
+  @IsOptional()
+  @IsArray()
+  @IsDateString({}, { each: true })
+  shootDates?: string[];
+
   @ApiPropertyOptional({ type: [String], example: ['Mumbai', 'Lonavala'] })
   @IsOptional()
   @IsArray()

@@ -6,6 +6,7 @@ const ONGOING_BOOKING_STATUSES = ['pending', 'accepted', 'locked', 'cancel_reque
 import { NotificationsService } from '../notifications/notifications.service';
 import { ChatService } from '../chat/chat.service';
 import { CreateBookingRequestDto } from './dto/booking-request.dto';
+import { LockBookingDto } from './dto/lock-booking.dto';
 
 @Injectable()
 export class BookingsService {
@@ -130,7 +131,7 @@ export class BookingsService {
           : {}),
       },
       include: {
-        project: { select: { id: true, title: true, startDate: true, endDate: true, status: true, locationCity: true, shootLocations: true } },
+        project: { select: { id: true, title: true, startDate: true, endDate: true, status: true, locationCity: true, shootDates: true, shootLocations: true } },
         requester: { select: { id: true, email: true, companyProfile: true } },
         projectRole: true,
         vendorEquipment: { select: { id: true, name: true } },
@@ -214,7 +215,7 @@ export class BookingsService {
         },
       },
       include: {
-        project: { select: { id: true, title: true, startDate: true, endDate: true, status: true, locationCity: true, shootLocations: true } },
+        project: { select: { id: true, title: true, startDate: true, endDate: true, status: true, locationCity: true, shootDates: true, shootLocations: true } },
         requester: { select: { id: true, email: true, companyProfile: { select: { companyName: true } } } },
         projectRole: { select: { id: true, roleName: true } },
         vendorEquipment: { select: { id: true, name: true } },
@@ -297,12 +298,23 @@ export class BookingsService {
       await this.prisma.bookingRequest.update({ where: { id: bookingId }, data: { status: 'expired' } });
       throw new BadRequestException('Request has expired');
     }
-    const start = new Date(booking.project.startDate);
-    const end = new Date(booking.project.endDate);
-    const startUtc = Date.UTC(start.getUTCFullYear(), start.getUTCMonth(), start.getUTCDate());
-    const endUtc = Date.UTC(end.getUTCFullYear(), end.getUTCMonth(), end.getUTCDate());
-    for (let t = startUtc; t <= endUtc; t += 24 * 60 * 60 * 1000) {
-      const dateKey = new Date(t);
+    const project = booking.project as { startDate: Date; endDate: Date; shootDates?: Date[] };
+    const datesToBlock: Date[] =
+      project.shootDates && project.shootDates.length > 0
+        ? project.shootDates.map((d) => {
+            const x = new Date(d);
+            return new Date(Date.UTC(x.getUTCFullYear(), x.getUTCMonth(), x.getUTCDate()));
+          })
+        : (() => {
+            const start = new Date(project.startDate);
+            const end = new Date(project.endDate);
+            const startUtc = Date.UTC(start.getUTCFullYear(), start.getUTCMonth(), start.getUTCDate());
+            const endUtc = Date.UTC(end.getUTCFullYear(), end.getUTCMonth(), end.getUTCDate());
+            const out: Date[] = [];
+            for (let t = startUtc; t <= endUtc; t += 24 * 60 * 60 * 1000) out.push(new Date(t));
+            return out;
+          })();
+    for (const dateKey of datesToBlock) {
       await this.prisma.availabilitySlot.upsert({
         where: { userId_date: { userId: booking.targetUserId, date: dateKey } },
         create: { userId: booking.targetUserId, date: dateKey, status: 'booked' },
@@ -358,7 +370,7 @@ export class BookingsService {
     return updated;
   }
 
-  async lock(bookingId: string, companyUserId: string) {
+  async lock(bookingId: string, companyUserId: string, dto?: LockBookingDto) {
     const ctx = await this.getCompanyAccountContext(companyUserId);
     const booking = await this.prisma.bookingRequest.findUnique({
       where: { id: bookingId },
@@ -373,9 +385,23 @@ export class BookingsService {
       if (!assigned) throw new ForbiddenException('This project is not assigned to your Sub-User ID');
     }
     if (booking.status !== 'accepted') throw new BadRequestException('Only accepted bookings can be locked');
+    const project = booking.project as { shootDates: Date[]; shootLocations: string[] };
+    const shootDates =
+      dto?.shootDates?.length
+        ? dto.shootDates.map((d) => new Date(d)).filter((d) => !isNaN(d.getTime()))
+        : project.shootDates ?? [];
+    const shootLocations =
+      dto?.shootLocations?.length
+        ? dto.shootLocations.map((s) => s.trim()).filter(Boolean)
+        : project.shootLocations ?? [];
     return this.prisma.bookingRequest.update({
       where: { id: bookingId },
-      data: { status: 'locked', lockedAt: new Date() },
+      data: {
+        status: 'locked',
+        lockedAt: new Date(),
+        shootDates,
+        shootLocations,
+      },
       include: { project: true, target: { select: { id: true, email: true } } },
     });
   }
@@ -430,13 +456,21 @@ export class BookingsService {
       throw new BadRequestException('Booking is not in cancel_requested state');
     }
     if (accept) {
-      // Free availability slots
-      const start = new Date(booking.project.startDate);
-      const end = new Date(booking.project.endDate);
-      const startUtc = Date.UTC(start.getUTCFullYear(), start.getUTCMonth(), start.getUTCDate());
-      const endUtc = Date.UTC(end.getUTCFullYear(), end.getUTCMonth(), end.getUTCDate());
-      for (let t = startUtc; t <= endUtc; t += 24 * 60 * 60 * 1000) {
-        const dateKey = new Date(t);
+      // Free availability slots (same date set as in accept)
+      const project = booking.project as { startDate: Date; endDate: Date; shootDates?: Date[] };
+      const datesToFree: Date[] =
+        project.shootDates && project.shootDates.length > 0
+          ? project.shootDates.map((d) => new Date(Date.UTC(new Date(d).getUTCFullYear(), new Date(d).getUTCMonth(), new Date(d).getUTCDate())))
+          : (() => {
+              const start = new Date(project.startDate);
+              const end = new Date(project.endDate);
+              const startUtc = Date.UTC(start.getUTCFullYear(), start.getUTCMonth(), start.getUTCDate());
+              const endUtc = Date.UTC(end.getUTCFullYear(), end.getUTCMonth(), end.getUTCDate());
+              const out: Date[] = [];
+              for (let t = startUtc; t <= endUtc; t += 24 * 60 * 60 * 1000) out.push(new Date(t));
+              return out;
+            })();
+      for (const dateKey of datesToFree) {
         await this.prisma.availabilitySlot.updateMany({
           where: { userId: booking.targetUserId, date: dateKey },
           data: { status: 'available' },
@@ -501,12 +535,20 @@ export class BookingsService {
       throw new BadRequestException('Booking cannot be cancelled');
     }
     if (booking.status === 'accepted') {
-      const start = new Date(booking.project.startDate);
-      const end = new Date(booking.project.endDate);
-      const startUtc = Date.UTC(start.getUTCFullYear(), start.getUTCMonth(), start.getUTCDate());
-      const endUtc = Date.UTC(end.getUTCFullYear(), end.getUTCMonth(), end.getUTCDate());
-      for (let t = startUtc; t <= endUtc; t += 24 * 60 * 60 * 1000) {
-        const dateKey = new Date(t);
+      const project = booking.project as { startDate: Date; endDate: Date; shootDates?: Date[] };
+      const datesToFree: Date[] =
+        project.shootDates && project.shootDates.length > 0
+          ? project.shootDates.map((d) => new Date(Date.UTC(new Date(d).getUTCFullYear(), new Date(d).getUTCMonth(), new Date(d).getUTCDate())))
+          : (() => {
+              const start = new Date(project.startDate);
+              const end = new Date(project.endDate);
+              const startUtc = Date.UTC(start.getUTCFullYear(), start.getUTCMonth(), start.getUTCDate());
+              const endUtc = Date.UTC(end.getUTCFullYear(), end.getUTCMonth(), end.getUTCDate());
+              const out: Date[] = [];
+              for (let t = startUtc; t <= endUtc; t += 24 * 60 * 60 * 1000) out.push(new Date(t));
+              return out;
+            })();
+      for (const dateKey of datesToFree) {
         await this.prisma.availabilitySlot.updateMany({
           where: { userId: booking.targetUserId, date: dateKey },
           data: { status: 'available' },

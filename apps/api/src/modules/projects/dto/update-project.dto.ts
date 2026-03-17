@@ -33,6 +33,12 @@ export class UpdateProjectDto {
   @IsDateString()
   deliveryDate?: string;
 
+  @ApiPropertyOptional({ type: [String], description: 'Specific shoot dates (ISO date strings)' })
+  @IsOptional()
+  @IsArray()
+  @IsDateString({}, { each: true })
+  shootDates?: string[];
+
   @ApiPropertyOptional({ type: [String] })
   @IsOptional()
   @IsArray()

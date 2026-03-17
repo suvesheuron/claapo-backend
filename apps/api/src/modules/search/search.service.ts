@@ -22,25 +22,38 @@ export class SearchService {
     const startDate = query.startDate ? new Date(query.startDate) : null;
     const endDate = query.endDate ? new Date(query.endDate) : null;
 
-    const where: Record<string, unknown> = {
+    const where: any = {
       user: { deletedAt: null, isActive: true },
+      AND: [] as any[],
     };
     if (query.city) {
-      (where as any).locationCity = { equals: query.city, mode: 'insensitive' };
+      where.AND.push({ locationCity: { equals: query.city, mode: 'insensitive' } });
     }
     if (query.state) {
-      (where as any).locationState = { equals: query.state, mode: 'insensitive' };
+      where.AND.push({ locationState: { equals: query.state, mode: 'insensitive' } });
     }
     if (skillsFilter?.length) {
-      (where as any).skills = { hasSome: skillsFilter };
+      where.AND.push({ skills: { hasSome: skillsFilter } });
     }
     if (query.rateMin != null || query.rateMax != null) {
-      (where as any).AND = (where as any).AND ?? [];
-      if (query.rateMin != null) (where as any).AND.push({ OR: [{ dailyRateMax: { gte: query.rateMin } }, { dailyRateMax: null }] });
-      if (query.rateMax != null) (where as any).AND.push({ OR: [{ dailyRateMin: { lte: query.rateMax } }, { dailyRateMin: null }] });
+      if (query.rateMin != null) {
+        where.AND.push({ OR: [{ dailyRateMax: { gte: query.rateMin } }, { dailyRateMax: null }] });
+      }
+      if (query.rateMax != null) {
+        where.AND.push({ OR: [{ dailyRateMin: { lte: query.rateMax } }, { dailyRateMin: null }] });
+      }
     }
     if (query.availableOnly === true) {
-      (where as any).isAvailable = true;
+      where.AND.push({ isAvailable: true });
+    }
+    if (query.name?.trim()) {
+      const name = query.name.trim();
+      where.AND.push({
+        OR: [
+          { displayName: { contains: name, mode: 'insensitive' } },
+          { user: { email: { contains: name, mode: 'insensitive' } } },
+        ],
+      });
     }
 
     const takeSize = startDate && endDate ? limit * 3 : limit + 1;

@@ -6,7 +6,12 @@ import Razorpay from 'razorpay';
 import crypto from 'crypto';
 import { CreateInvoiceDto } from './dto/create-invoice.dto';
 import { UpdateInvoiceDto } from './dto/update-invoice.dto';
+import { AddInvoiceAttachmentDto } from './dto/add-invoice-attachment.dto';
 import { NotificationsService } from '../notifications/notifications.service';
+import { StorageService } from '../storage/storage.service';
+
+const INVOICE_ATTACHMENTS_PREFIX = 'invoices/';
+const MAX_ATTACHMENTS_PER_INVOICE = 10;
 
 @Injectable()
 export class InvoicesService {
@@ -16,6 +21,7 @@ export class InvoicesService {
     private readonly prisma: PrismaService,
     private readonly config: ConfigService,
     private readonly notifications: NotificationsService,
+    private readonly storage: StorageService,
   ) {
     const keyId = this.config.get<string>('razorpay.keyId');
     const keySecret = this.config.get<string>('razorpay.keySecret');
@@ -158,28 +164,52 @@ export class InvoicesService {
       where: { id: invoiceId },
       include: {
         lineItems: true,
+        attachments: true,
         project: { select: { id: true, title: true } },
         issuer: {
           select: {
-            id: true, email: true,
-            individualProfile: { select: { displayName: true, locationCity: true, skills: true } },
-            vendorProfile: { select: { companyName: true } },
-            companyProfile: { select: { companyName: true, locationCity: true } },
+            id: true,
+            email: true,
+            individualProfile: {
+              select: {
+                displayName: true,
+                locationCity: true,
+                skills: true,
+                panNumber: true,
+                bankAccountName: true,
+                bankAccountNumber: true,
+                ifscCode: true,
+                bankName: true,
+              },
+            },
+            vendorProfile: { select: { companyName: true, gstNumber: true, address: true } },
+            companyProfile: { select: { companyName: true, locationCity: true, gstNumber: true, address: true } },
           },
         },
         recipient: {
           select: {
-            id: true, email: true,
-            individualProfile: { select: { displayName: true, locationCity: true } },
-            vendorProfile: { select: { companyName: true } },
-            companyProfile: { select: { companyName: true, locationCity: true } },
+            id: true,
+            email: true,
+            individualProfile: {
+              select: {
+                displayName: true,
+                locationCity: true,
+                panNumber: true,
+                bankAccountName: true,
+                bankAccountNumber: true,
+                ifscCode: true,
+                bankName: true,
+              },
+            },
+            vendorProfile: { select: { companyName: true, gstNumber: true, address: true } },
+            companyProfile: { select: { companyName: true, locationCity: true, gstNumber: true, address: true } },
           },
         },
       },
     });
     if (!invoice) throw new NotFoundException('Invoice not found');
     await this.ensureInvoiceAccess(invoice.issuerUserId, invoice.recipientUserId, invoice.projectId, userId);
-    return this.formatInvoiceDetail(invoice);
+    return await this.formatInvoiceDetail(invoice);
   }
 
   async markAsPaid(invoiceId: string, userId: string) {
@@ -196,24 +226,64 @@ export class InvoicesService {
     });
   }
 
-  private formatInvoiceDetail(invoice: {
-    id: string; invoiceNumber: string; status: string; createdAt: Date; dueDate: Date | null;
-    paidAt: Date | null; currency: string; amount: number; gstAmount: number; totalAmount: number;
-    issuerUserId: string; recipientUserId: string; projectId: string;
+  private async formatInvoiceDetail(invoice: {
+    id: string;
+    invoiceNumber: string;
+    status: string;
+    createdAt: Date;
+    dueDate: Date | null;
+    paidAt: Date | null;
+    currency: string;
+    amount: number;
+    gstAmount: number;
+    totalAmount: number;
+    issuerUserId: string;
+    recipientUserId: string;
+    projectId: string;
     project: { id: string; title: string } | null;
     issuer: {
-      id: string; email: string;
-      individualProfile?: { displayName: string; locationCity?: string | null; skills: string[] } | null;
-      vendorProfile?: { companyName: string } | null;
-      companyProfile?: { companyName: string; locationCity?: string | null } | null;
+      id: string;
+      email: string;
+      individualProfile?: {
+        displayName: string;
+        locationCity?: string | null;
+        skills?: string[];
+        panNumber?: string | null;
+        bankAccountName?: string | null;
+        bankAccountNumber?: string | null;
+        ifscCode?: string | null;
+        bankName?: string | null;
+      } | null;
+      vendorProfile?: { companyName: string; gstNumber?: string | null; address?: string | null } | null;
+      companyProfile?: {
+        companyName: string;
+        locationCity?: string | null;
+        gstNumber?: string | null;
+        address?: string | null;
+      } | null;
     };
     recipient: {
-      id: string; email: string;
-      individualProfile?: { displayName: string; locationCity?: string | null } | null;
-      vendorProfile?: { companyName: string } | null;
-      companyProfile?: { companyName: string; locationCity?: string | null } | null;
+      id: string;
+      email: string;
+      individualProfile?: {
+        displayName: string;
+        locationCity?: string | null;
+        panNumber?: string | null;
+        bankAccountName?: string | null;
+        bankAccountNumber?: string | null;
+        ifscCode?: string | null;
+        bankName?: string | null;
+      } | null;
+      vendorProfile?: { companyName: string; gstNumber?: string | null; address?: string | null } | null;
+      companyProfile?: {
+        companyName: string;
+        locationCity?: string | null;
+        gstNumber?: string | null;
+        address?: string | null;
+      } | null;
     };
     lineItems: { description: string; quantity: unknown; unitPrice: number; amount: number }[];
+    attachments?: { id: string; fileKey: string; fileName: string; mimeType: string; size: number }[];
   }) {
     const getName = (u: {
       email: string;
@@ -225,21 +295,93 @@ export class InvoicesService {
       individualProfile?: { locationCity?: string | null } | null;
       companyProfile?: { locationCity?: string | null } | null;
     }) => u.individualProfile?.locationCity ?? u.companyProfile?.locationCity ?? null;
+    const issuerInd = invoice.issuer.individualProfile;
+    const recipientInd = invoice.recipient.individualProfile;
+    const issuerCompany = invoice.issuer.companyProfile;
+    const issuerVendor = invoice.issuer.vendorProfile;
+    const recipientCompany = invoice.recipient.companyProfile;
+    const recipientVendor = invoice.recipient.vendorProfile;
+    const issuerDetails = issuerInd
+      ? {
+          name: issuerInd.displayName,
+          gstNumber: null as string | null,
+          address: null as string | null,
+          panNumber: issuerInd.panNumber ?? null,
+          bankAccountName: issuerInd.bankAccountName ?? null,
+          bankAccountNumber: issuerInd.bankAccountNumber ?? null,
+          ifscCode: issuerInd.ifscCode ?? null,
+          bankName: issuerInd.bankName ?? null,
+        }
+      : {
+          name: issuerCompany?.companyName ?? issuerVendor?.companyName ?? invoice.issuer.email,
+          gstNumber: issuerCompany?.gstNumber ?? issuerVendor?.gstNumber ?? null,
+          address: issuerCompany?.address ?? issuerVendor?.address ?? null,
+          panNumber: null as string | null,
+          bankAccountName: null as string | null,
+          bankAccountNumber: null as string | null,
+          ifscCode: null as string | null,
+          bankName: null as string | null,
+        };
+    const recipientDetails = recipientInd
+      ? {
+          name: recipientInd.displayName,
+          gstNumber: null as string | null,
+          address: null as string | null,
+          panNumber: recipientInd.panNumber ?? null,
+          bankAccountName: recipientInd.bankAccountName ?? null,
+          bankAccountNumber: recipientInd.bankAccountNumber ?? null,
+          ifscCode: recipientInd.ifscCode ?? null,
+          bankName: recipientInd.bankName ?? null,
+        }
+      : {
+          name: recipientCompany?.companyName ?? recipientVendor?.companyName ?? invoice.recipient.email,
+          gstNumber: recipientCompany?.gstNumber ?? recipientVendor?.gstNumber ?? null,
+          address: recipientCompany?.address ?? recipientVendor?.address ?? null,
+          panNumber: null as string | null,
+          bankAccountName: null as string | null,
+          bankAccountNumber: null as string | null,
+          ifscCode: null as string | null,
+          bankName: null as string | null,
+        };
     const taxRatePct = invoice.amount > 0 ? Math.round((invoice.gstAmount / invoice.amount) * 100) : 18;
+    const attachmentsWithUrls = (invoice.attachments ?? []).map(async (a) => ({
+      id: a.id,
+      fileName: a.fileName,
+      mimeType: a.mimeType,
+      size: a.size,
+      downloadUrl: await this.storage.getSignedUrl(a.fileKey),
+    }));
+    const attachments = await Promise.all(attachmentsWithUrls);
     return {
-      id: invoice.id, invoiceNumber: invoice.invoiceNumber, status: invoice.status,
-      issuedAt: invoice.createdAt.toISOString(), dueDate: invoice.dueDate?.toISOString() ?? null,
-      paidAt: invoice.paidAt?.toISOString() ?? null, currency: invoice.currency,
-      projectTitle: invoice.project?.title ?? null, projectId: invoice.projectId,
+      id: invoice.id,
+      invoiceNumber: invoice.invoiceNumber,
+      status: invoice.status,
+      issuedAt: invoice.createdAt.toISOString(),
+      dueDate: invoice.dueDate?.toISOString() ?? null,
+      paidAt: invoice.paidAt?.toISOString() ?? null,
+      currency: invoice.currency,
+      projectTitle: invoice.project?.title ?? null,
+      projectId: invoice.projectId,
       fromName: getName(invoice.issuer),
-      fromRole: (invoice.issuer.individualProfile as { skills?: string[] } | null)?.skills?.[0] ?? null,
-      fromCity: getCity(invoice.issuer), toName: getName(invoice.recipient), toCity: getCity(invoice.recipient),
+      fromRole: issuerInd?.skills?.[0] ?? null,
+      fromCity: getCity(invoice.issuer),
+      toName: getName(invoice.recipient),
+      toCity: getCity(invoice.recipient),
+      issuerDetails,
+      recipientDetails,
       lineItems: invoice.lineItems.map((li) => ({
-        description: li.description, quantity: Number(li.quantity), unitAmountPaise: li.unitPrice,
+        description: li.description,
+        quantity: Number(li.quantity),
+        unitAmountPaise: li.unitPrice,
       })),
-      subtotalPaise: invoice.amount, taxRatePct, taxAmountPaise: invoice.gstAmount,
-      totalPaise: invoice.totalAmount, notes: null,
-      issuerId: invoice.issuerUserId, recipientId: invoice.recipientUserId,
+      subtotalPaise: invoice.amount,
+      taxRatePct,
+      taxAmountPaise: invoice.gstAmount,
+      totalPaise: invoice.totalAmount,
+      notes: null,
+      issuerId: invoice.issuerUserId,
+      recipientId: invoice.recipientUserId,
+      attachments,
     };
   }
 
@@ -354,6 +496,108 @@ export class InvoicesService {
       return { message: 'PDF not yet generated. It will be available after the invoice is sent.', pdfUrl: null };
     }
     return { pdfKey: invoice.pdfKey, message: 'Use storage service to get presigned URL for this key' };
+  }
+
+  async getAttachmentUploadUrl(invoiceId: string, userId: string, role: UserRole, contentType?: string) {
+    if (role !== 'individual' && role !== 'vendor') throw new ForbiddenException('Only issuer can add attachments');
+    const vendorCtx = role === UserRole.vendor ? await this.getVendorAccountContext(userId) : null;
+    const issuerAccountUserId = vendorCtx ? vendorCtx.accountOwnerId : userId;
+    const invoice = await this.prisma.invoice.findUnique({
+      where: { id: invoiceId },
+      include: { _count: { select: { attachments: true } } },
+    });
+    if (!invoice) throw new NotFoundException('Invoice not found');
+    if (invoice.issuerUserId !== issuerAccountUserId) throw new ForbiddenException('Not your invoice');
+    if (vendorCtx && !vendorCtx.isMainUser) {
+      await this.ensureProjectAssignedToSubUser(vendorCtx.accountOwnerId, userId, invoice.projectId);
+    }
+    if (invoice.status !== 'draft' && invoice.status !== 'sent') {
+      throw new BadRequestException('Attachments can only be added to draft or sent invoices');
+    }
+    if (invoice._count.attachments >= MAX_ATTACHMENTS_PER_INVOICE) {
+      throw new BadRequestException(`Maximum ${MAX_ATTACHMENTS_PER_INVOICE} attachments per invoice`);
+    }
+    if (!this.storage.isConfigured()) throw new BadRequestException('File storage is not configured');
+    const key = `${INVOICE_ATTACHMENTS_PREFIX}${invoiceId}/${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+    const { uploadUrl, key: finalKey } = await this.storage.getPresignedPutUrl(key, contentType);
+    return { uploadUrl, key: finalKey };
+  }
+
+  async addAttachment(invoiceId: string, userId: string, role: UserRole, dto: AddInvoiceAttachmentDto) {
+    if (role !== 'individual' && role !== 'vendor') throw new ForbiddenException('Only issuer can add attachments');
+    const vendorCtx = role === UserRole.vendor ? await this.getVendorAccountContext(userId) : null;
+    const issuerAccountUserId = vendorCtx ? vendorCtx.accountOwnerId : userId;
+    const invoice = await this.prisma.invoice.findUnique({
+      where: { id: invoiceId },
+      include: { _count: { select: { attachments: true } } },
+    });
+    if (!invoice) throw new NotFoundException('Invoice not found');
+    if (invoice.issuerUserId !== issuerAccountUserId) throw new ForbiddenException('Not your invoice');
+    if (vendorCtx && !vendorCtx.isMainUser) {
+      await this.ensureProjectAssignedToSubUser(vendorCtx.accountOwnerId, userId, invoice.projectId);
+    }
+    if (invoice.status !== 'draft' && invoice.status !== 'sent') {
+      throw new BadRequestException('Attachments can only be added to draft or sent invoices');
+    }
+    if (invoice._count.attachments >= MAX_ATTACHMENTS_PER_INVOICE) {
+      throw new BadRequestException(`Maximum ${MAX_ATTACHMENTS_PER_INVOICE} attachments per invoice`);
+    }
+    if (!dto.fileKey.startsWith(INVOICE_ATTACHMENTS_PREFIX + invoiceId + '/')) {
+      throw new BadRequestException('Invalid file key for this invoice');
+    }
+    const attachment = await this.prisma.invoiceAttachment.create({
+      data: {
+        invoiceId,
+        fileKey: dto.fileKey,
+        fileName: dto.fileName,
+        mimeType: dto.mimeType,
+        size: dto.size,
+      },
+    });
+    return attachment;
+  }
+
+  async listAttachments(invoiceId: string, userId: string) {
+    const invoice = await this.prisma.invoice.findUnique({
+      where: { id: invoiceId },
+      include: { attachments: true },
+    });
+    if (!invoice) throw new NotFoundException('Invoice not found');
+    await this.ensureInvoiceAccess(invoice.issuerUserId, invoice.recipientUserId, invoice.projectId, userId);
+    const withUrls = await Promise.all(
+      invoice.attachments.map(async (a) => ({
+        id: a.id,
+        fileName: a.fileName,
+        mimeType: a.mimeType,
+        size: a.size,
+        createdAt: a.createdAt.toISOString(),
+        downloadUrl: await this.storage.getSignedUrl(a.fileKey),
+      })),
+    );
+    return { attachments: withUrls };
+  }
+
+  async deleteAttachment(attachmentId: string, userId: string, role: UserRole) {
+    const attachment = await this.prisma.invoiceAttachment.findUnique({
+      where: { id: attachmentId },
+      include: { invoice: true },
+    });
+    if (!attachment) throw new NotFoundException('Attachment not found');
+    if (attachment.invoice.status === 'paid') {
+      throw new BadRequestException('Cannot delete attachments from a paid invoice');
+    }
+    if (role !== 'individual' && role !== 'vendor') throw new ForbiddenException('Only issuer can delete attachments');
+    const vendorCtx = role === UserRole.vendor ? await this.getVendorAccountContext(userId) : null;
+    const issuerAccountUserId = vendorCtx ? vendorCtx.accountOwnerId : userId;
+    if (attachment.invoice.issuerUserId !== issuerAccountUserId) throw new ForbiddenException('Not your invoice');
+    if (vendorCtx && !vendorCtx.isMainUser) {
+      await this.ensureProjectAssignedToSubUser(vendorCtx.accountOwnerId, userId, attachment.invoice.projectId);
+    }
+    await this.prisma.invoiceAttachment.delete({ where: { id: attachmentId } });
+    if (this.storage.isConfigured()) {
+      await this.storage.deleteObject(attachment.fileKey).catch(() => {});
+    }
+    return { deleted: true };
   }
 
   async initiatePayment(invoiceId: string, userId: string, role: UserRole) {

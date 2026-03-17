@@ -51,4 +51,9 @@ export class UpdateCompanyProfileDto {
   @IsOptional()
   @IsString()
   bio?: string;
+
+  @ApiPropertyOptional({ description: 'About Us section (longer text)' })
+  @IsOptional()
+  @IsString()
+  aboutUs?: string;
 }

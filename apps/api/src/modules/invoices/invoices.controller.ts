@@ -1,4 +1,4 @@
-import { Controller, Get, Post, Patch, Body, Param, Query, UseGuards } from '@nestjs/common';
+import { Controller, Get, Post, Patch, Delete, Body, Param, Query, UseGuards } from '@nestjs/common';
 import { ApiTags, ApiOperation, ApiBearerAuth } from '@nestjs/swagger';
 import { InvoicesService } from './invoices.service';
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
@@ -8,6 +8,7 @@ import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { AuthUser } from '../auth/auth.service';
 import { CreateInvoiceDto } from './dto/create-invoice.dto';
 import { UpdateInvoiceDto } from './dto/update-invoice.dto';
+import { AddInvoiceAttachmentDto } from './dto/add-invoice-attachment.dto';
 
 @ApiTags('invoices')
 @Controller('invoices')
@@ -30,8 +31,46 @@ export class InvoicesController {
     return this.invoicesService.list(user.id, parseInt(page ?? '1', 10), parseInt(limit ?? '20', 10));
   }
 
+  @Get(':id/attachments/upload-url')
+  @UseGuards(RolesGuard)
+  @Roles('individual', 'vendor')
+  @ApiOperation({ summary: 'Get presigned URL to upload an attachment' })
+  getAttachmentUploadUrl(
+    @CurrentUser() user: AuthUser,
+    @Param('id') id: string,
+    @Query('contentType') contentType?: string,
+  ) {
+    return this.invoicesService.getAttachmentUploadUrl(id, user.id, user.role, contentType);
+  }
+
+  @Get(':id/attachments')
+  @ApiOperation({ summary: 'List invoice attachments with download URLs' })
+  listAttachments(@CurrentUser() user: AuthUser, @Param('id') id: string) {
+    return this.invoicesService.listAttachments(id, user.id);
+  }
+
+  @Post(':id/attachments')
+  @UseGuards(RolesGuard)
+  @Roles('individual', 'vendor')
+  @ApiOperation({ summary: 'Register an attachment after upload' })
+  addAttachment(
+    @CurrentUser() user: AuthUser,
+    @Param('id') id: string,
+    @Body() dto: AddInvoiceAttachmentDto,
+  ) {
+    return this.invoicesService.addAttachment(id, user.id, user.role, dto);
+  }
+
+  @Delete('attachments/:attachmentId')
+  @UseGuards(RolesGuard)
+  @Roles('individual', 'vendor')
+  @ApiOperation({ summary: 'Delete an invoice attachment' })
+  deleteAttachment(@CurrentUser() user: AuthUser, @Param('attachmentId') attachmentId: string) {
+    return this.invoicesService.deleteAttachment(attachmentId, user.id, user.role);
+  }
+
   @Get(':id')
-  @ApiOperation({ summary: 'Get invoice detail + line items' })
+  @ApiOperation({ summary: 'Get invoice detail + line items + issuer/recipient metadata + attachments' })
   getOne(@CurrentUser() user: AuthUser, @Param('id') id: string) {
     return this.invoicesService.getOne(id, user.id);
   }

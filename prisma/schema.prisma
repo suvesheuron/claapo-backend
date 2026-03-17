@@ -104,6 +104,7 @@ model IndividualProfile {
   userId         String   @unique @map("user_id") @db.Uuid
   displayName    String   @map("display_name")
   bio            String?
+  aboutMe        String?  @map("about_me")
   skills         String[] @default([])
   genre          String?
   locationCity   String?  @map("location_city")
@@ -118,6 +119,11 @@ model IndividualProfile {
   instagramUrl   String?  @map("instagram_url")
   profileScore   Int      @default(0) @map("profile_score")
   isAvailable    Boolean  @default(true) @map("is_available")
+  panNumber      String?  @map("pan_number")
+  bankAccountName    String?  @map("bank_account_name")
+  bankAccountNumber  String?  @map("bank_account_number")
+  ifscCode       String?  @map("ifsc_code")
+  bankName       String?  @map("bank_name")
   createdAt      DateTime @default(now()) @map("created_at")
   updatedAt      DateTime @updatedAt @map("updated_at")
 
@@ -139,6 +145,7 @@ model CompanyProfile {
   locationCity   String?  @map("location_city")
   locationState  String?  @map("location_state")
   bio            String?
+  aboutUs        String?  @map("about_us")
   logoKey        String?  @map("logo_key")
   isGstVerified  Boolean  @default(false) @map("is_gst_verified")
   createdAt      DateTime @default(now()) @map("created_at")
@@ -159,9 +166,11 @@ model VendorProfile {
   website        String?
   instagramUrl   String?    @map("instagram_url")
   logoKey        String?    @map("logo_key")
+  address        String?
   locationCity   String?    @map("location_city")
   locationState  String?    @map("location_state")
   bio            String?
+  aboutUs        String?  @map("about_us")
   createdAt      DateTime   @default(now()) @map("created_at")
   updatedAt      DateTime   @updatedAt @map("updated_at")
 
@@ -256,6 +265,7 @@ model Project {
   startDate       DateTime      @map("start_date")
   endDate         DateTime      @map("end_date")
   deliveryDate    DateTime?     @map("delivery_date")
+  shootDates      DateTime[]    @default([]) @map("shoot_dates")
   shootLocations  String[]      @default([]) @map("shoot_locations")
   locationCity    String?       @map("location_city")
   budgetMin       Int?          @map("budget_min")
@@ -316,6 +326,8 @@ model BookingRequest {
   status            BookingStatus @default(pending)
   rateOffered       Int?          @map("rate_offered")
   message           String?
+  shootDates        DateTime[]    @default([]) @map("shoot_dates")
+  shootLocations    String[]      @default([]) @map("shoot_locations")
   lockedAt          DateTime?     @map("locked_at")
   respondedAt       DateTime?     @map("responded_at")
   expiresAt         DateTime?     @map("expires_at")
@@ -369,8 +381,24 @@ model Invoice {
   issuer     User                @relation("InvoiceIssuer", fields: [issuerUserId], references: [id])
   recipient  User                @relation("InvoiceRecipient", fields: [recipientUserId], references: [id])
   lineItems  InvoiceLineItem[]
+  attachments InvoiceAttachment[]
 
   @@map("invoices")
+}
+
+model InvoiceAttachment {
+  id        String   @id @default(uuid()) @db.Uuid
+  invoiceId String   @map("invoice_id") @db.Uuid
+  fileKey   String   @map("file_key")
+  fileName  String   @map("file_name")
+  mimeType  String   @map("mime_type")
+  size      Int      // bytes
+  createdAt DateTime @default(now()) @map("created_at")
+
+  invoice Invoice @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
+
+  @@index([invoiceId])
+  @@map("invoice_attachments")
 }
 
 model InvoiceLineItem {
