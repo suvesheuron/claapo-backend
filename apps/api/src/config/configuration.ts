@@ -18,6 +18,11 @@ export default () => ({
     s3Bucket: process.env.AWS_S3_BUCKET ?? '',
     cloudFrontDomain: process.env.AWS_CLOUDFRONT_DOMAIN ?? '',
   },
+  supabase: {
+    url: process.env.SUPABASE_URL ?? '',
+    serviceRoleKey: process.env.SUPABASE_SERVICE_ROLE_KEY ?? '',
+    storageBucket: process.env.SUPABASE_STORAGE_BUCKET ?? 'uploads',
+  },
   razorpay: {
     keyId: process.env.RAZORPAY_KEY_ID ?? '',
     keySecret: process.env.RAZORPAY_KEY_SECRET ?? '',

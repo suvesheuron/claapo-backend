@@ -25,6 +25,23 @@ export class BookingsController {
     return this.bookingsService.createRequest(user.id, dto);
   }
 
+  @Post('bulk')
+  @UseGuards(RolesGuard)
+  @Roles('company')
+  @ApiOperation({ summary: 'Send booking requests to multiple crew/vendors' })
+  async bulkRequest(@CurrentUser() user: AuthUser, @Body() body: { requests: CreateBookingRequestDto[] }) {
+    const results = [];
+    for (const dto of body.requests) {
+      try {
+        const booking = await this.bookingsService.createRequest(user.id, dto);
+        results.push({ success: true, booking });
+      } catch (err: any) {
+        results.push({ success: false, targetUserId: dto.targetUserId, error: err.message ?? 'Failed' });
+      }
+    }
+    return { results };
+  }
+
   @Get('incoming')
   @UseGuards(RolesGuard)
   @Roles('individual', 'vendor')
@@ -55,6 +72,18 @@ export class BookingsController {
   @ApiOperation({ summary: 'List bookings where crew/vendor requested cancellation' })
   listCancelRequests(@CurrentUser() user: AuthUser) {
     return this.bookingsService.listCancelRequests(user.id);
+  }
+
+  @Patch(':id/counter')
+  @UseGuards(RolesGuard)
+  @Roles('individual', 'vendor')
+  @ApiOperation({ summary: 'Counter-offer on a pending booking request' })
+  counterOffer(
+    @CurrentUser() user: AuthUser,
+    @Param('id') id: string,
+    @Body() body: { counterRate: number; counterMessage?: string },
+  ) {
+    return this.bookingsService.counterOffer(id, user.id, user.role, body.counterRate, body.counterMessage);
   }
 
   @Patch(':id/accept')

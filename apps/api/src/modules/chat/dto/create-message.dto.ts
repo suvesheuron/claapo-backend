@@ -1,5 +1,5 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
-import { IsString, IsOptional, IsEnum, MaxLength } from 'class-validator';
+import { IsString, IsOptional, IsEnum, MaxLength, IsUUID } from 'class-validator';
 import { MessageType } from '@prisma/client';
 
 export class CreateMessageDto {
@@ -18,4 +18,10 @@ export class CreateMessageDto {
   @IsOptional()
   @IsString()
   mediaKey?: string;
+
+  @ApiPropertyOptional({ description: 'ID of message being replied to' })
+  @IsOptional()
+  @IsString()
+  @IsUUID()
+  replyToId?: string;
 }

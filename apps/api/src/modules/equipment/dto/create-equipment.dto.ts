@@ -12,6 +12,11 @@ export class CreateEquipmentDto {
   @IsString()
   description?: string;
 
+  @ApiPropertyOptional({ description: 'URL or storage key for equipment image' })
+  @IsOptional()
+  @IsString()
+  imageUrl?: string;
+
   @ApiPropertyOptional({ example: 'Mumbai' })
   @IsOptional()
   @IsString()

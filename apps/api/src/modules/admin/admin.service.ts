@@ -85,7 +85,7 @@ export class AdminService {
     const [items, total] = await Promise.all([
       this.prisma.project.findMany({
         include: {
-          companyUser: { select: { id: true, email: true }, include: { companyProfile: { select: { companyName: true } } } },
+          companyUser: { include: { companyProfile: { select: { companyName: true } } } },
           _count: { select: { bookings: true } },
         },
         orderBy: { createdAt: 'desc' },
@@ -103,8 +103,8 @@ export class AdminService {
       this.prisma.bookingRequest.findMany({
         include: {
           project: { select: { id: true, title: true } },
-          requester: { select: { id: true, email: true }, include: { companyProfile: { select: { companyName: true } } } },
-          target: { select: { id: true, email: true }, include: { individualProfile: true, vendorProfile: true } },
+          requester: { include: { companyProfile: { select: { companyName: true } } } },
+          target: { include: { individualProfile: true, vendorProfile: true } },
         },
         orderBy: { createdAt: 'desc' },
         skip,

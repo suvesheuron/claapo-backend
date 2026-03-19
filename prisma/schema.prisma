@@ -62,6 +62,9 @@ model User {
   conversationsAsA  Conversation[]    @relation("ConversationParticipantA")
   conversationsAsB  Conversation[]    @relation("ConversationParticipantB")
   messagesSent      Message[]
+  reviewsGiven      Review[]         @relation("ReviewsGiven")
+  reviewsReceived   Review[]         @relation("ReviewsReceived")
+  portfolioItems    PortfolioItem[]
   mainUser          User?            @relation("UserSubUsers", fields: [mainUserId], references: [id], onDelete: SetNull)
   subUsers          User[]           @relation("UserSubUsers")
   subUserProjectAssignments SubUserProjectAssignment[] @relation("SubUserAssignments")
@@ -184,6 +187,7 @@ model VendorEquipment {
   vendorUserId String   @map("vendor_user_id") @db.Uuid
   name         String
   description  String?
+  imageUrl     String?  @map("image_url")
   currentCity  String?  @map("current_city")
   dailyRateMin Int?     @map("daily_rate_min") // paise
   dailyRateMax Int?     @map("daily_rate_max") // paise
@@ -338,12 +342,17 @@ model BookingRequest {
   cancelledAt          DateTime?     @map("cancelled_at")
   cancelRequestReason  String?       @map("cancel_request_reason")
   cancelRequestedAt    DateTime?     @map("cancel_requested_at")
+  counterRate          Int?          @map("counter_rate")
+  counterMessage       String?       @map("counter_message")
+  counterAt            DateTime?     @map("counter_at")
 
   project      Project     @relation(fields: [projectId], references: [id])
   requester    User        @relation("RequesterBookings", fields: [requesterUserId], references: [id])
   target       User        @relation("TargetBookings", fields: [targetUserId], references: [id])
   projectRole  ProjectRole? @relation(fields: [projectRoleId], references: [id])
   vendorEquipment VendorEquipment? @relation(fields: [vendorEquipmentId], references: [id])
+  reviews         Review[]
+  contracts       Contract[]
   @@index([projectId])
   @@index([targetUserId, status])
   @@index([requesterUserId, status])
@@ -460,18 +469,76 @@ model Conversation {
 }
 
 model Message {
-  id             String      @id @default(uuid()) @db.Uuid
-  conversationId String      @map("conversation_id") @db.Uuid
-  senderId       String      @map("sender_id") @db.Uuid
-  type           MessageType @default(text)
-  content        String?
-  mediaKey       String?     @map("media_key")
-  isRead         Boolean     @default(false) @map("is_read")
-  createdAt      DateTime    @default(now()) @map("created_at")
+  id              String      @id @default(uuid()) @db.Uuid
+  conversationId  String      @map("conversation_id") @db.Uuid
+  senderId        String      @map("sender_id") @db.Uuid
+  type            MessageType @default(text)
+  content         String?
+  mediaKey        String?     @map("media_key")
+  isRead          Boolean     @default(false) @map("is_read")
+  isPinned        Boolean     @default(false) @map("is_pinned")
+  deletedAt       DateTime?   @map("deleted_at")
+  forwardedFromId String?     @map("forwarded_from_id") @db.Uuid
+  replyToId       String?     @map("reply_to_id") @db.Uuid
+  readAt          DateTime?   @map("read_at")
+  createdAt       DateTime    @default(now()) @map("created_at")
 
   conversation Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
   sender       User         @relation(fields: [senderId], references: [id], onDelete: Cascade)
+  replyTo      Message?     @relation("MessageReplies", fields: [replyToId], references: [id], onDelete: SetNull)
+  replies      Message[]    @relation("MessageReplies")
 
   @@index([conversationId, createdAt])
   @@map("messages")
+}
+
+model Review {
+  id              String   @id @default(uuid()) @db.Uuid
+  bookingId       String   @map("booking_id") @db.Uuid
+  reviewerUserId  String   @map("reviewer_user_id") @db.Uuid
+  revieweeUserId  String   @map("reviewee_user_id") @db.Uuid
+  rating          Int      // 1-5
+  text            String?
+  createdAt       DateTime @default(now()) @map("created_at")
+  updatedAt       DateTime @updatedAt @map("updated_at")
+
+  booking  BookingRequest @relation(fields: [bookingId], references: [id], onDelete: Cascade)
+  reviewer User           @relation("ReviewsGiven", fields: [reviewerUserId], references: [id], onDelete: Cascade)
+  reviewee User           @relation("ReviewsReceived", fields: [revieweeUserId], references: [id], onDelete: Cascade)
+
+  @@unique([bookingId, reviewerUserId])
+  @@index([revieweeUserId])
+  @@map("reviews")
+}
+
+model PortfolioItem {
+  id        String   @id @default(uuid()) @db.Uuid
+  userId    String   @map("user_id") @db.Uuid
+  title     String
+  imageKey  String   @map("image_key")
+  category  String?
+  sortOrder Int      @default(0) @map("sort_order")
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, sortOrder])
+  @@map("portfolio_items")
+}
+
+model Contract {
+  id            String   @id @default(uuid()) @db.Uuid
+  bookingId     String   @map("booking_id") @db.Uuid
+  fileKey       String   @map("file_key")
+  fileName      String   @map("file_name")
+  signedByA     Boolean  @default(false) @map("signed_by_a")
+  signedByB     Boolean  @default(false) @map("signed_by_b")
+  createdAt     DateTime @default(now()) @map("created_at")
+  updatedAt     DateTime @updatedAt @map("updated_at")
+
+  booking BookingRequest @relation(fields: [bookingId], references: [id], onDelete: Cascade)
+
+  @@index([bookingId])
+  @@map("contracts")
 }

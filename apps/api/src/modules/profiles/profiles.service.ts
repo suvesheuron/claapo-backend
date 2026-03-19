@@ -242,8 +242,8 @@ export class ProfilesService {
   }
 
   async getPresignedAvatarUrl(userId: string): Promise<{ uploadUrl: string; key: string }> {
-    if (!this.storage.isConfigured()) {
-      throw new Error('Storage (S3) is not configured. Set AWS_S3_BUCKET and credentials.');
+    if (!this.storage.isConfigured() && !this.storage.isSupabaseConfigured()) {
+      throw new Error('Storage is not configured. Set AWS_S3_BUCKET or SUPABASE_* env vars.');
     }
     const key = `avatars/${userId}/${Date.now()}`;
     return this.storage.getPresignedPutUrl(key, 'image/jpeg');
@@ -276,8 +276,8 @@ export class ProfilesService {
 
   async getPresignedShowreelUrl(userId: string): Promise<{ uploadUrl: string; key: string }> {
     await this.ensureRole(userId, UserRole.individual);
-    if (!this.storage.isConfigured()) {
-      throw new Error('Storage (S3) is not configured.');
+    if (!this.storage.isConfigured() && !this.storage.isSupabaseConfigured()) {
+      throw new Error('Storage is not configured. Set AWS_S3_BUCKET or SUPABASE_* env vars.');
     }
     const key = `showreels/${userId}/${Date.now()}.mp4`;
     return this.storage.getPresignedPutUrl(key, 'video/mp4');

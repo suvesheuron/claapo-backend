@@ -1,4 +1,4 @@
-import { Controller, Get, Post, Patch, Body, Param, Query, UseGuards } from '@nestjs/common';
+import { Controller, Get, Post, Patch, Delete, Body, Param, Query, UseGuards } from '@nestjs/common';
 import { ApiTags, ApiOperation, ApiBearerAuth } from '@nestjs/swagger';
 import { ChatService } from './chat.service';
 import { ChatGateway } from './chat.gateway';
@@ -37,6 +37,16 @@ export class ChatController {
     return this.chatService.listConversations(user.id, pageNum, limitNum);
   }
 
+  @Get('search')
+  @ApiOperation({ summary: 'Search messages across conversations' })
+  searchMessages(
+    @CurrentUser() user: AuthUser,
+    @Query('q') q: string,
+    @Query('conversationId') conversationId?: string,
+  ) {
+    return this.chatService.searchMessages(user.id, q, conversationId);
+  }
+
   @Get('with/:otherUserId')
   @ApiOperation({ summary: 'Get messages for a direct conversation by user ID (newest first, up to limit)' })
   getConversationWithUser(
@@ -52,9 +62,9 @@ export class ChatController {
   async sendMessageToUser(
     @CurrentUser() user: AuthUser,
     @Param('otherUserId') otherUserId: string,
-    @Body() body: { content: string },
+    @Body() body: { content: string; replyToId?: string; type?: string },
   ) {
-    const message = await this.chatService.sendMessageToUserByUserId(user.id, otherUserId, body.content);
+    const message = await this.chatService.sendMessageToUserByUserId(user.id, otherUserId, body.content, body.replyToId);
     return message;
   }
 
@@ -94,5 +104,27 @@ export class ChatController {
     @Body() body: { contentType?: string },
   ) {
     return this.chatService.getMediaUploadUrl(user.id, id, body.contentType);
+  }
+
+  @Delete('messages/:messageId')
+  @ApiOperation({ summary: 'Soft-delete a message (sender only)' })
+  deleteMessage(@CurrentUser() user: AuthUser, @Param('messageId') messageId: string) {
+    return this.chatService.deleteMessage(user.id, messageId);
+  }
+
+  @Patch('messages/:messageId/pin')
+  @ApiOperation({ summary: 'Toggle pin status on a message' })
+  togglePinMessage(@CurrentUser() user: AuthUser, @Param('messageId') messageId: string) {
+    return this.chatService.togglePinMessage(user.id, messageId);
+  }
+
+  @Post('messages/:messageId/forward')
+  @ApiOperation({ summary: 'Forward a message to another conversation' })
+  forwardMessage(
+    @CurrentUser() user: AuthUser,
+    @Param('messageId') messageId: string,
+    @Body() body: { targetConversationId: string },
+  ) {
+    return this.chatService.forwardMessage(user.id, messageId, body.targetConversationId);
   }
 }

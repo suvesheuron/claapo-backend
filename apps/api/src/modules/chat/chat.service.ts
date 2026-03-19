@@ -205,6 +205,11 @@ export class ChatService {
         content: m.content,
         mediaKey: m.mediaKey,
         isRead: m.isRead,
+        isPinned: m.isPinned,
+        deletedAt: m.deletedAt,
+        forwardedFromId: m.forwardedFromId,
+        replyToId: (m as any).replyToId ?? null,
+        readAt: (m as any).readAt ?? null,
         createdAt: m.createdAt,
         sender: {
           id: m.sender.id,
@@ -242,8 +247,12 @@ export class ChatService {
           type,
           content: dto.content?.trim() ?? null,
           mediaKey: dto.mediaKey ?? null,
+          replyToId: dto.replyToId ?? null,
         },
-        include: { sender: { select: { id: true, individualProfile: { select: { displayName: true } }, companyProfile: { select: { companyName: true } }, vendorProfile: { select: { companyName: true } } } } },
+        include: {
+          sender: { select: { id: true, individualProfile: { select: { displayName: true } }, companyProfile: { select: { companyName: true } }, vendorProfile: { select: { companyName: true } } } },
+          replyTo: { select: { id: true, content: true, senderId: true } },
+        },
       }),
       this.prisma.conversation.update({
         where: { id: conversationId },
@@ -259,7 +268,13 @@ export class ChatService {
       content: message.content,
       mediaKey: message.mediaKey,
       isRead: message.isRead,
+      isPinned: message.isPinned,
+      deletedAt: message.deletedAt,
+      forwardedFromId: message.forwardedFromId,
+      replyToId: message.replyToId,
+      readAt: message.readAt,
       createdAt: message.createdAt,
+      replyTo: message.replyTo,
       sender: {
         id: message.sender.id,
         displayName:
@@ -284,7 +299,7 @@ export class ChatService {
         senderId: { not: userId },
         isRead: false,
       },
-      data: { isRead: true },
+      data: { isRead: true, readAt: new Date() },
     });
     return { message: 'Messages marked as read' };
   }
@@ -349,6 +364,7 @@ export class ChatService {
             vendorProfile: { select: { companyName: true } },
           },
         },
+        replyTo: { select: { id: true, content: true, senderId: true } },
       },
       orderBy: { createdAt: 'asc' },
       take: limit,
@@ -363,8 +379,13 @@ export class ChatService {
         content: m.content,
         mediaKey: m.mediaKey,
         isRead: m.isRead,
+        isPinned: m.isPinned,
+        deletedAt: m.deletedAt,
+        forwardedFromId: m.forwardedFromId,
+        replyToId: m.replyToId,
+        readAt: m.readAt ?? (m.isRead ? m.createdAt : null),
         createdAt: m.createdAt,
-        readAt: m.isRead ? m.createdAt : null,
+        replyTo: m.replyTo,
         sender: {
           id: m.sender.id,
           displayName:
@@ -378,7 +399,7 @@ export class ChatService {
   }
 
   /** Send a message to a user by their userId (finds the most recent shared conversation) */
-  async sendMessageToUserByUserId(userId: string, otherUserId: string, content: string) {
+  async sendMessageToUserByUserId(userId: string, otherUserId: string, content: string, replyToId?: string) {
     const [participantA, participantB] = this.orderParticipants(userId, otherUserId);
     const conv = await this.prisma.conversation.findFirst({
       where: { participantA, participantB },
@@ -387,8 +408,186 @@ export class ChatService {
     if (!conv) {
       throw new NotFoundException('No conversation found. Start a chat from a shared project first.');
     }
-    const dto: CreateMessageDto = { content, type: 'text' };
+    const dto: CreateMessageDto = { content, type: 'text', replyToId };
     return this.sendMessage(userId, conv.id, dto);
+  }
+
+  /** Soft-delete a message (only the sender can delete) */
+  async deleteMessage(userId: string, messageId: string) {
+    const message = await this.prisma.message.findUnique({
+      where: { id: messageId },
+      include: { conversation: true },
+    });
+    if (!message) throw new NotFoundException('Message not found');
+    if (message.senderId !== userId) {
+      throw new ForbiddenException('You can only delete your own messages');
+    }
+    if (message.deletedAt) {
+      throw new BadRequestException('Message already deleted');
+    }
+
+    return this.prisma.message.update({
+      where: { id: messageId },
+      data: {
+        deletedAt: new Date(),
+        content: null,
+        mediaKey: null,
+      },
+    });
+  }
+
+  /** Toggle pin status on a message (either participant can pin) */
+  async togglePinMessage(userId: string, messageId: string) {
+    const message = await this.prisma.message.findUnique({
+      where: { id: messageId },
+      include: { conversation: true },
+    });
+    if (!message) throw new NotFoundException('Message not found');
+    const conv = message.conversation;
+    if (conv.participantA !== userId && conv.participantB !== userId) {
+      throw new ForbiddenException('Not a participant');
+    }
+
+    return this.prisma.message.update({
+      where: { id: messageId },
+      data: { isPinned: !message.isPinned },
+    });
+  }
+
+  /** Forward a message to another conversation */
+  async forwardMessage(userId: string, messageId: string, targetConversationId: string) {
+    const originalMessage = await this.prisma.message.findUnique({
+      where: { id: messageId },
+      include: { conversation: true },
+    });
+    if (!originalMessage) throw new NotFoundException('Message not found');
+
+    // Verify user is participant in source conversation
+    const srcConv = originalMessage.conversation;
+    if (srcConv.participantA !== userId && srcConv.participantB !== userId) {
+      throw new ForbiddenException('Not a participant in source conversation');
+    }
+
+    // Verify user is participant in target conversation
+    const targetConv = await this.prisma.conversation.findUnique({
+      where: { id: targetConversationId },
+    });
+    if (!targetConv) throw new NotFoundException('Target conversation not found');
+    if (targetConv.participantA !== userId && targetConv.participantB !== userId) {
+      throw new ForbiddenException('Not a participant in target conversation');
+    }
+
+    if (originalMessage.deletedAt) {
+      throw new BadRequestException('Cannot forward a deleted message');
+    }
+
+    const [forwardedMessage] = await this.prisma.$transaction([
+      this.prisma.message.create({
+        data: {
+          conversationId: targetConversationId,
+          senderId: userId,
+          type: originalMessage.type,
+          content: originalMessage.content,
+          mediaKey: originalMessage.mediaKey,
+          forwardedFromId: originalMessage.id,
+        },
+        include: {
+          sender: {
+            select: {
+              id: true,
+              individualProfile: { select: { displayName: true } },
+              companyProfile: { select: { companyName: true } },
+              vendorProfile: { select: { companyName: true } },
+            },
+          },
+        },
+      }),
+      this.prisma.conversation.update({
+        where: { id: targetConversationId },
+        data: { lastMessageAt: new Date() },
+      }),
+    ]);
+
+    return {
+      id: forwardedMessage.id,
+      conversationId: forwardedMessage.conversationId,
+      senderId: forwardedMessage.senderId,
+      type: forwardedMessage.type,
+      content: forwardedMessage.content,
+      mediaKey: forwardedMessage.mediaKey,
+      isRead: forwardedMessage.isRead,
+      forwardedFromId: forwardedMessage.forwardedFromId,
+      createdAt: forwardedMessage.createdAt,
+      sender: {
+        id: forwardedMessage.sender.id,
+        displayName:
+          forwardedMessage.sender.individualProfile?.displayName ??
+          forwardedMessage.sender.companyProfile?.companyName ??
+          forwardedMessage.sender.vendorProfile?.companyName ??
+          '—',
+      },
+    };
+  }
+
+  /** Search messages across conversations the user participates in */
+  async searchMessages(userId: string, query: string, conversationId?: string) {
+    if (!query || !query.trim()) {
+      throw new BadRequestException('Search query is required');
+    }
+
+    const whereClause: any = {
+      content: { contains: query.trim(), mode: 'insensitive' },
+      deletedAt: null,
+      conversation: {
+        OR: [{ participantA: userId }, { participantB: userId }],
+      },
+    };
+
+    if (conversationId) {
+      whereClause.conversationId = conversationId;
+    }
+
+    const messages = await this.prisma.message.findMany({
+      where: whereClause,
+      include: {
+        sender: {
+          select: {
+            id: true,
+            email: true,
+            individualProfile: { select: { displayName: true } },
+            companyProfile: { select: { companyName: true } },
+            vendorProfile: { select: { companyName: true } },
+          },
+        },
+        conversation: {
+          select: { id: true, projectId: true },
+        },
+      },
+      orderBy: { createdAt: 'desc' },
+      take: 50,
+    });
+
+    return {
+      items: messages.map((m) => ({
+        id: m.id,
+        conversationId: m.conversationId,
+        senderId: m.senderId,
+        type: m.type,
+        content: m.content,
+        mediaKey: m.mediaKey,
+        isRead: m.isRead,
+        isPinned: m.isPinned,
+        createdAt: m.createdAt,
+        sender: {
+          id: m.sender.id,
+          displayName:
+            m.sender.individualProfile?.displayName ??
+            m.sender.companyProfile?.companyName ??
+            m.sender.vendorProfile?.companyName ??
+            m.sender.email,
+        },
+      })),
+    };
   }
 
   /** Verify user is a participant in the conversation (for WebSocket room join) */

@@ -274,6 +274,43 @@ export class BookingsService {
     return { items };
   }
 
+  async counterOffer(bookingId: string, userId: string, role: UserRole, counterRate: number, counterMessage?: string) {
+    const booking = await this.prisma.bookingRequest.findUnique({
+      where: { id: bookingId },
+      include: { project: true },
+    });
+    if (!booking) throw new NotFoundException('Booking not found');
+    if (role !== 'individual' && role !== 'vendor') throw new ForbiddenException('Only crew/vendor can counter-offer');
+    if (role === UserRole.vendor) {
+      const vendorCtx = await this.getVendorAccountContext(userId);
+      if (booking.targetUserId !== vendorCtx.accountOwnerId) throw new ForbiddenException('Not your booking');
+    } else if (booking.targetUserId !== userId) {
+      throw new ForbiddenException('Not your booking');
+    }
+    if (booking.status !== 'pending') throw new BadRequestException('Booking is not pending');
+    if (counterRate <= 0) throw new BadRequestException('Counter rate must be positive');
+
+    const updated = await this.prisma.bookingRequest.update({
+      where: { id: bookingId },
+      data: {
+        counterRate,
+        counterMessage: counterMessage?.trim() ?? null,
+        counterAt: new Date(),
+      },
+      include: { project: true },
+    });
+
+    await this.notifications.createForUser(
+      booking.requesterUserId,
+      'booking_counter_offer',
+      'Counter offer received',
+      `A counter offer of ₹${(counterRate / 100).toLocaleString('en-IN')}/day was made for project "${booking.project.title}".`,
+      { bookingId: booking.id, projectId: booking.projectId, projectTitle: booking.project.title },
+    );
+
+    return updated;
+  }
+
   async accept(bookingId: string, userId: string, role: UserRole) {
     const booking = await this.prisma.bookingRequest.findUnique({
       where: { id: bookingId },
