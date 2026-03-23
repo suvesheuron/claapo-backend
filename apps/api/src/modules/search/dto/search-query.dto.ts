@@ -93,6 +93,11 @@ export class SearchVendorsQueryDto {
   @IsOptional()
   @IsString()
   equipmentName?: string;
+  //  company name s
+  @ApiPropertyOptional({ description: 'Partial match on vendor company name' })
+  @IsOptional()
+  @IsString()
+  companyName?: string;
 
   @ApiPropertyOptional({ default: 1 })
   @IsOptional()

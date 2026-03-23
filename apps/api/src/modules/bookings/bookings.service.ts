@@ -131,7 +131,19 @@ export class BookingsService {
           : {}),
       },
       include: {
-        project: { select: { id: true, title: true, startDate: true, endDate: true, status: true, locationCity: true, shootDates: true, shootLocations: true } },
+        project: {
+          select: {
+            id: true,
+            title: true,
+            companyUserId: true,
+            startDate: true,
+            endDate: true,
+            status: true,
+            locationCity: true,
+            shootDates: true,
+            shootLocations: true,
+          },
+        },
         requester: { select: { id: true, email: true, companyProfile: true } },
         projectRole: true,
         vendorEquipment: { select: { id: true, name: true } },

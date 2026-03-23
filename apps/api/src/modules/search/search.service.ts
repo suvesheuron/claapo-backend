@@ -14,9 +14,9 @@ export class SearchService {
     const page = query.page ?? 1;
     const limit = Math.min(query.limit ?? 20, 50);
     const skip = (page - 1) * limit;
-
+    //  keeping it lowercase for case insensitivity
     const skillsFilter = query.skill
-      ? query.skill.split(',').map((s) => s.trim().toUpperCase()).filter(Boolean)
+      ? query.skill.split(',').map((s) => s.trim().toLowerCase()).filter(Boolean)
       : null;
 
     const startDate = query.startDate ? new Date(query.startDate) : null;
@@ -31,9 +31,6 @@ export class SearchService {
     }
     if (query.state) {
       where.AND.push({ locationState: { equals: query.state, mode: 'insensitive' } });
-    }
-    if (skillsFilter?.length) {
-      where.AND.push({ skills: { hasSome: skillsFilter } });
     }
     if (query.rateMin != null || query.rateMax != null) {
       if (query.rateMin != null) {
@@ -56,18 +53,33 @@ export class SearchService {
       });
     }
 
+    const hasSkillFilter = !!skillsFilter?.length;
     const takeSize = startDate && endDate ? limit * 3 : limit + 1;
     const profiles = await this.prisma.individualProfile.findMany({
       where,
-      include: {
-        user: { select: { id: true, email: true } },
+      select: {
+        userId: true,
+        displayName: true,
+        bio: true,
+        skills: true,
+        locationCity: true,
+        locationState: true,
+        dailyRateMin: true,
+        dailyRateMax: true,
+        profileScore: true,
+        isAvailable: true,
       },
       orderBy: { profileScore: 'desc' },
-      skip,
-      take: takeSize,
+      ...(hasSkillFilter ? {} : { skip, take: takeSize }),
     });
 
     let filtered = profiles;
+    if (hasSkillFilter && skillsFilter?.length) {
+      filtered = filtered.filter((p) => {
+        const profileSkills = (p.skills ?? []).map((s) => s.trim().toLowerCase());
+        return skillsFilter.some((skill) => profileSkills.includes(skill));
+      });
+    }
     if (startDate && endDate) {
       const userIdsWithBooked = await this.prisma.availabilitySlot.findMany({
         where: {
@@ -78,12 +90,23 @@ export class SearchService {
         distinct: ['userId'],
       });
       const bookedSet = new Set(userIdsWithBooked.map((s) => s.userId));
-      filtered = profiles.filter((p) => !bookedSet.has(p.userId));
+      filtered = filtered.filter((p) => !bookedSet.has(p.userId));
     }
 
-    const items = filtered.slice(0, limit);
-    const hasMore = filtered.length > limit;
-    const total = await this.prisma.individualProfile.count({ where });
+    const paged = hasSkillFilter ? filtered.slice(skip, skip + limit + 1) : filtered;
+    const items = paged.slice(0, limit);
+    const hasMore = paged.length > limit;
+    const total = hasSkillFilter
+      ? filtered.length
+      : await this.prisma.individualProfile.count({ where });
+    const userIds = items.map((i) => i.userId);
+    const users = userIds.length
+      ? await this.prisma.user.findMany({
+          where: { id: { in: userIds } },
+          select: { id: true, email: true },
+        })
+      : [];
+    const emailByUserId = new Map(users.map((u) => [u.id, u.email]));
 
     return {
       items: items.map((p) => ({
@@ -97,7 +120,7 @@ export class SearchService {
         dailyRateMax: p.dailyRateMax,
         profileScore: p.profileScore,
         isAvailable: p.isAvailable,
-        email: p.user.email,
+        email: emailByUserId.get(p.userId) ?? '',
       })),
       meta: { total, page, limit, pages: Math.ceil(total / limit), hasMore },
     };
@@ -114,6 +137,7 @@ export class SearchService {
     const requestedEnd = query.endDate ? new Date(query.endDate) : null;
     const requestedCity = query.city?.trim().toLowerCase();
     const equipmentName = query.equipmentName?.trim().toLowerCase();
+    const companyName = query.companyName?.trim();
     const hasEquipmentAvailabilityFilter = !!(requestedCity || requestedStart || requestedEnd || equipmentName);
 
     // Equipment IDs that are already booked (accepted/locked) for shoots overlapping the requested date range
@@ -143,6 +167,9 @@ export class SearchService {
         { vendorType: query.type },
         { vendorType: 'all' },
       ];
+    }
+    if (companyName) {
+      (where as any).companyName = { contains: companyName, mode: 'insensitive' };
     }
 
     const rawItems = await this.prisma.vendorProfile.findMany({
