@@ -316,10 +316,26 @@ export class ProfilesService {
         phone: true,
         isActive: true,
         createdAt: true,
+        subUserProjectAssignments: {
+          select: {
+            project: {
+              select: {
+                id: true,
+                title: true,
+              },
+            },
+          },
+        },
       },
       orderBy: { createdAt: 'desc' },
     });
-    return { items };
+    // Transform to include assignedProjects array
+    return {
+      items: items.map((item) => ({
+        ...item,
+        assignedProjects: item.subUserProjectAssignments.map((a) => a.project),
+      })),
+    };
   }
 
   async createSubUser(userId: string, role: UserRole, dto: CreateSubUserDto) {
