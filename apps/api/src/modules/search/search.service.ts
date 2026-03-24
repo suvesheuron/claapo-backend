@@ -232,12 +232,17 @@ export class SearchService {
           // Date-only filter without city and no availabilities ⇒ treat as not match
           return false;
         });
-        // Display only the equipment's location (set by vendor on equipment/availability), never vendor profile location
+        // Display location from the matched equipment/availability context.
+        // Prefer requested city (if present and matched via availability), then equipment city.
         const firstEq = matchedEquipment[0];
-        const firstAvail = firstEq?.availabilities?.[0];
+        const matchedAvailability = firstEq?.availabilities?.find((slot) => {
+          if (!requestedCity) return true;
+          return slot.locationCity.trim().toLowerCase() === requestedCity;
+        });
         const locationCity =
+          matchedAvailability?.locationCity?.trim() ||
           firstEq?.currentCity?.trim() ||
-          firstAvail?.locationCity?.trim() ||
+          firstEq?.availabilities?.[0]?.locationCity?.trim() ||
           null;
 
         return {
