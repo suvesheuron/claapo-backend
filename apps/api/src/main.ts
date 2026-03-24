@@ -10,17 +10,22 @@ async function bootstrap() {
   const app = await NestFactory.create(AppModule);
   app.useWebSocketAdapter(new IoAdapter(app));
   const config = app.get(ConfigService);
-  const env = config.get<string>('env') ?? 'development';
-  const corsOrigins = config.get<string | string[]>('corsOrigins') ?? ['http://localhost:3000'];
-  // In development, allow any origin so ngrok and local IPs work without reconfig
-  const allowAnyOrigin = env !== 'production' && corsOrigins.includes('*');
+  const corsOriginsRaw = config.get<string[]>('corsOrigins') ?? ['http://localhost:3000'];
+  const allowWildcard = corsOriginsRaw.some((o) => o.trim() === '*');
+  const explicitOrigins = corsOriginsRaw
+    .map((o) => o.trim().replace(/\/$/, ''))
+    .filter((o) => o.length > 0 && o !== '*');
+  // * → reflect request Origin (works with credentials) in any NODE_ENV.
+  const allowAnyOrigin = allowWildcard;
   app.enableCors({
     origin: allowAnyOrigin
       ? true
-      : Array.isArray(corsOrigins)
-        ? corsOrigins
-        : [corsOrigins],
+      : explicitOrigins.length > 0
+        ? explicitOrigins
+        : ['http://localhost:3000'],
     credentials: true,
+    methods: ['GET', 'HEAD', 'PUT', 'PATCH', 'POST', 'DELETE', 'OPTIONS'],
+    allowedHeaders: ['Content-Type', 'Authorization', 'Accept', 'X-Requested-With'],
   });
   app.setGlobalPrefix('v1');
   app.useGlobalPipes(
