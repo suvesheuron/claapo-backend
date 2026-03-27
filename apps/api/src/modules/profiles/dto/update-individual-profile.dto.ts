@@ -53,19 +53,12 @@ export class UpdateIndividualProfileDto {
   @Max(180)
   lng?: number;
 
-  @ApiPropertyOptional({ description: 'Daily rate in INR' })
+  @ApiPropertyOptional({ description: 'Daily budget in paise' })
   @IsOptional()
   @Type(() => Number)
   @IsInt()
   @Min(0)
-  dailyRateMin?: number;
-
-  @ApiPropertyOptional({ description: 'Daily rate in INR' })
-  @IsOptional()
-  @Type(() => Number)
-  @IsInt()
-  @Min(0)
-  dailyRateMax?: number;
+  dailyBudget?: number;
 
   @ApiPropertyOptional()
   @IsOptional()

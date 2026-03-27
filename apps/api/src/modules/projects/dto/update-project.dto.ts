@@ -54,13 +54,7 @@ export class UpdateProjectDto {
   @IsOptional()
   @IsInt()
   @Min(0)
-  budgetMin?: number;
-
-  @ApiPropertyOptional()
-  @IsOptional()
-  @IsInt()
-  @Min(0)
-  budgetMax?: number;
+  budget?: number;
 
   @ApiPropertyOptional({ enum: ['draft', 'open', 'active', 'completed', 'cancelled'] })
   @IsOptional()

@@ -347,8 +347,10 @@ export class BookingsService {
       await this.prisma.bookingRequest.update({ where: { id: bookingId }, data: { status: 'expired' } });
       throw new BadRequestException('Request has expired');
     }
+
+    // Check for crew double-booking (prevent individuals from accepting overlapping bookings)
     const project = booking.project as { startDate: Date; endDate: Date; shootDates?: Date[] };
-    const datesToBlock: Date[] =
+    const datesToCheck: Date[] =
       project.shootDates && project.shootDates.length > 0
         ? project.shootDates.map((d) => {
             const x = new Date(d);
@@ -363,6 +365,55 @@ export class BookingsService {
             for (let t = startUtc; t <= endUtc; t += 24 * 60 * 60 * 1000) out.push(new Date(t));
             return out;
           })();
+
+    // Check if crew member already has booked/blocked slots for overlapping dates
+    const existingBookings = await this.prisma.availabilitySlot.findMany({
+      where: {
+        userId: booking.targetUserId,
+        date: { in: datesToCheck },
+        status: { in: ['booked', 'blocked'] },
+      },
+    });
+
+    if (existingBookings.length > 0) {
+      // Find which other project(s) conflict
+      const conflictingBookings = await this.prisma.bookingRequest.findMany({
+        where: {
+          targetUserId: booking.targetUserId,
+          status: { in: ['accepted', 'locked'] },
+          id: { not: bookingId },
+        },
+        include: {
+          project: { select: { title: true, startDate: true, endDate: true, shootDates: true } },
+        },
+      });
+
+      const conflictingProjects = conflictingBookings.filter((b) => {
+        const proj = b.project as { shootDates?: Date[]; startDate: Date; endDate: Date };
+        const otherDates =
+          proj.shootDates && proj.shootDates.length > 0
+            ? proj.shootDates.map((d: Date) => new Date(d).toDateString())
+            : (() => {
+                const start = new Date(proj.startDate);
+                const end = new Date(proj.endDate);
+                const dates: string[] = [];
+                for (let t = start.getTime(); t <= end.getTime(); t += 24 * 60 * 60 * 1000) {
+                  dates.push(new Date(t).toDateString());
+                }
+                return dates;
+              })();
+        return datesToCheck.some((d) => otherDates.includes(d.toDateString()));
+      });
+
+      if (conflictingProjects.length > 0) {
+        throw new BadRequestException(
+          `You are already booked for these dates on project(s): ${conflictingProjects.map((p) => p.project.title).join(', ')}`,
+        );
+      }
+    }
+
+    // Block the dates for this booking
+    const datesToBlock: Date[] = datesToCheck;
     for (const dateKey of datesToBlock) {
       await this.prisma.availabilitySlot.upsert({
         where: { userId_date: { userId: booking.targetUserId, date: dateKey } },
@@ -650,6 +701,90 @@ export class BookingsService {
       },
     );
     return updated;
+  }
+
+  /** Lock all accepted bookings for a project at once */
+  async lockAllProjectBookings(projectId: string, companyUserId: string, dto?: LockBookingDto) {
+    const ctx = await this.getCompanyAccountContext(companyUserId);
+    
+    // Verify project exists and belongs to this company
+    const project = await this.prisma.project.findUnique({
+      where: { id: projectId },
+      include: { roles: true },
+    });
+    if (!project) throw new NotFoundException('Project not found');
+    if (project.companyUserId !== ctx.accountOwnerId) throw new ForbiddenException('Not your project');
+    if (!ctx.isMainUser) {
+      const assigned = await this.prisma.subUserProjectAssignment.findFirst({
+        where: { accountUserId: ctx.accountOwnerId, subUserId: companyUserId, projectId },
+      });
+      if (!assigned) throw new ForbiddenException('This project is not assigned to your Sub-User ID');
+    }
+
+    // Get all accepted bookings for this project
+    const bookings = await this.prisma.bookingRequest.findMany({
+      where: {
+        projectId,
+        status: 'accepted',
+      },
+      include: {
+        target: { select: { id: true, email: true } },
+        project: true,
+      },
+    });
+
+    if (bookings.length === 0) {
+      throw new BadRequestException('No accepted bookings to lock for this project');
+    }
+
+    // Lock all bookings
+    const shootDates = dto?.shootDates?.length
+      ? dto.shootDates.map((d) => new Date(d)).filter((d) => !isNaN(d.getTime()))
+      : project.shootDates ?? [];
+    const shootLocations = dto?.shootLocations?.length
+      ? dto.shootLocations.map((s) => s.trim()).filter(Boolean)
+      : project.shootLocations ?? [];
+
+    const updatedBookings = await Promise.all(
+      bookings.map((booking) =>
+        this.prisma.bookingRequest.update({
+          where: { id: booking.id },
+          data: {
+            status: 'locked',
+            lockedAt: new Date(),
+            shootDates,
+            shootLocations,
+          },
+          include: { project: true, target: { select: { id: true, email: true } } },
+        }),
+      ),
+    );
+
+    // Send notifications (non-blocking)
+    try {
+      await Promise.all(
+        updatedBookings.map((updated) =>
+          this.notifications.createForUser(
+            updated.targetUserId,
+            'booking_locked',
+            'Booking locked',
+            `Your booking for project "${updated.project.title}" has been locked by the company.`,
+            {
+              bookingId: updated.id,
+              projectId: updated.projectId,
+              projectTitle: updated.project.title,
+            },
+          ),
+        ),
+      );
+    } catch {
+      // Best effort notification.
+    }
+
+    return {
+      lockedCount: updatedBookings.length,
+      bookings: updatedBookings,
+    };
   }
 
   private async getCompanyAccountContext(userId: string) {

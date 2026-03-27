@@ -22,17 +22,10 @@ export class CreateEquipmentDto {
   @IsString()
   currentCity?: string;
 
-  @ApiPropertyOptional({ description: 'Daily rate min in paise' })
+  @ApiPropertyOptional({ description: 'Daily budget in paise' })
   @IsOptional()
   @IsInt()
   @Min(0)
   @Type(() => Number)
-  dailyRateMin?: number;
-
-  @ApiPropertyOptional({ description: 'Daily rate max in paise' })
-  @IsOptional()
-  @IsInt()
-  @Min(0)
-  @Type(() => Number)
-  dailyRateMax?: number;
+  dailyBudget?: number;
 }
