@@ -443,7 +443,7 @@ export class BookingsService {
       dto?.shootLocations?.length
         ? dto.shootLocations.map((s) => s.trim()).filter(Boolean)
         : project.shootLocations ?? [];
-    return this.prisma.bookingRequest.update({
+    const updated = await this.prisma.bookingRequest.update({
       where: { id: bookingId },
       data: {
         status: 'locked',
@@ -453,6 +453,25 @@ export class BookingsService {
       },
       include: { project: true, target: { select: { id: true, email: true } } },
     });
+
+    // Non-fatal: booking lock is authoritative; notification should not block it.
+    try {
+      await this.notifications.createForUser(
+        booking.targetUserId,
+        'booking_locked',
+        'Booking locked',
+        `Your booking for project "${updated.project.title}" has been locked by the company.`,
+        {
+          bookingId: updated.id,
+          projectId: updated.projectId,
+          projectTitle: updated.project.title,
+        },
+      );
+    } catch {
+      // Best effort notification.
+    }
+
+    return updated;
   }
 
   /** Crew/vendor requests cancellation of an accepted/locked booking — needs company approval */
