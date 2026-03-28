@@ -51,8 +51,7 @@ export class EquipmentService {
         description: dto.description?.trim() ?? null,
         imageUrl: dto.imageUrl?.trim() ?? null,
         currentCity: dto.currentCity?.trim() ?? null,
-        dailyRateMin: dto.dailyRateMin ?? null,
-        dailyRateMax: dto.dailyRateMax ?? null,
+        dailyBudget: dto.dailyBudget ?? null,
       },
     });
   }
@@ -68,15 +67,13 @@ export class EquipmentService {
       description?: string | null;
       imageUrl?: string | null;
       currentCity?: string | null;
-      dailyRateMin?: number | null;
-      dailyRateMax?: number | null;
+      dailyBudget?: number | null;
     } = {};
     if (dto.name !== undefined) data.name = dto.name.trim();
     if (dto.description !== undefined) data.description = dto.description?.trim() ?? null;
     if (dto.imageUrl !== undefined) data.imageUrl = dto.imageUrl?.trim() ?? null;
     if (dto.currentCity !== undefined) data.currentCity = dto.currentCity?.trim() ?? null;
-    if (dto.dailyRateMin !== undefined) data.dailyRateMin = dto.dailyRateMin;
-    if (dto.dailyRateMax !== undefined) data.dailyRateMax = dto.dailyRateMax;
+    if (dto.dailyBudget !== undefined) data.dailyBudget = dto.dailyBudget;
     return this.prisma.vendorEquipment.update({
       where: { id: equipmentId },
       data,

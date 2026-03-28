@@ -27,8 +27,7 @@ export class ProjectsService {
         shootDates: dto.shootDates?.map((d) => new Date(d)).filter((d) => !isNaN(d.getTime())) ?? [],
         shootLocations: dto.shootLocations?.map((s) => s.trim()).filter(Boolean) ?? [],
         locationCity: dto.locationCity,
-        budgetMin: dto.budgetMin,
-        budgetMax: dto.budgetMax,
+        budget: dto.budget,
         status: 'draft',
       },
       include: { roles: true },
@@ -141,8 +140,7 @@ export class ProjectsService {
     if (dto.shootDates !== undefined) data.shootDates = dto.shootDates.map((d) => new Date(d)).filter((d) => !isNaN(d.getTime()));
     if (dto.shootLocations !== undefined) data.shootLocations = dto.shootLocations.map((s) => s.trim()).filter(Boolean);
     if (dto.locationCity !== undefined) data.locationCity = dto.locationCity;
-    if (dto.budgetMin !== undefined) data.budgetMin = dto.budgetMin;
-    if (dto.budgetMax !== undefined) data.budgetMax = dto.budgetMax;
+    if (dto.budget !== undefined) data.budget = dto.budget;
     if (dto.status !== undefined) data.status = dto.status;
     return this.prisma.project.update({
       where: { id: projectId },

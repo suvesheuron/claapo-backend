@@ -46,15 +46,9 @@ export class CreateProjectDto {
   @IsString()
   locationCity?: string;
 
-  @ApiPropertyOptional({ description: 'Budget min in INR' })
+  @ApiPropertyOptional({ description: 'Budget in paise' })
   @IsOptional()
   @IsInt()
   @Min(0)
-  budgetMin?: number;
-
-  @ApiPropertyOptional({ description: 'Budget max in INR' })
-  @IsOptional()
-  @IsInt()
-  @Min(0)
-  budgetMax?: number;
+  budget?: number;
 }

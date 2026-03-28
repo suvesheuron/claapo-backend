@@ -114,8 +114,7 @@ model IndividualProfile {
   locationState  String?  @map("location_state")
   lat            Float?
   lng            Float?
-  dailyRateMin   Int?     @map("daily_rate_min")
-  dailyRateMax   Int?     @map("daily_rate_max")
+  dailyBudget    Int?     @map("daily_budget")
   avatarKey      String?  @map("avatar_key")
   showreelKey    String?  @map("showreel_key")
   imdbUrl        String?  @map("imdb_url")
@@ -189,8 +188,7 @@ model VendorEquipment {
   description  String?
   imageUrl     String?  @map("image_url")
   currentCity  String?  @map("current_city")
-  dailyRateMin Int?     @map("daily_rate_min") // paise
-  dailyRateMax Int?     @map("daily_rate_max") // paise
+  dailyBudget  Int?     @map("daily_budget") // paise
   createdAt    DateTime @default(now()) @map("created_at")
   updatedAt    DateTime @updatedAt @map("updated_at")
 
@@ -272,8 +270,7 @@ model Project {
   shootDates      DateTime[]    @default([]) @map("shoot_dates")
   shootLocations  String[]      @default([]) @map("shoot_locations")
   locationCity    String?       @map("location_city")
-  budgetMin       Int?          @map("budget_min")
-  budgetMax       Int?          @map("budget_max")
+  budget          Int?          @map("budget")
   status          ProjectStatus @default(draft)
   createdAt       DateTime      @default(now()) @map("created_at")
   updatedAt       DateTime      @updatedAt @map("updated_at")

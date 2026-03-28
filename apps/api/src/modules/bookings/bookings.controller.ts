@@ -110,6 +110,18 @@ export class BookingsController {
     return this.bookingsService.lock(id, user.id, body);
   }
 
+  @Post('project/:projectId/lock-all')
+  @UseGuards(RolesGuard)
+  @Roles('company')
+  @ApiOperation({ summary: 'Lock all accepted bookings for a project at once' })
+  lockAllProjectBookings(
+    @CurrentUser() user: AuthUser,
+    @Param('projectId') projectId: string,
+    @Body() body?: LockBookingDto,
+  ) {
+    return this.bookingsService.lockAllProjectBookings(projectId, user.id, body);
+  }
+
   @Patch(':id/cancel')
   @ApiOperation({ summary: 'Cancel request' })
   cancel(@CurrentUser() user: AuthUser, @Param('id') id: string, @Body() body: CancelBookingDto) {
