@@ -163,6 +163,7 @@ model VendorProfile {
   userId         String     @unique @map("user_id") @db.Uuid
   companyName    String     @map("company_name")
   vendorType     VendorType @map("vendor_type")
+  vendorServiceCategory String? @map("vendor_service_category")
   gstNumber      String?    @unique @map("gst_number")
   isGstVerified  Boolean    @default(false) @map("is_gst_verified")
   website        String?

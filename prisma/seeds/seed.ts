@@ -38,6 +38,7 @@ import {
 } from '@prisma/client';
 import * as bcrypt from 'bcrypt';
 import { randomUUID } from 'crypto';
+import { wipeDatabase } from './lib/wipe-database';
 
 const prisma = new PrismaClient();
 
@@ -407,28 +408,7 @@ async function main() {
   // 0. Wipe all existing data
   // ─────────────────────────────────────────
   console.log('\nCleaning existing data...');
-  await prisma.message.deleteMany();
-  await prisma.conversation.deleteMany();
-  await prisma.review.deleteMany();
-  await prisma.contract.deleteMany();
-  await prisma.invoiceLineItem.deleteMany();
-  await prisma.invoiceAttachment.deleteMany();
-  await prisma.invoice.deleteMany();
-  await prisma.notification.deleteMany();
-  await prisma.bookingRequest.deleteMany();
-  await prisma.projectRole.deleteMany();
-  await prisma.subUserProjectAssignment.deleteMany();
-  await prisma.project.deleteMany();
-  await prisma.availabilitySlot.deleteMany();
-  await prisma.vendorEquipmentAvailability.deleteMany();
-  await prisma.vendorEquipment.deleteMany();
-  await prisma.portfolioItem.deleteMany();
-  await prisma.individualProfile.deleteMany();
-  await prisma.companyProfile.deleteMany();
-  await prisma.vendorProfile.deleteMany();
-  await prisma.otpSession.deleteMany();
-  await prisma.refreshToken.deleteMany();
-  await prisma.user.deleteMany();
+  await wipeDatabase(prisma);
   console.log(`  Data cleaned in ${elapsed(t0)}`);
 
   // ─────────────────────────────────────────

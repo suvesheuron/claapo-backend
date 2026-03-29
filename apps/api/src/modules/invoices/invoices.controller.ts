@@ -26,9 +26,14 @@ export class InvoicesController {
   }
 
   @Get()
-  @ApiOperation({ summary: 'List own invoices (paginated)' })
-  list(@CurrentUser() user: AuthUser, @Query('page') page?: string, @Query('limit') limit?: string) {
-    return this.invoicesService.list(user.id, parseInt(page ?? '1', 10), parseInt(limit ?? '20', 10));
+  @ApiOperation({ summary: 'List own invoices (paginated). Optional issuedOn=YYYY-MM-DD filters by invoice created date (UTC day).' })
+  list(
+    @CurrentUser() user: AuthUser,
+    @Query('page') page?: string,
+    @Query('limit') limit?: string,
+    @Query('issuedOn') issuedOn?: string,
+  ) {
+    return this.invoicesService.list(user.id, parseInt(page ?? '1', 10), parseInt(limit ?? '20', 10), issuedOn);
   }
 
   @Get(':id/attachments/upload-url')
@@ -116,7 +121,7 @@ export class InvoicesController {
   @Patch(':id/mark-paid')
   @UseGuards(RolesGuard)
   @Roles('company')
-  @ApiOperation({ summary: 'Mark invoice as paid (demo)' })
+  @ApiOperation({ summary: 'Mark invoice as paid (recipient / manual confirmation)' })
   markPaid(@CurrentUser() user: AuthUser, @Param('id') id: string) {
     return this.invoicesService.markAsPaid(id, user.id);
   }

@@ -13,7 +13,6 @@ import { PresignedUploadDto } from './dto/presigned-upload.dto';
 import { ConfirmUploadDto } from './dto/confirm-upload.dto';
 import { CreateSubUserDto } from './dto/create-sub-user.dto';
 import { AssignSubUserProjectDto } from './dto/assign-sub-user-project.dto';
-import { TransferSubUserDto } from './dto/transfer-sub-user.dto';
 
 @ApiTags('profile')
 @Controller('profile')
@@ -86,22 +85,6 @@ export class ProfilesController {
   @ApiOperation({ summary: 'Remove (soft-delete) a sub-user (company/vendor Main ID only)' })
   deleteSubUser(@CurrentUser() user: AuthUser, @Param('subUserId') subUserId: string) {
     return this.profilesService.deleteSubUser(user.id, user.role, subUserId);
-  }
-
-  @Patch('sub-users/:subUserId/transfer')
-  @UseGuards(RolesGuard)
-  @Roles('company', 'vendor')
-  @ApiOperation({
-    summary: 'Transfer a sub-user to another main user (company/vendor Main ID only)',
-    description:
-      'Reassigns a sub-user from the current main user to another main user of the same role. Existing bookings/projects remain attributed to the previous main; future actions will reflect the new main.',
-  })
-  transferSubUser(
-    @CurrentUser() user: AuthUser,
-    @Param('subUserId') subUserId: string,
-    @Body() dto: TransferSubUserDto,
-  ) {
-    return this.profilesService.transferSubUser(user.id, user.role, subUserId, dto);
   }
 
   @Post('avatar')

@@ -13,6 +13,11 @@ export class UpdateVendorProfileDto {
   @IsEnum(VendorType)
   vendorType?: VendorType;
 
+  @ApiPropertyOptional({ description: 'Human-readable category from onboarding (Camera, Lights, …)' })
+  @IsOptional()
+  @IsString()
+  vendorServiceCategory?: string;
+
   @ApiPropertyOptional()
   @IsOptional()
   @IsString()

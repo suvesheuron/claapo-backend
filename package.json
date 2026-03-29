@@ -12,7 +12,10 @@
     "prisma:migrate": "prisma migrate dev",
     "prisma:migrate:deploy": "prisma migrate deploy",
     "prisma:seed": "prisma db seed",
-    "seed": "ts-node prisma/seeds/seed.ts",
+    "prisma:wipe": "ts-node prisma/seeds/wipe-database.ts",
+    "prisma:seed:light": "ts-node prisma/seeds/seed-light.ts",
+    "seed": "ts-node prisma/seeds/seed-light.ts",
+    "seed:massive": "ts-node prisma/seeds/seed.ts",
     "prisma:studio": "prisma studio",
     "lint": "eslint \"{apps,libs}/**/*.ts\"",
     "test": "jest"
@@ -61,7 +64,7 @@
     "typescript": "^5.6.3"
   },
   "prisma": {
-    "seed": "ts-node prisma/seeds/seed.ts"
+    "seed": "ts-node prisma/seeds/seed-light.ts"
   },
   "engines": {
     "node": ">=20"

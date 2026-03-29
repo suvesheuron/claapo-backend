@@ -5,7 +5,24 @@ import type { SearchCrewQueryDto, SearchVendorsQueryDto } from './dto/search-que
 
 @Injectable()
 export class SearchService {
+  /** Days after project wrap when gear is still treated at shoot location (travel / prep). */
+  private readonly LOCATION_RETURN_BUFFER_DAYS = 5;
+
   constructor(private readonly prisma: PrismaService) {}
+
+  private projectLocationMatchesCity(
+    project: { locationCity: string | null; shootLocations: string[] },
+    requestedCityNorm: string,
+  ): boolean {
+    if (!requestedCityNorm) return false;
+    const lc = project.locationCity?.trim().toLowerCase() ?? '';
+    if (lc && (lc.includes(requestedCityNorm) || requestedCityNorm.includes(lc))) return true;
+    for (const loc of project.shootLocations ?? []) {
+      const l = loc.trim().toLowerCase();
+      if (l && (l.includes(requestedCityNorm) || requestedCityNorm.includes(l))) return true;
+    }
+    return false;
+  }
 
   async searchCrew(viewerId: string, viewerRole: UserRole, query: SearchCrewQueryDto) {
     if (viewerRole !== 'company') {
@@ -80,16 +97,16 @@ export class SearchService {
       });
     }
     if (startDate && endDate) {
-      const userIdsWithBooked = await this.prisma.availabilitySlot.findMany({
+      const userIdsUnavailable = await this.prisma.availabilitySlot.findMany({
         where: {
           date: { gte: startDate, lte: endDate },
-          status: 'booked',
+          status: { in: ['booked', 'blocked'] },
         },
         select: { userId: true },
         distinct: ['userId'],
       });
-      const bookedSet = new Set(userIdsWithBooked.map((s) => s.userId));
-      filtered = filtered.filter((p) => !bookedSet.has(p.userId));
+      const unavailableSet = new Set(userIdsUnavailable.map((s) => s.userId));
+      filtered = filtered.filter((p) => !unavailableSet.has(p.userId));
     }
 
     const paged = hasSkillFilter ? filtered.slice(skip, skip + limit + 1) : filtered;
@@ -190,6 +207,44 @@ export class SearchService {
       orderBy: { companyName: 'asc' },
     });
 
+    const allEquipmentIds = rawItems.flatMap((p) => (p.user.vendorEquipment ?? []).map((eq) => eq.id));
+
+    /** Kit is on a job site (or return window) matching `requestedCity` — still discoverable for that region. */
+    const locationBoostByEquip = new Map<string, string>();
+    if (requestedCity && requestedStart && requestedEnd && allEquipmentIds.length > 0) {
+      const assignmentRows = await this.prisma.bookingRequest.findMany({
+        where: {
+          vendorEquipmentId: { in: allEquipmentIds },
+          status: { in: ['accepted', 'locked'] },
+        },
+        select: {
+          vendorEquipmentId: true,
+          project: {
+            select: {
+              locationCity: true,
+              shootLocations: true,
+              startDate: true,
+              endDate: true,
+            },
+          },
+        },
+      });
+      for (const row of assignmentRows) {
+        const eqId = row.vendorEquipmentId;
+        if (!eqId || bookedEquipmentIds.has(eqId)) continue;
+        const proj = row.project;
+        if (!this.projectLocationMatchesCity(proj, requestedCity)) continue;
+        const pStart = new Date(proj.startDate);
+        const pEndBuf = new Date(proj.endDate);
+        pEndBuf.setUTCDate(pEndBuf.getUTCDate() + this.LOCATION_RETURN_BUFFER_DAYS);
+        if (pStart <= requestedEnd && pEndBuf >= requestedStart) {
+          const label =
+            proj.locationCity?.trim() || proj.shootLocations?.[0]?.trim() || requestedCity;
+          if (!locationBoostByEquip.has(eqId)) locationBoostByEquip.set(eqId, label);
+        }
+      }
+    }
+
     const filteredItems = rawItems
       .map((p) => {
         const allEquipment = p.user.vendorEquipment ?? [];
@@ -203,9 +258,8 @@ export class SearchService {
 
           const availabilities = eq.availabilities ?? [];
 
-          // If vendor has defined availability slots, use them for city/date filtering.
-          if (availabilities.length > 0) {
-            return availabilities.some((slot) => {
+          const matchesAvailabilitySlot = (): boolean =>
+            availabilities.some((slot) => {
               const slotCity = slot.locationCity.trim().toLowerCase();
               if (requestedCity && slotCity !== requestedCity) return false;
               if (requestedStart && requestedEnd) {
@@ -219,13 +273,17 @@ export class SearchService {
               }
               return true;
             });
-          }
 
-          // No explicit availability rows yet: fall back to equipment.currentCity
+          if (availabilities.length > 0 && matchesAvailabilitySlot()) return true;
+
           if (requestedCity) {
             const eqCity = eq.currentCity?.trim().toLowerCase();
-            return eqCity === requestedCity;
+            if (eqCity === requestedCity) return true;
+            if (locationBoostByEquip.has(eq.id)) return true;
+            return false;
           }
+
+          if (requestedStart && requestedEnd && locationBoostByEquip.has(eq.id)) return true;
 
           // Date-only filter without city and no availabilities ⇒ treat as not match
           return false;
@@ -237,8 +295,10 @@ export class SearchService {
           if (!requestedCity) return true;
           return slot.locationCity.trim().toLowerCase() === requestedCity;
         });
+        const boostedLabel = firstEq ? locationBoostByEquip.get(firstEq.id) : undefined;
         const locationCity =
           matchedAvailability?.locationCity?.trim() ||
+          boostedLabel ||
           firstEq?.currentCity?.trim() ||
           firstEq?.availabilities?.[0]?.locationCity?.trim() ||
           null;

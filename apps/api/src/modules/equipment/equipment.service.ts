@@ -8,11 +8,14 @@ import { UpdateEquipmentAvailabilityDto } from './dto/update-equipment-availabil
 
 @Injectable()
 export class EquipmentService {
+  /** Match search service: kit still "at" shoot city for a few days after wrap. */
+  private readonly locationReturnBufferDays = 5;
+
   constructor(private readonly prisma: PrismaService) {}
 
   async listMyEquipment(vendorUserId: string) {
     await this.ensureVendor(vendorUserId);
-    return this.prisma.vendorEquipment.findMany({
+    const rows = await this.prisma.vendorEquipment.findMany({
       where: { vendorUserId },
       include: {
         availabilities: {
@@ -22,11 +25,43 @@ export class EquipmentService {
           where: { status: { in: ['accepted', 'locked'] } },
           select: {
             id: true,
-            project: { select: { title: true, startDate: true, endDate: true } },
+            project: {
+              select: {
+                title: true,
+                startDate: true,
+                endDate: true,
+                locationCity: true,
+                shootLocations: true,
+              },
+            },
           },
         },
       },
       orderBy: { name: 'asc' },
+    });
+
+    const now = Date.now();
+    return rows.map((eq) => {
+      let effectiveLocation: string | null = null;
+      let effectiveLocationUntil: string | null = null;
+      const bookings = [...(eq.bookingRequests ?? [])].sort(
+        (a, b) =>
+          new Date(b.project.startDate).getTime() - new Date(a.project.startDate).getTime(),
+      );
+      for (const br of bookings) {
+        const p = br.project;
+        const start = new Date(p.startDate).getTime();
+        const endBufDate = new Date(p.endDate);
+        endBufDate.setUTCDate(endBufDate.getUTCDate() + this.locationReturnBufferDays);
+        const endBuf = endBufDate.getTime();
+        if (now >= start && now <= endBuf) {
+          effectiveLocation =
+            p.locationCity?.trim() || (p.shootLocations?.[0]?.trim() ?? null) || null;
+          effectiveLocationUntil = endBufDate.toISOString();
+          break;
+        }
+      }
+      return { ...eq, effectiveLocation, effectiveLocationUntil };
     });
   }
 
