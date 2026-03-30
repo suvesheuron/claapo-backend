@@ -34,6 +34,21 @@ export class UpdateCompanyProfileDto {
 
   @ApiPropertyOptional()
   @IsOptional()
+  @IsUrl()
+  linkedinUrl?: string;
+
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsUrl()
+  twitterUrl?: string;
+
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsUrl()
+  youtubeUrl?: string;
+
+  @ApiPropertyOptional()
+  @IsOptional()
   @IsString()
   address?: string;
 

@@ -119,6 +119,9 @@ model IndividualProfile {
   showreelKey    String?  @map("showreel_key")
   imdbUrl        String?  @map("imdb_url")
   instagramUrl   String?  @map("instagram_url")
+  linkedinUrl    String?  @map("linkedin_url")
+  twitterUrl     String?  @map("twitter_url")
+  youtubeUrl     String?  @map("youtube_url")
   profileScore   Int      @default(0) @map("profile_score")
   isAvailable    Boolean  @default(true) @map("is_available")
   panNumber      String?  @map("pan_number")
@@ -143,6 +146,9 @@ model CompanyProfile {
   companyType    String?  @map("company_type")
   website        String?
   instagramUrl   String?  @map("instagram_url")
+  linkedinUrl    String?  @map("linkedin_url")
+  twitterUrl     String?  @map("twitter_url")
+  youtubeUrl     String?  @map("youtube_url")
   address        String?  @map("address")
   locationCity   String?  @map("location_city")
   locationState  String?  @map("location_state")
@@ -168,6 +174,9 @@ model VendorProfile {
   isGstVerified  Boolean    @default(false) @map("is_gst_verified")
   website        String?
   instagramUrl   String?    @map("instagram_url")
+  linkedinUrl    String?    @map("linkedin_url")
+  twitterUrl     String?    @map("twitter_url")
+  youtubeUrl     String?    @map("youtube_url")
   logoKey        String?    @map("logo_key")
   address        String?
   locationCity   String?    @map("location_city")
