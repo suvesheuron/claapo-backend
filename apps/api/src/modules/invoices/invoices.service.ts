@@ -182,6 +182,7 @@ export class InvoicesService {
               select: {
                 displayName: true,
                 locationCity: true,
+                address: true,
                 skills: true,
                 panNumber: true,
                 bankAccountName: true,
@@ -190,8 +191,32 @@ export class InvoicesService {
                 bankName: true,
               },
             },
-            vendorProfile: { select: { companyName: true, gstNumber: true, address: true } },
-            companyProfile: { select: { companyName: true, locationCity: true, gstNumber: true, address: true } },
+            vendorProfile: {
+              select: {
+                companyName: true,
+                gstNumber: true,
+                address: true,
+                locationCity: true,
+                panNumber: true,
+                bankAccountName: true,
+                bankAccountNumber: true,
+                ifscCode: true,
+                bankName: true,
+              },
+            },
+            companyProfile: {
+              select: {
+                companyName: true,
+                locationCity: true,
+                gstNumber: true,
+                address: true,
+                panNumber: true,
+                bankAccountName: true,
+                bankAccountNumber: true,
+                ifscCode: true,
+                bankName: true,
+              },
+            },
           },
         },
         recipient: {
@@ -202,6 +227,7 @@ export class InvoicesService {
               select: {
                 displayName: true,
                 locationCity: true,
+                address: true,
                 panNumber: true,
                 bankAccountName: true,
                 bankAccountNumber: true,
@@ -209,8 +235,32 @@ export class InvoicesService {
                 bankName: true,
               },
             },
-            vendorProfile: { select: { companyName: true, gstNumber: true, address: true } },
-            companyProfile: { select: { companyName: true, locationCity: true, gstNumber: true, address: true } },
+            vendorProfile: {
+              select: {
+                companyName: true,
+                gstNumber: true,
+                address: true,
+                locationCity: true,
+                panNumber: true,
+                bankAccountName: true,
+                bankAccountNumber: true,
+                ifscCode: true,
+                bankName: true,
+              },
+            },
+            companyProfile: {
+              select: {
+                companyName: true,
+                locationCity: true,
+                gstNumber: true,
+                address: true,
+                panNumber: true,
+                bankAccountName: true,
+                bankAccountNumber: true,
+                ifscCode: true,
+                bankName: true,
+              },
+            },
           },
         },
       },
@@ -255,6 +305,7 @@ export class InvoicesService {
       individualProfile?: {
         displayName: string;
         locationCity?: string | null;
+        address?: string | null;
         skills?: string[];
         panNumber?: string | null;
         bankAccountName?: string | null;
@@ -262,12 +313,27 @@ export class InvoicesService {
         ifscCode?: string | null;
         bankName?: string | null;
       } | null;
-      vendorProfile?: { companyName: string; gstNumber?: string | null; address?: string | null } | null;
+      vendorProfile?: {
+        companyName: string;
+        gstNumber?: string | null;
+        address?: string | null;
+        locationCity?: string | null;
+        panNumber?: string | null;
+        bankAccountName?: string | null;
+        bankAccountNumber?: string | null;
+        ifscCode?: string | null;
+        bankName?: string | null;
+      } | null;
       companyProfile?: {
         companyName: string;
         locationCity?: string | null;
         gstNumber?: string | null;
         address?: string | null;
+        panNumber?: string | null;
+        bankAccountName?: string | null;
+        bankAccountNumber?: string | null;
+        ifscCode?: string | null;
+        bankName?: string | null;
       } | null;
     };
     recipient: {
@@ -276,18 +342,34 @@ export class InvoicesService {
       individualProfile?: {
         displayName: string;
         locationCity?: string | null;
+        address?: string | null;
         panNumber?: string | null;
         bankAccountName?: string | null;
         bankAccountNumber?: string | null;
         ifscCode?: string | null;
         bankName?: string | null;
       } | null;
-      vendorProfile?: { companyName: string; gstNumber?: string | null; address?: string | null } | null;
+      vendorProfile?: {
+        companyName: string;
+        gstNumber?: string | null;
+        address?: string | null;
+        locationCity?: string | null;
+        panNumber?: string | null;
+        bankAccountName?: string | null;
+        bankAccountNumber?: string | null;
+        ifscCode?: string | null;
+        bankName?: string | null;
+      } | null;
       companyProfile?: {
         companyName: string;
         locationCity?: string | null;
         gstNumber?: string | null;
         address?: string | null;
+        panNumber?: string | null;
+        bankAccountName?: string | null;
+        bankAccountNumber?: string | null;
+        ifscCode?: string | null;
+        bankName?: string | null;
       } | null;
     };
     lineItems: { description: string; quantity: unknown; unitPrice: number; amount: number }[];
@@ -302,7 +384,9 @@ export class InvoicesService {
     const getCity = (u: {
       individualProfile?: { locationCity?: string | null } | null;
       companyProfile?: { locationCity?: string | null } | null;
-    }) => u.individualProfile?.locationCity ?? u.companyProfile?.locationCity ?? null;
+      vendorProfile?: { locationCity?: string | null } | null;
+    }) =>
+      u.individualProfile?.locationCity ?? u.companyProfile?.locationCity ?? u.vendorProfile?.locationCity ?? null;
     const issuerInd = invoice.issuer.individualProfile;
     const recipientInd = invoice.recipient.individualProfile;
     const issuerCompany = invoice.issuer.companyProfile;
@@ -313,7 +397,7 @@ export class InvoicesService {
       ? {
           name: issuerInd.displayName,
           gstNumber: null as string | null,
-          address: null as string | null,
+          address: issuerInd.address ?? null,
           panNumber: issuerInd.panNumber ?? null,
           bankAccountName: issuerInd.bankAccountName ?? null,
           bankAccountNumber: issuerInd.bankAccountNumber ?? null,
@@ -324,17 +408,17 @@ export class InvoicesService {
           name: issuerCompany?.companyName ?? issuerVendor?.companyName ?? invoice.issuer.email,
           gstNumber: issuerCompany?.gstNumber ?? issuerVendor?.gstNumber ?? null,
           address: issuerCompany?.address ?? issuerVendor?.address ?? null,
-          panNumber: null as string | null,
-          bankAccountName: null as string | null,
-          bankAccountNumber: null as string | null,
-          ifscCode: null as string | null,
-          bankName: null as string | null,
+          panNumber: issuerCompany?.panNumber ?? issuerVendor?.panNumber ?? null,
+          bankAccountName: issuerCompany?.bankAccountName ?? issuerVendor?.bankAccountName ?? null,
+          bankAccountNumber: issuerCompany?.bankAccountNumber ?? issuerVendor?.bankAccountNumber ?? null,
+          ifscCode: issuerCompany?.ifscCode ?? issuerVendor?.ifscCode ?? null,
+          bankName: issuerCompany?.bankName ?? issuerVendor?.bankName ?? null,
         };
     const recipientDetails = recipientInd
       ? {
           name: recipientInd.displayName,
           gstNumber: null as string | null,
-          address: null as string | null,
+          address: recipientInd.address ?? null,
           panNumber: recipientInd.panNumber ?? null,
           bankAccountName: recipientInd.bankAccountName ?? null,
           bankAccountNumber: recipientInd.bankAccountNumber ?? null,
@@ -345,11 +429,11 @@ export class InvoicesService {
           name: recipientCompany?.companyName ?? recipientVendor?.companyName ?? invoice.recipient.email,
           gstNumber: recipientCompany?.gstNumber ?? recipientVendor?.gstNumber ?? null,
           address: recipientCompany?.address ?? recipientVendor?.address ?? null,
-          panNumber: null as string | null,
-          bankAccountName: null as string | null,
-          bankAccountNumber: null as string | null,
-          ifscCode: null as string | null,
-          bankName: null as string | null,
+          panNumber: recipientCompany?.panNumber ?? recipientVendor?.panNumber ?? null,
+          bankAccountName: recipientCompany?.bankAccountName ?? recipientVendor?.bankAccountName ?? null,
+          bankAccountNumber: recipientCompany?.bankAccountNumber ?? recipientVendor?.bankAccountNumber ?? null,
+          ifscCode: recipientCompany?.ifscCode ?? recipientVendor?.ifscCode ?? null,
+          bankName: recipientCompany?.bankName ?? recipientVendor?.bankName ?? null,
         };
     const taxRatePct = invoice.amount > 0 ? Math.round((invoice.gstAmount / invoice.amount) * 100) : 18;
     const attachmentsWithUrls = (invoice.attachments ?? []).map(async (a) => ({

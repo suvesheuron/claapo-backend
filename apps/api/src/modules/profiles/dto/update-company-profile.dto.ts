@@ -1,5 +1,5 @@
 import { ApiPropertyOptional } from '@nestjs/swagger';
-import { IsString, IsOptional, IsUrl } from 'class-validator';
+import { IsString, IsOptional, IsUrl, IsArray } from 'class-validator';
 
 export class UpdateCompanyProfileDto {
   @ApiPropertyOptional()
@@ -22,10 +22,21 @@ export class UpdateCompanyProfileDto {
   @IsString()
   companyType?: string;
 
+  @ApiPropertyOptional({ example: ['Camera', 'Lighting'] })
+  @IsOptional()
+  @IsArray()
+  @IsString({ each: true })
+  skills?: string[];
+
   @ApiPropertyOptional()
   @IsOptional()
   @IsUrl()
   website?: string;
+
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsUrl()
+  imdbUrl?: string;
 
   @ApiPropertyOptional()
   @IsOptional()
@@ -35,17 +46,12 @@ export class UpdateCompanyProfileDto {
   @ApiPropertyOptional()
   @IsOptional()
   @IsUrl()
-  linkedinUrl?: string;
-
-  @ApiPropertyOptional()
-  @IsOptional()
-  @IsUrl()
-  twitterUrl?: string;
-
-  @ApiPropertyOptional()
-  @IsOptional()
-  @IsUrl()
   youtubeUrl?: string;
+
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsUrl()
+  vimeoUrl?: string;
 
   @ApiPropertyOptional()
   @IsOptional()
@@ -61,6 +67,26 @@ export class UpdateCompanyProfileDto {
   @IsOptional()
   @IsString()
   locationState?: string;
+
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsString()
+  bankAccountName?: string;
+
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsString()
+  bankAccountNumber?: string;
+
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsString()
+  ifscCode?: string;
+
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsString()
+  bankName?: string;
 
   @ApiPropertyOptional()
   @IsOptional()

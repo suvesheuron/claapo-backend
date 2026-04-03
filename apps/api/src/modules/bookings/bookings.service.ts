@@ -68,6 +68,12 @@ export class BookingsService {
       vendorEquipmentId = equipment.id;
     }
 
+    const shootDates =
+      dto.shootDates?.length ?
+        [...new Set(dto.shootDates.map((s) => s.trim()).filter(Boolean))]
+          .map((s) => new Date(s))
+          .filter((d) => !Number.isNaN(d.getTime()))
+      : [];
     const expiresAt = new Date(Date.now() + 48 * 60 * 60 * 1000);
     const booking = await this.prisma.bookingRequest.create({
       data: {
@@ -78,6 +84,7 @@ export class BookingsService {
         vendorEquipmentId,
         rateOffered: dto.rateOffered,
         message: dto.message,
+        shootDates,
         expiresAt,
       },
       include: { project: true, target: { select: { id: true, email: true, role: true } } },
@@ -95,8 +102,14 @@ export class BookingsService {
       const rateStr = booking.rateOffered
         ? ` · Offered rate: ₹${(booking.rateOffered / 100).toLocaleString('en-IN')}/day`
         : '';
+      const datesStr =
+        shootDates.length > 0
+          ? `\n\nRequested dates: ${shootDates
+              .map((d) => d.toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' }))
+              .join(', ')}`
+          : '';
       const customMsg = dto.message?.trim() ? `\n\nMessage: "${dto.message.trim()}"` : '';
-      const chatContent = `Booking Request — ${booking.project.title}${rateStr}${customMsg}\n\nPlease accept or decline from your Bookings page.`;
+      const chatContent = `Booking Request — ${booking.project.title}${rateStr}${datesStr}${customMsg}\n\nPlease accept or decline from your Bookings page.`;
       await this.chat.sendBookingRequestMessage(
         companyCtx.accountOwnerId,
         targetAccountUserId,

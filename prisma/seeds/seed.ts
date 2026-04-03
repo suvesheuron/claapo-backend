@@ -503,7 +503,7 @@ async function main() {
       bio: `${displayName} is a professional ${skills[0]} based in ${loc.city}.`,
       aboutMe: `With ${Math.floor(Math.random() * 15) + 2} years of experience in the film industry, specializing in ${skills.join(', ')}. Available for freelance projects across India.`,
       skills,
-      genre: pick(GENRES),
+      genres: [pick(GENRES)],
       locationCity: loc.city,
       locationState: loc.state,
       lat: loc.lat + (Math.random() - 0.5) * 0.1,

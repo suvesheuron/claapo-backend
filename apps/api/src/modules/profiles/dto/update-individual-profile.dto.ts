@@ -1,5 +1,5 @@
 import { ApiPropertyOptional } from '@nestjs/swagger';
-import { IsString, IsOptional, IsArray, IsInt, IsBoolean, IsUrl, Min, Max } from 'class-validator';
+import { IsString, IsOptional, IsArray, IsInt, IsBoolean, IsUrl, Min, Max, ArrayMaxSize } from 'class-validator';
 import { Type } from 'class-transformer';
 
 export class UpdateIndividualProfileDto {
@@ -24,10 +24,17 @@ export class UpdateIndividualProfileDto {
   @IsString({ each: true })
   skills?: string[];
 
-  @ApiPropertyOptional({ example: 'Action' })
+  @ApiPropertyOptional({ example: ['Drama', 'Comedy'], type: [String] })
+  @IsOptional()
+  @IsArray()
+  @IsString({ each: true })
+  @ArrayMaxSize(32)
+  genres?: string[];
+
+  @ApiPropertyOptional({ description: 'Mailing / invoice address' })
   @IsOptional()
   @IsString()
-  genre?: string;
+  address?: string;
 
   @ApiPropertyOptional()
   @IsOptional()
@@ -73,17 +80,12 @@ export class UpdateIndividualProfileDto {
   @ApiPropertyOptional()
   @IsOptional()
   @IsUrl()
-  linkedinUrl?: string;
-
-  @ApiPropertyOptional()
-  @IsOptional()
-  @IsUrl()
-  twitterUrl?: string;
-
-  @ApiPropertyOptional()
-  @IsOptional()
-  @IsUrl()
   youtubeUrl?: string;
+
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsUrl()
+  vimeoUrl?: string;
 
   @ApiPropertyOptional()
   @IsOptional()

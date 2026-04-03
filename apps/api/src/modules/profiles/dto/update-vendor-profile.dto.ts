@@ -25,8 +25,18 @@ export class UpdateVendorProfileDto {
 
   @ApiPropertyOptional()
   @IsOptional()
+  @IsString()
+  panNumber?: string;
+
+  @ApiPropertyOptional()
+  @IsOptional()
   @IsUrl()
   website?: string;
+
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsUrl()
+  imdbUrl?: string;
 
   @ApiPropertyOptional()
   @IsOptional()
@@ -36,17 +46,12 @@ export class UpdateVendorProfileDto {
   @ApiPropertyOptional()
   @IsOptional()
   @IsUrl()
-  linkedinUrl?: string;
-
-  @ApiPropertyOptional()
-  @IsOptional()
-  @IsUrl()
-  twitterUrl?: string;
-
-  @ApiPropertyOptional()
-  @IsOptional()
-  @IsUrl()
   youtubeUrl?: string;
+
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsUrl()
+  vimeoUrl?: string;
 
   @ApiPropertyOptional()
   @IsOptional()
@@ -62,6 +67,26 @@ export class UpdateVendorProfileDto {
   @IsOptional()
   @IsString()
   address?: string;
+
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsString()
+  bankAccountName?: string;
+
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsString()
+  bankAccountNumber?: string;
+
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsString()
+  ifscCode?: string;
+
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsString()
+  bankName?: string;
 
   @ApiPropertyOptional()
   @IsOptional()

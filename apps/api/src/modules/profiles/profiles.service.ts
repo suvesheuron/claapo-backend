@@ -85,12 +85,14 @@ export class ProfilesService {
     await this.ensureRole(userId, UserRole.individual);
     const existing = await this.prisma.individualProfile.findUnique({ where: { userId } });
     const skillsNormalized = dto.skills?.map((s) => String(s).trim().toUpperCase()).filter(Boolean);
+    const genresNormalized = dto.genres?.map((g) => String(g).trim()).filter(Boolean);
     const data = {
       displayName: dto.displayName,
       bio: dto.bio,
       aboutMe: dto.aboutMe,
       skills: skillsNormalized,
-      genre: dto.genre,
+      genres: genresNormalized,
+      address: dto.address,
       locationCity: dto.locationCity,
       locationState: dto.locationState,
       lat: dto.lat,
@@ -98,9 +100,8 @@ export class ProfilesService {
       dailyBudget: dto.dailyBudget,
       imdbUrl: dto.imdbUrl,
       instagramUrl: dto.instagramUrl,
-      linkedinUrl: dto.linkedinUrl,
-      twitterUrl: dto.twitterUrl,
       youtubeUrl: dto.youtubeUrl,
+      vimeoUrl: dto.vimeoUrl,
       isAvailable: dto.isAvailable,
       panNumber: dto.panNumber,
       bankAccountName: dto.bankAccountName,
@@ -127,19 +128,25 @@ export class ProfilesService {
   async updateCompany(userId: string, dto: UpdateCompanyProfileDto) {
     await this.ensureRole(userId, UserRole.company);
     const existing = await this.prisma.companyProfile.findUnique({ where: { userId } });
+    const skillsNormalized = dto.skills?.map((s) => String(s).trim()).filter(Boolean);
     const data = {
       companyName: dto.companyName,
       gstNumber: dto.gstNumber,
       panNumber: dto.panNumber,
       companyType: dto.companyType,
+      skills: skillsNormalized,
       website: dto.website,
+      imdbUrl: dto.imdbUrl,
       instagramUrl: dto.instagramUrl,
-      linkedinUrl: dto.linkedinUrl,
-      twitterUrl: dto.twitterUrl,
       youtubeUrl: dto.youtubeUrl,
+      vimeoUrl: dto.vimeoUrl,
       address: dto.address,
       locationCity: dto.locationCity,
       locationState: dto.locationState,
+      bankAccountName: dto.bankAccountName,
+      bankAccountNumber: dto.bankAccountNumber,
+      ifscCode: dto.ifscCode,
+      bankName: dto.bankName,
       bio: dto.bio,
       aboutUs: dto.aboutUs,
     };
@@ -167,14 +174,19 @@ export class ProfilesService {
       vendorType: dto.vendorType,
       vendorServiceCategory: dto.vendorServiceCategory,
       gstNumber: dto.gstNumber,
+      panNumber: dto.panNumber,
       website: dto.website,
+      imdbUrl: dto.imdbUrl,
       instagramUrl: dto.instagramUrl,
-      linkedinUrl: dto.linkedinUrl,
-      twitterUrl: dto.twitterUrl,
       youtubeUrl: dto.youtubeUrl,
+      vimeoUrl: dto.vimeoUrl,
       address: dto.address,
       locationCity: dto.locationCity,
       locationState: dto.locationState,
+      bankAccountName: dto.bankAccountName,
+      bankAccountNumber: dto.bankAccountNumber,
+      ifscCode: dto.ifscCode,
+      bankName: dto.bankName,
       bio: dto.bio,
       aboutUs: dto.aboutUs,
     };
