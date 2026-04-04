@@ -65,6 +65,12 @@ export class AuthService {
     return bcrypt.compare(otp, hash);
   }
 
+  /** Include plaintext OTP in JSON when SMS is not wired (dev/staging demos). Never enabled in production unless EXPOSE_OTP_IN_API is set. */
+  private exposeOtpInApi(): boolean {
+    if (this.config.get<boolean>('exposeOtpInApi')) return true;
+    return this.config.get<string>('env') !== 'production';
+  }
+
   async registerIndividual(dto: RegisterIndividualDto): Promise<{ userId: string; message: string }> {
     await this.ensureEmailPhoneAvailable(dto.email, dto.phone);
     const passwordHash = await this.hashPassword(dto.password);
@@ -117,7 +123,7 @@ export class AuthService {
     }
   }
 
-  async sendOtp(phone: string): Promise<{ message: string }> {
+  async sendOtp(phone: string): Promise<{ message: string; devOtp?: string }> {
     const user = await this.prisma.user.findFirst({ where: { phone, deletedAt: null } });
     const otp = this.generateOtp();
     const otpHash = await this.hashOtp(otp);
@@ -130,9 +136,12 @@ export class AuthService {
         expiresAt,
       },
     });
-    // TODO: enqueue SMS via BullMQ (MSG91/Twilio). For now just log in dev.
+    // TODO: enqueue SMS via BullMQ (MSG91/Twilio). For now log + optional devOtp in response.
     if (this.config.get('env') === 'development') {
       console.log(`[DEV] OTP for ${phone}: ${otp} (expires in ${OTP_EXPIRY_MINUTES} min)`);
+    }
+    if (this.exposeOtpInApi()) {
+      return { message: 'OTP sent successfully', devOtp: otp };
     }
     return { message: 'OTP sent successfully' };
   }
@@ -253,9 +262,10 @@ export class AuthService {
     return { message: 'Logged out successfully' };
   }
 
-  async passwordResetRequest(phone: string): Promise<{ message: string }> {
+  async passwordResetRequest(phone: string): Promise<{ message: string; devOtp?: string }> {
     const user = await this.prisma.user.findFirst({ where: { phone, deletedAt: null } });
-    if (!user) return { message: 'If this number is registered, you will receive an OTP.' };
+    const genericMsg = 'If this number is registered, you will receive an OTP.';
+    if (!user) return { message: genericMsg };
     const otp = this.generateOtp();
     const otpHash = await this.hashOtp(otp);
     const expiresAt = new Date(Date.now() + OTP_EXPIRY_MINUTES * 60 * 1000);
@@ -265,7 +275,10 @@ export class AuthService {
     if (this.config.get('env') === 'development') {
       console.log(`[DEV] Password reset OTP for ${phone}: ${otp}`);
     }
-    return { message: 'If this number is registered, you will receive an OTP.' };
+    if (this.exposeOtpInApi()) {
+      return { message: genericMsg, devOtp: otp };
+    }
+    return { message: genericMsg };
   }
 
   async passwordResetConfirm(

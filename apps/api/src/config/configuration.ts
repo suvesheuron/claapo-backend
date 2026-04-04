@@ -1,6 +1,8 @@
 export default () => ({
   port: parseInt(process.env.PORT ?? '3000', 10),
   env: process.env.NODE_ENV ?? 'development',
+  /** When true, OTP responses include `devOtp` (use only without real SMS; never in real production). */
+  exposeOtpInApi: process.env.EXPOSE_OTP_IN_API === 'true',
   apiBaseUrl: process.env.API_BASE_URL ?? 'http://localhost:3000',
   corsOrigins: (process.env.CORS_ORIGINS ?? 'http://localhost:3000,*').split(',').map((s) => s.trim()),
   jwt: {
