@@ -1,199 +1,220 @@
 # CrewCall Backend
 
-Production-grade backend for CrewCall (crewcall.in / crewcall.app).  
-Stack: **Node.js (NestJS)** + **PostgreSQL** + **Redis**.  
-See `../crewcall_backend_plan.md` for full architecture.
+Production backend for **CrewCall / Claapo** (crewcall.in / crewcall.app) — a hiring and crew-management platform connecting production companies with verified freelance crew and equipment vendors.
 
-## Directory structure (from plan)
+**Stack:** Node.js (NestJS 10) · TypeScript · PostgreSQL 16 · Prisma 5 · Redis · Socket.IO · Swagger
+
+---
+
+## Prerequisites
+
+| Tool | Version |
+|---|---|
+| Node.js | **>= 20** (tested on Node 24) |
+| npm | >= 10 |
+| Docker + Docker Compose | latest stable |
+
+> The local PostgreSQL database runs in Docker — you do not need Postgres installed on the host.
+
+---
+
+## Quick start
+
+```bash
+# 1. Clone & install
+cd crewcall-backend
+npm install
+
+# 2. Create your env file
+cp .env.example .env
+# Edit .env if you want to change credentials, ports, JWT secrets, etc.
+
+# 3. Start the database (Docker container: claapo-db)
+docker compose up -d
+
+# 4. Apply migrations and generate the Prisma client
+npm run prisma:migrate:deploy
+npm run prisma:generate
+
+# 5. (Optional) Seed light demo data
+npm run prisma:seed
+
+# 6. Start the API in dev mode
+npm run start:dev
+```
+
+After step 6 the API is available at:
+
+| Endpoint | URL |
+|---|---|
+| REST API | http://localhost:3000/v1 |
+| Swagger docs | http://localhost:3000/docs |
+| Health check | http://localhost:3000/v1/health |
+| Chat WebSocket | ws://localhost:3000/chat |
+
+---
+
+## Database (Docker)
+
+The local Postgres instance is defined in **`docker-compose.yml`** at the backend root.
+
+| Setting | Default |
+|---|---|
+| Image | `postgres:16-alpine` |
+| Container name | **`claapo-db`** |
+| Host port | `5432` |
+| User / Password / DB | `claapo` / `claapo_password` / `claapo` |
+| Persistent volume | `claapo_pgdata` |
+
+Override any of these via env vars (`POSTGRES_USER`, `POSTGRES_PASSWORD`, `POSTGRES_DB`, `POSTGRES_PORT`) before running compose.
+
+### Common commands
+
+```bash
+docker compose up -d           # start the database in background
+docker compose ps              # check status / health
+docker compose logs -f db      # tail database logs
+docker compose stop            # stop the container (keeps data)
+docker compose down            # stop and remove the container (keeps volume)
+docker compose down -v         # stop AND wipe the data volume (destructive)
+```
+
+The matching `DATABASE_URL` for the defaults is:
+
+```
+postgresql://claapo:claapo_password@localhost:5432/claapo?schema=public
+```
+
+This is already set in `.env` after step 2 of the quick start.
+
+---
+
+## Environment variables
+
+See `.env.example` for the full list. The most relevant groups:
+
+| Group | Keys |
+|---|---|
+| **App** | `NODE_ENV`, `PORT`, `API_BASE_URL`, `CORS_ORIGINS` |
+| **Database** | `DATABASE_URL`, `POSTGRES_USER`, `POSTGRES_PASSWORD`, `POSTGRES_DB`, `POSTGRES_PORT` |
+| **Redis** | `REDIS_URL` |
+| **JWT** | `JWT_SECRET`, `JWT_EXPIRES_IN`, `JWT_REFRESH_SECRET`, `JWT_REFRESH_EXPIRES_IN` |
+| **AWS S3** *(optional)* | `AWS_REGION`, `AWS_S3_BUCKET`, `AWS_CLOUDFRONT_DOMAIN` |
+| **Razorpay** *(optional)* | `RAZORPAY_KEY_ID`, `RAZORPAY_KEY_SECRET`, `RAZORPAY_WEBHOOK_SECRET` |
+| **Rate limits** | `THROTTLE_TTL`, `THROTTLE_LIMIT`, `AI_CHAT_HOURLY_LIMIT` |
+
+`CORS_ORIGINS` is comma-separated. Use `*` to reflect any browser Origin (handy in dev / when testing from ngrok).
+
+---
+
+## Project structure
 
 ```
 crewcall-backend/
 ├── apps/
-│   ├── api/                    # Main NestJS API
+│   ├── api/                          # Main NestJS API
 │   │   └── src/
-│   │       ├── modules/        # auth, users, profiles, availability, projects,
-│   │       │                   # bookings, search, chat, invoices, notifications,
-│   │       │                   # admin, ai, storage, webhooks
-│   │       ├── gateways/       # Socket.io chat gateway
-│   │       ├── common/         # guards, interceptors, filters, pipes, decorators
+│   │       ├── main.ts               # Bootstrap, Swagger, CORS, global prefix /v1
+│   │       ├── app.module.ts
+│   │       ├── common/               # Guards, filters, pipes, decorators
 │   │       ├── config/
-│   │       ├── database/
-│   │       └── main.ts
-│   └── workers/                # BullMQ: email, sms, push, pdf, ai
+│   │       ├── database/             # Prisma module + service
+│   │       ├── gateways/             # Socket.IO chat gateway
+│   │       └── modules/
+│   │           ├── admin/            # Admin panel APIs
+│   │           ├── ai/               # AI features
+│   │           ├── auth/             # Register, OTP, login, refresh, reset
+│   │           ├── availability/     # Calendar slots
+│   │           ├── bookings/         # Crew/vendor booking requests
+│   │           ├── chat/             # Conversations + messages
+│   │           ├── equipment/        # Vendor equipment catalogue
+│   │           ├── invoices/         # Invoices, line items, Razorpay
+│   │           ├── notifications/    # In-app + FCM
+│   │           ├── profiles/         # Individual / Company / Vendor
+│   │           ├── projects/         # Projects + project roles
+│   │           ├── reviews/
+│   │           ├── search/           # Crew & vendor discovery
+│   │           ├── storage/          # S3 presigned URLs
+│   │           ├── users/
+│   │           └── webhooks/         # Razorpay webhook
+│   └── workers/                      # Background workers (BullMQ)
 ├── libs/
-│   ├── shared-types/           # DTOs, enums
+│   ├── shared-types/                 # DTOs, enums
 │   └── shared-utils/
 ├── prisma/
 │   ├── schema.prisma
-│   └── migrations/
-├── scripts/                    # seed, generate-openapi
-├── docker/                     # Dockerfile.api, Dockerfile.worker, docker-compose
-└── .github/workflows/          # ci.yml, deploy.yml
+│   ├── migrations/
+│   └── seeds/                        # seed.ts, seed-light.ts, wipe-database.ts
+├── scripts/
+├── docker-compose.yml                # Local Postgres (container: claapo-db)
+├── docker/                           # Legacy compose file (kept for reference)
+├── .env.example
+├── package.json
+└── tsconfig.json
 ```
-
-## Mobile app alignment (crewcall-mobile-app)
-
-Screens that will consume this API: Login, Register, UserTypeSelection, Profile, Calendar, CreateProject, FindCrew, Invoices, Messages, Notifications, Company/Vendor dashboards, etc.
-
-## Repo layout and frontend connection
-
-Backend connects to frontends **by URL**, not by folder structure. You can keep admin UI and web UI in the repo root alongside the backend:
-
-```
-crewcall/
-├── crewcall-backend/     # this API
-├── crewcall-mobile-app/
-├── crewcall-admin-ui/    # admin dashboard
-└── crewcall-web-ui/      # main marketing/app site
-```
-
-- Each frontend sets its API base URL (e.g. `VITE_API_URL`, `NEXT_PUBLIC_API_URL`) to the backend (e.g. `http://localhost:3000` in dev, `https://api.crewcall.in` in prod).
-- Backend must allow their origins in **CORS**: set `CORS_ORIGINS` in `.env` to include admin and web UI origins (see `.env.example`).
-
-No backend code changes are required for “finding” admin or web UI; they just call the same API.
-
-## Part 1 — Foundation & Auth ✓
-
-- NestJS app under `apps/api`, global prefix `v1`, Swagger at `/docs`.
-- Prisma schema: `users`, `otp_sessions`, `refresh_tokens` (enums: UserRole, OtpType).
-- Docker Compose: Postgres 16 + Redis 7 in `docker/docker-compose.yml`.
-- Auth: register (individual, company, vendor), OTP send/verify, login, refresh, logout, password reset.
-- Common: JwtAuthGuard, RolesGuard, CurrentUser decorator, validation pipe, exception filter.
-
-### Run locally
-
-1. **Install**
-   ```bash
-   cd crewcall-backend
-   npm install
-   copy .env.example .env
-   ```
-   Edit `.env` (e.g. `DATABASE_URL`, `JWT_SECRET`).
-
-2. **Start database (Docker)**
-   ```bash
-   docker compose -f docker/docker-compose.yml up -d
-   ```
-
-3. **Setup database**
-   ```bash
-   # Generate Prisma client
-   npm run prisma:generate
-
-   # Run migrations (use deploy when pulling repo; use this when changing schema)
-   npm run prisma:migrate
-   # Or, when only applying existing migrations (e.g. after git pull):
-   # npm run prisma:migrate:deploy
-
-   # Seed test data (optional; run after adding prisma/seed.ts)
-   npm run prisma:seed
-   ```
-
-4. **Start API**
-   ```bash
-   npm run start:dev
-   ```
-   - API: http://localhost:3000/v1  
-   - Swagger: http://localhost:3000/docs  
-   - Health: http://localhost:3000/v1/health  
-
-5. **Try auth**
-   - `POST /v1/auth/register/individual` with `{ "email", "phone", "password" }`
-   - `POST /v1/auth/otp/send` with `{ "phone" }` — in dev, OTP is logged to console
-   - `POST /v1/auth/otp/verify` with `{ "phone", "otp" }` → returns `accessToken`, `refreshToken`
-   - `POST /v1/auth/login` with `{ "email", "password" }` → tokens
-
-## Part 2 — Profiles & Storage ✓
-
-- Prisma: `IndividualProfile`, `CompanyProfile`, `VendorProfile` (with `VendorType` enum).
-- **GET** `/v1/profile/me` — own profile (with avatar/showreel/logo URLs when S3 configured).
-- **PATCH** `/v1/profile/individual` | `/company` | `/vendor` — update by role.
-- **GET** `/v1/profile/:userId` — public profile (rates masked for non-company viewers).
-- **POST** `/v1/profile/avatar` — presigned PUT URL for avatar/logo; **POST** `/v1/profile/avatar/confirm` with `{ "key" }` to save.
-- **POST** `/v1/profile/showreel` (individual only) — presigned URL; **POST** `/v1/profile/showreel/confirm` with `{ "key" }`.
-- Storage: S3 presigned URLs via `StorageService` (optional; set `AWS_S3_BUCKET` and credentials to enable).
-
-After Part 2, run: `npx prisma migrate dev --name add_profiles`
-
-## Part 3 — Availability & Calendar ✓
-
-- Prisma: `AvailabilitySlot` (userId, date, status: available | booked | blocked | past_work).
-- **GET** `/v1/availability/me?year=&month=` — own calendar (returns `{ year, month, slots: { "YYYY-MM-DD": status } }`).
-- **PUT** `/v1/availability/bulk` — body `{ slots: [{ date, status, notes? }] }` (individual/vendor only).
-- **GET** `/v1/availability/:userId?year=&month=` — company views another user’s calendar (masked).
-
-Run: `npx prisma migrate dev --name add_availability`
-
-### Mobile app alignment
-
-The **crewcall-mobile-app** is wired to this backend:
-
-- **API base URL**: In dev the app uses `http://localhost:3000/v1` by default. For **physical device or APK**, use **Settings → Developer → API base URL** and paste your ngrok URL (e.g. `https://xxxx.ngrok-free.app/v1`) — no rebuild needed. See **[../docs/NGROK_SETUP.md](../docs/NGROK_SETUP.md)** for full steps.
-- **Auth**: Login screen calls `POST /auth/login`; Register calls `/auth/register/individual|company|vendor` then login. Tokens stored in memory; logout clears them and resets to Login screen.
-- **Profile**: Drawer and Profile screen show `user` from `GET /profile/me` (loaded after login).
-- **Availability**: `getMyCalendar(year, month)` and `setAvailability(slots)` in `src/api/availability.ts` for future Calendar screen integration.
-
-Ensure backend is running. CORS: in development, `.env.example` sets `CORS_ORIGINS=*,...` so ngrok and any origin are allowed; for production set explicit origins.
-
-## Part 4 — Projects & Bookings ✓
-
-- Prisma: `Project`, `ProjectRole`, `BookingRequest`; enums `ProjectStatus`, `BookingStatus`.
-- **POST** `/v1/projects` — create project (company).
-- **GET** `/v1/projects` — list own projects (paginated).
-- **GET** `/v1/projects/:id` — get project (owner or booked crew).
-- **PATCH** `/v1/projects/:id` — update; **DELETE** `/v1/projects/:id` — draft only.
-- **POST** `/v1/projects/:id/roles` — add role (company).
-- **POST** `/v1/bookings/request` — send request; **GET** `/v1/bookings/incoming` | **/outgoing**.
-- **PATCH** `/v1/bookings/:id/accept` | **/decline** | **/lock** | **/cancel**.
-- Accept sets target’s calendar slots to `booked`; cancel reverts to `available`.
-
-Run: `npx prisma migrate dev --name add_projects_bookings`
-
-## Part 5 — Search & Discovery ✓ (no AI)
-
-- **GET** `/v1/search/crew` — company only. Query: `skill`, `city`, `state`, `startDate`, `endDate`, `rateMin`, `rateMax`, `availableOnly`, `page`, `limit`. Returns individuals with optional date-availability filter (excludes users with booked slots in range).
-- **GET** `/v1/search/vendors` — company only. Query: `type` (equipment|lighting|transport|catering), `page`, `limit`.
-
-## Part 6 — Invoices & Webhooks ✓
-
-- Prisma: `Invoice` (projectId, issuer/recipient userId, invoiceNumber, amount, gstAmount, totalAmount, status, dueDate, pdfKey, razorpayOrderId, paidAt), `InvoiceLineItem` (description, quantity, unitPrice, amount). Amounts in **paise** (INR × 100).
-- **POST** `/v1/invoices` — create (individual/vendor); body: projectId, recipientUserId, dueDate?, lineItems[].
-- **GET** `/v1/invoices`, **GET** `/v1/invoices/:id` — list own, get one.
-- **PATCH** `/v1/invoices/:id` — update draft (issuer).
-- **POST** `/v1/invoices/:id/send` — set status to sent (issuer).
-- **GET** `/v1/invoices/:id/pdf` — returns pdfKey or placeholder (PDF generation can be added via worker).
-- **POST** `/v1/invoices/:id/pay` — company initiates Razorpay order; returns orderId, amount, keyId for client-side checkout.
-- **POST** `/v1/webhooks/razorpay` — Razorpay webhook (HMAC verified); on `payment.captured` marks invoice paid. Configure raw body for this route for signature verification.
-
-Run: `npx prisma migrate dev --name add_invoices`. Set `RAZORPAY_KEY_ID`, `RAZORPAY_KEY_SECRET`, `RAZORPAY_WEBHOOK_SECRET` for payments.
-
-## Part 7 — Notifications ✓
-
-- Prisma: `Notification` (userId, type, title, body, data, readAt, createdAt); `User.notificationPreferences` (Json), `User.fcmToken` already present.
-- **GET** `/v1/notifications` — list own (paginated, unread first); response includes `unreadCount`.
-- **PATCH** `/v1/notifications/:id/read` — mark one read.
-- **PATCH** `/v1/notifications/read-all` — mark all read.
-- **GET** `/v1/notifications/preferences` — get push/email/SMS preferences.
-- **PATCH** `/v1/notifications/preferences` — body `{ push?, email?, sms? }`.
-- **POST** `/v1/devices/fcm-token` — body `{ token }` to register/update FCM token.
-- In-app notification created when a booking request is sent (target user gets a notification).
-
-Run: `npx prisma migrate dev --name add_notifications`
-
-## Part 8 — Admin panel APIs ✓
-
-All under **`/v1/admin`**, **JWT + admin role** required.
-
-- **GET** `/admin/users` — list users; query: `role`, `isActive`, `search`, `page`, `limit`.
-- **PATCH** `/admin/users/:id/status` — body `{ status: "active" | "inactive" | "banned" }`.
-- **POST** `/admin/users/:id/verify-gst` — mark company/vendor GST verified.
-- **GET** `/admin/projects` — list all projects (paginated).
-- **GET** `/admin/bookings` — list all bookings (paginated).
-- **GET** `/admin/invoices` — financial overview (paginated).
-- **GET** `/admin/analytics/dashboard` — KPI snapshot (usersTotal, projectsTotal, bookingsTotal, invoicesTotal, revenuePaise).
-- **GET** `/admin/analytics/revenue` — revenue by status, paid total/count.
-- **POST** `/admin/broadcast` — body `{ title?, body, type? }` — in-app notification to all active users.
 
 ---
 
-Backend implementation (excluding Chat and AI) is complete. Remaining: Chat, AI features (to be added later).
+## API surface (high level)
+
+All routes are prefixed with **`/v1`**. JWT bearer auth is required except where noted.
+
+| Area | Sample routes |
+|---|---|
+| **Auth** | `POST /auth/register/individual` · `/company` · `/vendor` · `/auth/otp/send` · `/auth/otp/verify` · `/auth/login` · `/auth/refresh` · `/auth/logout` · `/auth/password/reset` |
+| **Profile** | `GET /profile/me` · `PATCH /profile/individual\|company\|vendor` · `GET /profile/:userId` · `POST /profile/avatar` (presigned) · `POST /profile/showreel` |
+| **Availability** | `GET /availability/me` · `PUT /availability/bulk` · `GET /availability/:userId` |
+| **Projects** | `POST /projects` · `GET /projects` · `GET /projects/:id` · `PATCH /projects/:id` · `DELETE /projects/:id` · `POST /projects/:id/roles` |
+| **Bookings** | `POST /bookings/request` · `GET /bookings/incoming\|outgoing` · `PATCH /bookings/:id/accept\|decline\|lock\|cancel` |
+| **Search** | `GET /search/crew` · `GET /search/vendors` |
+| **Equipment** | `GET /equipment` · `POST /equipment` · `PATCH /equipment/:id` · `DELETE /equipment/:id` |
+| **Invoices** | `POST /invoices` · `GET /invoices` · `GET /invoices/:id` · `POST /invoices/:id/send` · `POST /invoices/:id/pay` · `GET /invoices/:id/pdf` |
+| **Notifications** | `GET /notifications` · `PATCH /notifications/:id/read` · `PATCH /notifications/read-all` · `GET\|PATCH /notifications/preferences` · `POST /devices/fcm-token` |
+| **Chat** | REST: `GET /chat/conversations` · `GET /chat/conversations/:id/messages` · WebSocket namespace: `/chat` |
+| **Admin** *(role=admin)* | `GET /admin/users` · `PATCH /admin/users/:id/status` · `GET /admin/projects\|bookings\|invoices` · `GET /admin/analytics/dashboard\|revenue` · `POST /admin/broadcast` |
+| **Webhooks** | `POST /webhooks/razorpay` (HMAC verified, raw body) |
+
+The full, always-current list lives in **Swagger** at http://localhost:3000/docs.
+
+---
+
+## Scripts
+
+| Command | Description |
+|---|---|
+| `npm run start:dev` | Start API in watch mode |
+| `npm run start:debug` | Start with `--debug --watch` |
+| `npm run start` | Start once (no watch) |
+| `npm run start:prod` | Run compiled `dist/main.js` |
+| `npm run build` | Compile with `nest build` |
+| `npm run lint` | ESLint over `apps/` and `libs/` |
+| `npm test` | Jest unit tests |
+| `npm run prisma:generate` | Regenerate Prisma client |
+| `npm run prisma:migrate` | Create + apply a new migration (dev) |
+| `npm run prisma:migrate:deploy` | Apply existing migrations (CI / prod / fresh clone) |
+| `npm run prisma:studio` | Open Prisma Studio |
+| `npm run prisma:seed` / `npm run seed` | Seed light demo data |
+| `npm run seed:massive` | Seed full demo dataset |
+| `npm run prisma:wipe` | Wipe all tables (destructive) |
+
+---
+
+## Mobile / web client integration
+
+Other apps connect to this backend by URL — there is no folder coupling.
+
+- Set `VITE_API_URL` (web) or `API base URL` in app settings (mobile) to:
+  - `http://localhost:3000/v1` for local dev
+  - `https://api.crewcall.in/v1` for production
+- For physical mobile devices use **ngrok**: `ngrok http 3000`, then put the HTTPS URL into the app's developer settings (no rebuild needed).
+- Make sure the client origin is allowed in `CORS_ORIGINS`.
+
+---
+
+## Production notes
+
+- Build: `npm run build` → `node dist/main.js`
+- Run migrations on deploy with `npm run prisma:migrate:deploy` (never `prisma:migrate` in prod).
+- The Razorpay webhook needs the **raw request body** to verify HMAC — keep that route's body parser configured accordingly.
+- Set strong values for `JWT_SECRET` and `JWT_REFRESH_SECRET`.
+- For AWS S3 uploads to work, set `AWS_REGION`, `AWS_S3_BUCKET`, and either AWS env credentials or an instance role.

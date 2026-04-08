@@ -1,0 +1,35 @@
+# CrewCall Backend — Local PostgreSQL database
+# Usage:
+#   docker compose up -d        # start the database in background
+#   docker compose ps           # check status / health
+#   docker compose logs -f db   # tail logs
+#   docker compose down         # stop (data is preserved in the named volume)
+#   docker compose down -v      # stop AND wipe the data volume
+#
+# After the container is healthy, run Prisma against it:
+#   npm run prisma:migrate
+#   npm run prisma:seed
+
+services:
+  db:
+    image: postgres:16-alpine
+    container_name: claapo-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-claapo}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-claapo_password}
+      POSTGRES_DB: ${POSTGRES_DB:-claapo}
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - claapo_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-claapo} -d ${POSTGRES_DB:-claapo}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+
+volumes:
+  claapo_pgdata:
+    name: claapo_pgdata
