@@ -93,6 +93,20 @@ export class SearchVendorsQueryDto {
   @IsOptional()
   @IsString()
   equipmentName?: string;
+
+  @ApiPropertyOptional({ description: 'Daily budget min INR' })
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(0)
+  rateMin?: number;
+
+  @ApiPropertyOptional({ description: 'Daily budget max INR' })
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(0)
+  rateMax?: number;
   //  company name s
   @ApiPropertyOptional({ description: 'Partial match on vendor company name' })
   @IsOptional()

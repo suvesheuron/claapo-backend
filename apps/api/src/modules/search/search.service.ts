@@ -1,4 +1,4 @@
-import { Injectable, ForbiddenException } from '@nestjs/common';
+import { Injectable, ForbiddenException, BadRequestException } from '@nestjs/common';
 import { UserRole } from '@prisma/client';
 import { PrismaService } from '../../database/prisma.service';
 import type { SearchCrewQueryDto, SearchVendorsQueryDto } from './dto/search-query.dto';
@@ -38,6 +38,12 @@ export class SearchService {
 
     const startDate = query.startDate ? new Date(query.startDate) : null;
     const endDate = query.endDate ? new Date(query.endDate) : null;
+    const rateMin = query.rateMin ?? null;
+    const rateMax = query.rateMax ?? null;
+
+    if (rateMin != null && rateMax != null && rateMin > rateMax) {
+      throw new BadRequestException('rateMin cannot be greater than rateMax');
+    }
 
     const where: any = {
       user: { deletedAt: null, isActive: true },
@@ -49,13 +55,11 @@ export class SearchService {
     if (query.state) {
       where.AND.push({ locationState: { equals: query.state, mode: 'insensitive' } });
     }
-    if (query.rateMin != null || query.rateMax != null) {
-      if (query.rateMin != null) {
-        where.AND.push({ OR: [{ dailyRateMax: { gte: query.rateMin } }, { dailyRateMax: null }] });
-      }
-      if (query.rateMax != null) {
-        where.AND.push({ OR: [{ dailyRateMin: { lte: query.rateMax } }, { dailyRateMin: null }] });
-      }
+    if (rateMin != null) {
+      where.AND.push({ dailyBudget: { gte: rateMin } });
+    }
+    if (rateMax != null) {
+      where.AND.push({ dailyBudget: { lte: rateMax } });
     }
     if (query.availableOnly === true) {
       where.AND.push({ isAvailable: true });
@@ -153,7 +157,20 @@ export class SearchService {
     const requestedCity = query.city?.trim().toLowerCase();
     const equipmentName = query.equipmentName?.trim().toLowerCase();
     const companyName = query.companyName?.trim();
-    const hasEquipmentAvailabilityFilter = !!(requestedCity || requestedStart || requestedEnd || equipmentName);
+    const rateMin = query.rateMin ?? null;
+    const rateMax = query.rateMax ?? null;
+    const hasEquipmentAvailabilityFilter = !!(
+      requestedCity ||
+      requestedStart ||
+      requestedEnd ||
+      equipmentName ||
+      rateMin != null ||
+      rateMax != null
+    );
+
+    if (rateMin != null && rateMax != null && rateMin > rateMax) {
+      throw new BadRequestException('rateMin cannot be greater than rateMax');
+    }
 
     // Equipment IDs that are already booked (accepted/locked) for shoots overlapping the requested date range
     let bookedEquipmentIds = new Set<string>();
@@ -250,6 +267,8 @@ export class SearchService {
         const allEquipment = p.user.vendorEquipment ?? [];
         const matchedEquipment = allEquipment.filter((eq) => {
           if (equipmentName && !eq.name.toLowerCase().includes(equipmentName)) return false;
+          if (rateMin != null && (eq.dailyBudget == null || eq.dailyBudget < rateMin)) return false;
+          if (rateMax != null && (eq.dailyBudget == null || eq.dailyBudget > rateMax)) return false;
           // Exclude equipment that is already booked for another shoot in the requested date range
           if (bookedEquipmentIds.has(eq.id)) return false;
 
