@@ -68,6 +68,21 @@ export class ChatController {
     return message;
   }
 
+  @Get('project/:projectId/messages/by-date')
+  @ApiOperation({ summary: 'List messages across a project\'s conversations within a date range (paginated)' })
+  getProjectMessagesByDate(
+    @CurrentUser() user: AuthUser,
+    @Param('projectId') projectId: string,
+    @Query('start') start: string,
+    @Query('end') end: string,
+    @Query('page') page?: string,
+    @Query('limit') limit?: string,
+  ) {
+    const pageNum = parseInt(page ?? '1', 10);
+    const limitNum = Math.min(parseInt(limit ?? '50', 10), 100);
+    return this.chatService.getProjectMessagesByDate(user.id, projectId, start, end, pageNum, limitNum);
+  }
+
   @Get(':id/messages')
   @ApiOperation({ summary: 'Get messages (cursor-based pagination, newest first)' })
   getMessages(

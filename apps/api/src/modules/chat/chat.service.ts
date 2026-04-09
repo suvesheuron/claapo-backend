@@ -590,6 +590,97 @@ export class ChatService {
     };
   }
 
+  /**
+   * List messages across every conversation in a project within a date range.
+   * Used by the company dashboard's date-picker chat panel.
+   */
+  async getProjectMessagesByDate(
+    userId: string,
+    projectId: string,
+    startIso: string,
+    endIso: string,
+    page = 1,
+    limit = 50,
+  ) {
+    if (!startIso || !endIso) throw new BadRequestException('start and end are required');
+    const start = new Date(startIso);
+    const end = new Date(endIso);
+    if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime())) {
+      throw new BadRequestException('Invalid start or end date');
+    }
+
+    const project = await this.prisma.project.findUnique({ where: { id: projectId } });
+    if (!project) throw new NotFoundException('Project not found');
+
+    // Access: company owner (or sub-user assigned to the project)
+    const companyCtx = await this.getCompanyAccountContextOrNull(userId);
+    if (!companyCtx || project.companyUserId !== companyCtx.accountOwnerId) {
+      throw new ForbiddenException('No access to this project');
+    }
+    if (!companyCtx.isMainUser) {
+      await this.ensureProjectAssignedToSubUser(companyCtx.accountOwnerId, userId, projectId);
+    }
+
+    const where = {
+      deletedAt: null,
+      createdAt: { gte: start, lt: end },
+      conversation: { projectId },
+    } as const;
+
+    const skip = (page - 1) * limit;
+    const [rows, total] = await Promise.all([
+      this.prisma.message.findMany({
+        where,
+        include: {
+          sender: {
+            select: {
+              id: true,
+              email: true,
+              individualProfile: { select: { displayName: true } },
+              companyProfile: { select: { companyName: true } },
+              vendorProfile: { select: { companyName: true } },
+            },
+          },
+          conversation: {
+            select: { id: true, participantA: true, participantB: true },
+          },
+        },
+        orderBy: { createdAt: 'asc' },
+        skip,
+        take: limit,
+      }),
+      this.prisma.message.count({ where }),
+    ]);
+
+    const ownerId = companyCtx.accountOwnerId;
+    return {
+      items: rows.map((m) => {
+        const conv = m.conversation;
+        const otherParticipantId = conv.participantA === ownerId
+          ? conv.participantB
+          : conv.participantB === ownerId
+            ? conv.participantA
+            : (conv.participantA === m.senderId ? conv.participantB : conv.participantA);
+        return {
+          id: m.id,
+          content: m.content,
+          createdAt: m.createdAt,
+          conversationId: m.conversationId,
+          otherParticipantId,
+          sender: {
+            id: m.sender.id,
+            displayName:
+              m.sender.individualProfile?.displayName ??
+              m.sender.companyProfile?.companyName ??
+              m.sender.vendorProfile?.companyName ??
+              m.sender.email,
+          },
+        };
+      }),
+      meta: { total, page, limit, pages: Math.max(1, Math.ceil(total / limit)) },
+    };
+  }
+
   /** Verify user is a participant in the conversation (for WebSocket room join) */
   async verifyMembership(userId: string, conversationId: string) {
     const conv = await this.prisma.conversation.findUnique({
