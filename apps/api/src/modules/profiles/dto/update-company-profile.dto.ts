@@ -1,5 +1,14 @@
 import { ApiPropertyOptional } from '@nestjs/swagger';
-import { IsString, IsOptional, IsUrl, IsArray } from 'class-validator';
+import { IsString, IsOptional, IsArray } from 'class-validator';
+import { Transform } from 'class-transformer';
+
+const normalizeUrl = ({ value }: { value: unknown }) => {
+  if (value === null || value === undefined) return value;
+  const s = String(value).trim();
+  if (!s) return undefined;
+  if (/^https?:\/\//i.test(s)) return s;
+  return `https://${s}`;
+};
 
 export class UpdateCompanyProfileDto {
   @ApiPropertyOptional()
@@ -30,27 +39,32 @@ export class UpdateCompanyProfileDto {
 
   @ApiPropertyOptional()
   @IsOptional()
-  @IsUrl()
+  @Transform(normalizeUrl)
+  @IsString()
   website?: string;
 
   @ApiPropertyOptional()
   @IsOptional()
-  @IsUrl()
+  @Transform(normalizeUrl)
+  @IsString()
   imdbUrl?: string;
 
   @ApiPropertyOptional()
   @IsOptional()
-  @IsUrl()
+  @Transform(normalizeUrl)
+  @IsString()
   instagramUrl?: string;
 
   @ApiPropertyOptional()
   @IsOptional()
-  @IsUrl()
+  @Transform(normalizeUrl)
+  @IsString()
   youtubeUrl?: string;
 
   @ApiPropertyOptional()
   @IsOptional()
-  @IsUrl()
+  @Transform(normalizeUrl)
+  @IsString()
   vimeoUrl?: string;
 
   @ApiPropertyOptional()

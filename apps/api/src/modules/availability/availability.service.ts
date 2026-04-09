@@ -95,32 +95,15 @@ export class AvailabilityService {
       },
     });
 
-    // Filter bookings that have this date in their shoot dates or project shoot dates
+    // A booking matches a calendar date ONLY when that exact day is listed in
+    // BookingRequest.shootDates. We never use project.shootDates or the project
+    // date range as a fallback — a crew is only "booked" for the days the
+    // company explicitly hired them for.
+    const targetKey = this.toUtcDateKey(date);
     const matchingBooking = bookings.find((b) => {
-      // Check booking shoot dates
-      if (b.shootDates && b.shootDates.length > 0) {
-        const bookingDates = b.shootDates.map((d: Date) => this.toUtcDateKey(new Date(d)));
-        if (bookingDates.includes(this.toUtcDateKey(date))) {
-          return true;
-        }
-      }
-      // Check project shoot dates
-      if (b.project.shootDates && b.project.shootDates.length > 0) {
-        const projectDates = b.project.shootDates.map((d: Date) => this.toUtcDateKey(new Date(d)));
-        if (projectDates.includes(this.toUtcDateKey(date))) {
-          return true;
-        }
-      }
-      // Check project date range
-      const projectStart = b.project.startDate ? this.toUtcDateKey(new Date(b.project.startDate)) : null;
-      const projectEnd = b.project.endDate ? this.toUtcDateKey(new Date(b.project.endDate)) : null;
-      if (projectStart && projectEnd) {
-        const dateKey = this.toUtcDateKey(date);
-        if (dateKey >= projectStart && dateKey <= projectEnd) {
-          return true;
-        }
-      }
-      return false;
+      if (!b.shootDates || b.shootDates.length === 0) return false;
+      const bookingDates = b.shootDates.map((d: Date) => this.toUtcDateKey(new Date(d)));
+      return bookingDates.includes(targetKey);
     });
 
     if (!matchingBooking) {
@@ -193,6 +176,47 @@ export class AvailabilityService {
     };
   }
 
+  /**
+   * Compute the set of YYYY-MM-DD date keys (within [windowStart, windowEnd))
+   * on which `userId` is the *target* of an accepted/locked booking.
+   *
+   * Honors ONLY `BookingRequest.shootDates` — the exact days the company chose
+   * for this crew. No project-range fallback: a booking must never be allowed
+   * to over-block someone's calendar beyond the dates they were actually hired
+   * for. Bookings with empty shootDates resolve to nothing.
+   */
+  private async getBookedDateKeysForUser(
+    userId: string,
+    windowStart: Date,
+    windowEnd: Date,
+  ): Promise<Set<string>> {
+    const bookings = await this.prisma.bookingRequest.findMany({
+      where: {
+        targetUserId: userId,
+        status: { in: ['accepted', 'locked'] },
+      },
+      select: { shootDates: true },
+    });
+
+    const out = new Set<string>();
+    const startMs = windowStart.getTime();
+    const endMs = windowEnd.getTime();
+
+    for (const b of bookings) {
+      if (!b.shootDates || b.shootDates.length === 0) continue;
+      for (const raw of b.shootDates) {
+        const d = new Date(raw);
+        const utc = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate()));
+        const t = utc.getTime();
+        if (t >= startMs && t < endMs) {
+          out.add(this.toUtcDateKey(utc));
+        }
+      }
+    }
+
+    return out;
+  }
+
   /** Get own calendar for a month. Returns slots and slotNotes keyed by date (YYYY-MM-DD) for mobile/UI. */
   async getMyCalendar(userId: string, year: number, month: number) {
     const start = new Date(Date.UTC(year, month, 1));
@@ -207,13 +231,31 @@ export class AvailabilityService {
     const byDate: Record<string, string> = {};
     const slotNotes: Record<string, string | null> = {};
     const bookingDetails: Record<string, any> = {};
-    
+
+    // Authoritative set of dates this user is genuinely "booked" for in this
+    // month, derived from BookingRequest.shootDates. Any 'booked' slot row
+    // outside this set is stale (from old buggy lock() runs or test/seed data)
+    // and must be downgraded — otherwise the calendar shows the entire project
+    // window even when the company hired the person for one specific day.
+    const trueBookedKeys = await this.getBookedDateKeysForUser(userId, start, endExclusive);
+
+    // Stale slot rows we'll write back so the DB converges to the truth.
+    const slotsToHeal: Date[] = [];
+
     for (const s of slots) {
       const key = this.toUtcDateKey(s.date);
-      byDate[key] = s.status;
       slotNotes[key] = s.notes ?? null;
-      
-      // Get booking details for booked/past_work slots
+
+      if (s.status === 'booked' && !trueBookedKeys.has(key)) {
+        // Orphan booked slot — no backing BookingRequest covers this date.
+        byDate[key] = 'available';
+        slotsToHeal.push(s.date);
+        continue;
+      }
+
+      byDate[key] = s.status;
+
+      // Resolve booking details for legitimately booked / past_work slots.
       if (s.status === 'booked' || s.status === 'past_work') {
         const booking = await this.getBookingForDate(userId, s.date);
         if (booking) {
@@ -221,7 +263,36 @@ export class AvailabilityService {
         }
       }
     }
-    
+
+    // Forward fill: any booking-covered date that has no slot row yet (or had
+    // an 'available' row) becomes 'booked' in the response. Never overrides
+    // user-set 'blocked' or system-set 'past_work'.
+    for (const key of trueBookedKeys) {
+      const existing = byDate[key];
+      if (!existing || existing === 'available') {
+        byDate[key] = 'booked';
+        if (!bookingDetails[key]) {
+          const [yy, mm, dd] = key.split('-').map(Number);
+          const dayDate = new Date(Date.UTC(yy, mm - 1, dd));
+          const booking = await this.getBookingForDate(userId, dayDate);
+          if (booking) bookingDetails[key] = booking;
+        }
+      }
+    }
+
+    // Best-effort write-back of stale 'booked' rows so the next read is clean.
+    // Done after the response is computed so a write failure can't break GETs.
+    if (slotsToHeal.length > 0) {
+      try {
+        await this.prisma.availabilitySlot.updateMany({
+          where: { userId, date: { in: slotsToHeal }, status: 'booked' },
+          data: { status: 'available' },
+        });
+      } catch {
+        // Non-fatal: the response is already correct; convergence will retry on next read.
+      }
+    }
+
     return { year, month, slots: byDate, slotNotes, bookingDetails };
   }
 
@@ -300,29 +371,71 @@ export class AvailabilityService {
     const byDate: Record<string, string> = {};
     const slotNotes: Record<string, string | null> = {};
     const bookingDetails: Record<string, unknown> = {};
+    const resolveBookingDetailsIfAllowed = async (date: Date, key: string) => {
+      const booking = await this.getBookingForDate(targetUserId, date);
+      if (!booking?.id) return;
+      const row = await this.prisma.bookingRequest.findFirst({
+        where: { id: booking.id as string },
+        select: {
+          requesterUserId: true,
+          project: { select: { companyUserId: true } },
+        },
+      });
+      const allowed =
+        row &&
+        (row.requesterUserId === viewerId || row.project.companyUserId === viewerId);
+      if (allowed) {
+        bookingDetails[key] = booking;
+      }
+    };
+
+    // Authoritative booked-date set, same as in getMyCalendar — used to
+    // downgrade orphan 'booked' slot rows that don't actually correspond to
+    // any active booking's per-person shootDates.
+    const trueBookedKeys = await this.getBookedDateKeysForUser(targetUserId, start, endExclusive);
+    const slotsToHeal: Date[] = [];
+
     for (const s of slots) {
       const key = this.toUtcDateKey(s.date);
-      byDate[key] = s.status;
       slotNotes[key] = s.notes ?? null;
+
+      if (s.status === 'booked' && !trueBookedKeys.has(key)) {
+        // Stale 'booked' row — no backing booking covers this date.
+        byDate[key] = 'available';
+        slotsToHeal.push(s.date);
+        continue;
+      }
+
+      byDate[key] = s.status;
       if (s.status === 'booked' || s.status === 'past_work') {
-        const booking = await this.getBookingForDate(targetUserId, s.date);
-        if (booking?.id) {
-          const row = await this.prisma.bookingRequest.findFirst({
-            where: { id: booking.id as string },
-            select: {
-              requesterUserId: true,
-              project: { select: { companyUserId: true } },
-            },
-          });
-          const allowed =
-            row &&
-            (row.requesterUserId === viewerId || row.project.companyUserId === viewerId);
-          if (allowed) {
-            bookingDetails[key] = booking;
-          }
-        }
+        await resolveBookingDetailsIfAllowed(s.date, key);
       }
     }
+
+    // Forward fill: real booking dates with no slot row → mark booked.
+    // Never overrides 'blocked' or 'past_work'.
+    for (const key of trueBookedKeys) {
+      const existing = byDate[key];
+      if (!existing || existing === 'available') {
+        byDate[key] = 'booked';
+        const [yy, mm, dd] = key.split('-').map(Number);
+        const dayDate = new Date(Date.UTC(yy, mm - 1, dd));
+        await resolveBookingDetailsIfAllowed(dayDate, key);
+      }
+    }
+
+    // Best-effort write-back so the row converges to the truth.
+    if (slotsToHeal.length > 0) {
+      try {
+        await this.prisma.availabilitySlot.updateMany({
+          where: { userId: targetUserId, date: { in: slotsToHeal }, status: 'booked' },
+          data: { status: 'available' },
+        });
+      } catch {
+        // Non-fatal — response is already correct.
+      }
+    }
+
     return { userId: targetUserId, year, month, slots: byDate, slotNotes, bookingDetails };
   }
 

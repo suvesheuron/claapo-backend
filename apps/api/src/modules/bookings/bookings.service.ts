@@ -16,6 +16,29 @@ export class BookingsService {
     private readonly chat: ChatService,
   ) {}
 
+  /**
+   * Resolve the exact list of UTC-normalized dates a booking covers.
+   *
+   * IMPORTANT: this is the ONLY source of truth for "which days does this
+   * booking block". It uses `booking.shootDates` exclusively — never the
+   * project's start/end range, never the project's `shootDates`. A booking is
+   * for the specific days the company chose for THIS crew/vendor, nothing more.
+   *
+   * Bookings created via the new API are guaranteed to have at least one
+   * shootDate (validated in createRequest). Legacy bookings with empty
+   * shootDates intentionally resolve to [] so they cannot retroactively
+   * over-block someone's schedule.
+   */
+  private resolveBookingDates(booking: { shootDates?: Date[] | null }): Date[] {
+    if (!booking.shootDates || booking.shootDates.length === 0) {
+      return [];
+    }
+    return booking.shootDates.map((d) => {
+      const x = new Date(d);
+      return new Date(Date.UTC(x.getUTCFullYear(), x.getUTCMonth(), x.getUTCDate()));
+    });
+  }
+
   async createRequest(companyUserId: string, dto: CreateBookingRequestDto) {
     const companyCtx = await this.getCompanyAccountContext(companyUserId);
     const project = await this.prisma.project.findUnique({
@@ -68,12 +91,43 @@ export class BookingsService {
       vendorEquipmentId = equipment.id;
     }
 
-    const shootDates =
-      dto.shootDates?.length ?
-        [...new Set(dto.shootDates.map((s) => s.trim()).filter(Boolean))]
-          .map((s) => new Date(s))
-          .filter((d) => !Number.isNaN(d.getTime()))
-      : [];
+    // Booking is for SPECIFIC dates only — never the full project timeline.
+    // Parse, dedupe, validate; reject if empty after sanitization.
+    const shootDates = [
+      ...new Set((dto.shootDates ?? []).map((s) => s.trim()).filter(Boolean)),
+    ]
+      .map((s) => {
+        const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(s);
+        if (!m) return null;
+        const [_, y, mo, d] = m;
+        const dt = new Date(Date.UTC(Number(y), Number(mo) - 1, Number(d)));
+        return Number.isNaN(dt.getTime()) ? null : dt;
+      })
+      .filter((d): d is Date => d !== null);
+    if (shootDates.length === 0) {
+      throw new BadRequestException(
+        'You must select at least one specific date to hire this crew/vendor for. Bookings only block the chosen dates.',
+      );
+    }
+    // Bookings outside the project window are nonsense — reject them.
+    const projStartUtc = Date.UTC(
+      project.startDate.getUTCFullYear(),
+      project.startDate.getUTCMonth(),
+      project.startDate.getUTCDate(),
+    );
+    const projEndUtc = Date.UTC(
+      project.endDate.getUTCFullYear(),
+      project.endDate.getUTCMonth(),
+      project.endDate.getUTCDate(),
+    );
+    for (const d of shootDates) {
+      const t = d.getTime();
+      if (t < projStartUtc || t > projEndUtc) {
+        throw new BadRequestException(
+          `Selected date ${d.toISOString().slice(0, 10)} is outside the project window (${new Date(projStartUtc).toISOString().slice(0, 10)} – ${new Date(projEndUtc).toISOString().slice(0, 10)}).`,
+        );
+      }
+    }
     const expiresAt = new Date(Date.now() + 48 * 60 * 60 * 1000);
     const booking = await this.prisma.bookingRequest.create({
       data: {
@@ -102,12 +156,9 @@ export class BookingsService {
       const rateStr = booking.rateOffered
         ? ` · Offered rate: ₹${(booking.rateOffered / 100).toLocaleString('en-IN')}/day`
         : '';
-      const datesStr =
-        shootDates.length > 0
-          ? `\n\nRequested dates: ${shootDates
-              .map((d) => d.toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' }))
-              .join(', ')}`
-          : '';
+      const datesStr = `\n\n📅 You are being booked specifically for: ${shootDates
+        .map((d) => d.toLocaleDateString('en-IN', { weekday: 'short', day: 'numeric', month: 'short', year: 'numeric' }))
+        .join(', ')}\n(Only these date${shootDates.length > 1 ? 's' : ''} will be marked unavailable on your calendar.)`;
       const customMsg = dto.message?.trim() ? `\n\nMessage: "${dto.message.trim()}"` : '';
       const chatContent = `Booking Request — ${booking.project.title}${rateStr}${datesStr}${customMsg}\n\nPlease accept or decline from your Bookings page.`;
       await this.chat.sendBookingRequestMessage(
@@ -361,23 +412,14 @@ export class BookingsService {
       throw new BadRequestException('Request has expired');
     }
 
-    // Check for crew double-booking (prevent individuals from accepting overlapping bookings)
-    const project = booking.project as { startDate: Date; endDate: Date; shootDates?: Date[] };
-    const datesToCheck: Date[] =
-      project.shootDates && project.shootDates.length > 0
-        ? project.shootDates.map((d) => {
-            const x = new Date(d);
-            return new Date(Date.UTC(x.getUTCFullYear(), x.getUTCMonth(), x.getUTCDate()));
-          })
-        : (() => {
-            const start = new Date(project.startDate);
-            const end = new Date(project.endDate);
-            const startUtc = Date.UTC(start.getUTCFullYear(), start.getUTCMonth(), start.getUTCDate());
-            const endUtc = Date.UTC(end.getUTCFullYear(), end.getUTCMonth(), end.getUTCDate());
-            const out: Date[] = [];
-            for (let t = startUtc; t <= endUtc; t += 24 * 60 * 60 * 1000) out.push(new Date(t));
-            return out;
-          })();
+    // The booking blocks ONLY the specific dates the company chose for this crew.
+    // No project-range fallback — see resolveBookingDates() for the rationale.
+    const datesToCheck: Date[] = this.resolveBookingDates(booking as any);
+    if (datesToCheck.length === 0) {
+      throw new BadRequestException(
+        'This booking has no shoot dates set. Ask the company to cancel and re-send the request with specific dates.',
+      );
+    }
 
     // Check if crew member already has booked/blocked slots for overlapping dates
     const existingBookings = await this.prisma.availabilitySlot.findMany({
@@ -389,7 +431,8 @@ export class BookingsService {
     });
 
     if (existingBookings.length > 0) {
-      // Find which other project(s) conflict
+      // Find which other project(s) conflict — resolve each conflicting booking's
+      // exact dates via the same helper (booking.shootDates > project.shootDates > range).
       const conflictingBookings = await this.prisma.bookingRequest.findMany({
         where: {
           targetUserId: booking.targetUserId,
@@ -402,19 +445,7 @@ export class BookingsService {
       });
 
       const conflictingProjects = conflictingBookings.filter((b) => {
-        const proj = b.project as { shootDates?: Date[]; startDate: Date; endDate: Date };
-        const otherDates =
-          proj.shootDates && proj.shootDates.length > 0
-            ? proj.shootDates.map((d: Date) => new Date(d).toDateString())
-            : (() => {
-                const start = new Date(proj.startDate);
-                const end = new Date(proj.endDate);
-                const dates: string[] = [];
-                for (let t = start.getTime(); t <= end.getTime(); t += 24 * 60 * 60 * 1000) {
-                  dates.push(new Date(t).toDateString());
-                }
-                return dates;
-              })();
+        const otherDates = this.resolveBookingDates(b as any).map((d) => d.toDateString());
         return datesToCheck.some((d) => otherDates.includes(d.toDateString()));
       });
 
@@ -498,22 +529,24 @@ export class BookingsService {
       if (!assigned) throw new ForbiddenException('This project is not assigned to your Sub-User ID');
     }
     if (booking.status !== 'accepted') throw new BadRequestException('Only accepted bookings can be locked');
-    const project = booking.project as { shootDates: Date[]; shootLocations: string[] };
-    const shootDates =
-      dto?.shootDates?.length
-        ? dto.shootDates.map((d) => new Date(d)).filter((d) => !isNaN(d.getTime()))
-        : project.shootDates ?? [];
-    const shootLocations =
-      dto?.shootLocations?.length
-        ? dto.shootLocations.map((s) => s.trim()).filter(Boolean)
-        : project.shootLocations ?? [];
+    // CRITICAL: preserve the booking's per-person shootDates that were set at
+    // creation time. NEVER fall back to project.shootDates here — that would
+    // expand the booking from "hire this person for Apr 15" to "hire this
+    // person for every day the project shoots", silently over-blocking their
+    // calendar. Lock only changes status; date scope is locked in at creation.
+    const overrideShootDates = dto?.shootDates?.length
+      ? dto.shootDates.map((d) => new Date(d)).filter((d) => !isNaN(d.getTime()))
+      : null;
+    const overrideShootLocations = dto?.shootLocations?.length
+      ? dto.shootLocations.map((s) => s.trim()).filter(Boolean)
+      : null;
     const updated = await this.prisma.bookingRequest.update({
       where: { id: bookingId },
       data: {
         status: 'locked',
         lockedAt: new Date(),
-        shootDates,
-        shootLocations,
+        ...(overrideShootDates ? { shootDates: overrideShootDates } : {}),
+        ...(overrideShootLocations ? { shootLocations: overrideShootLocations } : {}),
       },
       include: { project: true, target: { select: { id: true, email: true } } },
     });
@@ -588,20 +621,8 @@ export class BookingsService {
       throw new BadRequestException('Booking is not in cancel_requested state');
     }
     if (accept) {
-      // Free availability slots (same date set as in accept)
-      const project = booking.project as { startDate: Date; endDate: Date; shootDates?: Date[] };
-      const datesToFree: Date[] =
-        project.shootDates && project.shootDates.length > 0
-          ? project.shootDates.map((d) => new Date(Date.UTC(new Date(d).getUTCFullYear(), new Date(d).getUTCMonth(), new Date(d).getUTCDate())))
-          : (() => {
-              const start = new Date(project.startDate);
-              const end = new Date(project.endDate);
-              const startUtc = Date.UTC(start.getUTCFullYear(), start.getUTCMonth(), start.getUTCDate());
-              const endUtc = Date.UTC(end.getUTCFullYear(), end.getUTCMonth(), end.getUTCDate());
-              const out: Date[] = [];
-              for (let t = startUtc; t <= endUtc; t += 24 * 60 * 60 * 1000) out.push(new Date(t));
-              return out;
-            })();
+      // Free availability slots using the same date set that accept() locked.
+      const datesToFree: Date[] = this.resolveBookingDates(booking as any);
       for (const dateKey of datesToFree) {
         await this.prisma.availabilitySlot.updateMany({
           where: { userId: booking.targetUserId, date: dateKey },
@@ -667,19 +688,8 @@ export class BookingsService {
       throw new BadRequestException('Booking cannot be cancelled');
     }
     if (booking.status === 'accepted') {
-      const project = booking.project as { startDate: Date; endDate: Date; shootDates?: Date[] };
-      const datesToFree: Date[] =
-        project.shootDates && project.shootDates.length > 0
-          ? project.shootDates.map((d) => new Date(Date.UTC(new Date(d).getUTCFullYear(), new Date(d).getUTCMonth(), new Date(d).getUTCDate())))
-          : (() => {
-              const start = new Date(project.startDate);
-              const end = new Date(project.endDate);
-              const startUtc = Date.UTC(start.getUTCFullYear(), start.getUTCMonth(), start.getUTCDate());
-              const endUtc = Date.UTC(end.getUTCFullYear(), end.getUTCMonth(), end.getUTCDate());
-              const out: Date[] = [];
-              for (let t = startUtc; t <= endUtc; t += 24 * 60 * 60 * 1000) out.push(new Date(t));
-              return out;
-            })();
+      // Free the exact dates this booking had locked.
+      const datesToFree: Date[] = this.resolveBookingDates(booking as any);
       for (const dateKey of datesToFree) {
         await this.prisma.availabilitySlot.updateMany({
           where: { userId: booking.targetUserId, date: dateKey },
@@ -750,13 +760,19 @@ export class BookingsService {
       throw new BadRequestException('No accepted bookings to lock for this project');
     }
 
-    // Lock all bookings
-    const shootDates = dto?.shootDates?.length
+    // CRITICAL: each booking keeps its OWN shootDates (the per-person hire
+    // window the company picked at creation time). Only when the lock DTO
+    // explicitly passes a new list do we override — and even then we apply the
+    // same list to every booking, which is rare but supported (e.g., re-syncing
+    // a project's whole shoot plan). Falling back to project.shootDates here
+    // would silently over-block every crew member to the entire project shoot
+    // calendar — see lock() above for the same reasoning.
+    const overrideShootDates = dto?.shootDates?.length
       ? dto.shootDates.map((d) => new Date(d)).filter((d) => !isNaN(d.getTime()))
-      : project.shootDates ?? [];
-    const shootLocations = dto?.shootLocations?.length
+      : null;
+    const overrideShootLocations = dto?.shootLocations?.length
       ? dto.shootLocations.map((s) => s.trim()).filter(Boolean)
-      : project.shootLocations ?? [];
+      : null;
 
     const updatedBookings = await Promise.all(
       bookings.map((booking) =>
@@ -765,8 +781,8 @@ export class BookingsService {
           data: {
             status: 'locked',
             lockedAt: new Date(),
-            shootDates,
-            shootLocations,
+            ...(overrideShootDates ? { shootDates: overrideShootDates } : {}),
+            ...(overrideShootLocations ? { shootLocations: overrideShootLocations } : {}),
           },
           include: { project: true, target: { select: { id: true, email: true } } },
         }),

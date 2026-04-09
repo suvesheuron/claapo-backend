@@ -1,6 +1,19 @@
 import { ApiPropertyOptional } from '@nestjs/swagger';
-import { IsString, IsOptional, IsArray, IsInt, IsBoolean, IsUrl, Min, Max, ArrayMaxSize } from 'class-validator';
-import { Type } from 'class-transformer';
+import { IsString, IsOptional, IsArray, IsInt, IsBoolean, Min, Max, ArrayMaxSize } from 'class-validator';
+import { Type, Transform } from 'class-transformer';
+
+/**
+ * Lenient URL transform: trims, returns undefined for empty,
+ * auto-prefixes https:// if scheme is missing. Stored as plain string
+ * so the field survives even if the user pastes a partial URL.
+ */
+const normalizeUrl = ({ value }: { value: unknown }) => {
+  if (value === null || value === undefined) return value;
+  const s = String(value).trim();
+  if (!s) return undefined;
+  if (/^https?:\/\//i.test(s)) return s;
+  return `https://${s}`;
+};
 
 export class UpdateIndividualProfileDto {
   @ApiPropertyOptional()
@@ -69,22 +82,26 @@ export class UpdateIndividualProfileDto {
 
   @ApiPropertyOptional()
   @IsOptional()
-  @IsUrl()
+  @Transform(normalizeUrl)
+  @IsString()
   imdbUrl?: string;
 
   @ApiPropertyOptional()
   @IsOptional()
-  @IsUrl()
+  @Transform(normalizeUrl)
+  @IsString()
   instagramUrl?: string;
 
   @ApiPropertyOptional()
   @IsOptional()
-  @IsUrl()
+  @Transform(normalizeUrl)
+  @IsString()
   youtubeUrl?: string;
 
   @ApiPropertyOptional()
   @IsOptional()
-  @IsUrl()
+  @Transform(normalizeUrl)
+  @IsString()
   vimeoUrl?: string;
 
   @ApiPropertyOptional()

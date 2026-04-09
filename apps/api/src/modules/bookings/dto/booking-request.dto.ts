@@ -1,5 +1,5 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
-import { IsString, IsOptional, IsInt, Min, IsArray, IsDateString } from 'class-validator';
+import { IsString, IsOptional, IsInt, Min, IsArray, IsDateString, ArrayMinSize } from 'class-validator';
 
 export class CreateBookingRequestDto {
   @ApiProperty()
@@ -31,9 +31,13 @@ export class CreateBookingRequestDto {
   @IsString()
   message?: string;
 
-  @ApiPropertyOptional({ type: [String], description: 'Dates (ISO YYYY-MM-DD) the crew/vendor is needed' })
-  @IsOptional()
+  @ApiProperty({
+    type: [String],
+    description:
+      'Specific dates (ISO YYYY-MM-DD) the crew/vendor is needed. The booking will block ONLY these dates on their schedule — never the full project timeline. At least one date is required.',
+  })
   @IsArray()
+  @ArrayMinSize(1, { message: 'At least one shoot date must be selected for the booking.' })
   @IsDateString({}, { each: true })
-  shootDates?: string[];
+  shootDates: string[];
 }
