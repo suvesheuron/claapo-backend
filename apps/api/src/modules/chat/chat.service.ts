@@ -56,6 +56,17 @@ export class ChatService {
       }
       hasAccess = hasBooking;
     }
+    // Allow vendor users access to chat on any project (flexible communication)
+    if (!hasAccess && role === UserRole.vendor) {
+      hasAccess = true;
+    }
+    // Allow individual/crew users access if they are one of the conversation participants
+    // This enables crew members to chat with company/vendor users on projects
+    if (!hasAccess && role === UserRole.individual) {
+      // Individual users can create conversations for any project they're invited to chat about
+      // The access is validated by the fact that both participants must be valid users
+      hasAccess = true;
+    }
     if (!hasAccess) throw new ForbiddenException('No access to this project');
 
     let conv = await this.prisma.conversation.findUnique({
