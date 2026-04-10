@@ -106,6 +106,18 @@ export class UpdateIndividualProfileDto {
 
   @ApiPropertyOptional()
   @IsOptional()
+  @Transform(normalizeUrl)
+  @IsString()
+  linkedinUrl?: string;
+
+  @ApiPropertyOptional()
+  @IsOptional()
+  @Transform(normalizeUrl)
+  @IsString()
+  twitterUrl?: string;
+
+  @ApiPropertyOptional()
+  @IsOptional()
   @Type(() => Boolean)
   @IsBoolean()
   isAvailable?: boolean;
