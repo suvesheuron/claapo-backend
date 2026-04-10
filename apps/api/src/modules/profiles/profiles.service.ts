@@ -239,8 +239,8 @@ export class ProfilesService {
     const maskRates = viewerRole !== UserRole.company;
     const base = profile as Record<string, unknown>;
     let sanitized = { ...base };
-    if (maskRates && 'dailyRateMin' in base) {
-      sanitized = { ...sanitized, dailyRateMin: undefined, dailyRateMax: undefined };
+    if (maskRates && 'dailyBudget' in base) {
+      sanitized = { ...sanitized, dailyBudget: undefined };
     }
     const avatarUrl = base.avatarKey
       ? await this.storage.getSignedUrl(base.avatarKey as string) ?? this.storage.getPublicUrl(base.avatarKey as string)

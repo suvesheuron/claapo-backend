@@ -508,8 +508,7 @@ async function main() {
       locationState: loc.state,
       lat: loc.lat + (Math.random() - 0.5) * 0.1,
       lng: loc.lng + (Math.random() - 0.5) * 0.1,
-      dailyRateMin: rate.min,
-      dailyRateMax: rate.max,
+      dailyBudget: rate.max,
       isAvailable: i % 5 !== 0,
       avatarKey: avatarUrl(i, gender),
       imdbUrl: i < 200 ? `https://www.imdb.com/name/nm${1000000 + i}` : null,
@@ -596,8 +595,7 @@ async function main() {
     description: string;
     imageUrl: string;
     currentCity: string;
-    dailyRateMin: number;
-    dailyRateMax: number;
+    dailyBudget: number;
   }[] = [];
 
   for (let i = 0; i < NUM_VENDORS; i++) {
@@ -616,8 +614,7 @@ async function main() {
         description: `Professional-grade ${eqNames[j % eqNames.length]} available for daily rental.`,
         imageUrl: eqImages[j % eqImages.length],
         currentCity: CITIES[(i + j) % CITIES.length].city,
-        dailyRateMin: rate.min,
-        dailyRateMax: rate.max,
+        dailyBudget: rate.max,
       });
     }
   }
