@@ -74,17 +74,18 @@ export class BookingsController {
     return this.bookingsService.listCancelRequests(user.id);
   }
 
-  @Patch(':id/counter')
-  @UseGuards(RolesGuard)
-  @Roles('individual', 'vendor')
-  @ApiOperation({ summary: 'Counter-offer on a pending booking request' })
-  counterOffer(
-    @CurrentUser() user: AuthUser,
-    @Param('id') id: string,
-    @Body() body: { counterRate: number; counterMessage?: string },
-  ) {
-    return this.bookingsService.counterOffer(id, user.id, user.role, body.counterRate, body.counterMessage);
-  }
+  // Counter offer feature removed as per Task 27 (2nd April)
+  // @Patch(':id/counter')
+  // @UseGuards(RolesGuard)
+  // @Roles('individual', 'vendor')
+  // @ApiOperation({ summary: 'Counter-offer on a pending booking request' })
+  // counterOffer(
+  //   @CurrentUser() user: AuthUser,
+  //   @Param('id') id: string,
+  //   @Body() body: { counterRate: number; counterMessage?: string },
+  // ) {
+  //   return this.bookingsService.counterOffer(id, user.id, user.role, body.counterRate, body.counterMessage);
+  // }
 
   @Patch(':id/accept')
   @UseGuards(RolesGuard)
