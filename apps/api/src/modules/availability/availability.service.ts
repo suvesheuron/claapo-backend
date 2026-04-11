@@ -110,10 +110,10 @@ export class AvailabilityService {
       return null;
     }
 
-    // Determine company and target user
-    const isRequester = matchingBooking.requesterUserId === userId;
-    const companyUser = isRequester ? matchingBooking.requester : matchingBooking.target;
-    const targetUser = isRequester ? matchingBooking.target : matchingBooking.requester;
+    // Determine company (requester) and target (crew/vendor)
+    // The company is always the requester, and the crew/vendor is always the target
+    const companyUser = matchingBooking.requester;
+    const targetUser = matchingBooking.target;
 
     // Get company name
     const companyName = companyUser.companyProfile?.companyName 
