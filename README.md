@@ -36,12 +36,14 @@ docker compose up -d
 npm run prisma:migrate:deploy
 npm run prisma:generate
 
-# 5. (Optional) Seed light demo data
+# 5. (Optional) Seed light demo data — 10 accounts, full relational demo
 npm run prisma:seed
 
 # 6. Start the API in dev mode
 npm run start:dev
 ```
+
+> See [Seed data](#seed-data) for the list of demo accounts and what the light seed contains.
 
 After step 6 the API is available at:
 
@@ -51,6 +53,55 @@ After step 6 the API is available at:
 | Swagger docs | http://localhost:3000/docs |
 | Health check | http://localhost:3000/v1/health |
 | Chat WebSocket | ws://localhost:3000/chat |
+
+---
+
+## Demo accounts (login credentials)
+
+After running `npm run prisma:seed` you can log in with any of the accounts below. **All accounts share the same password** — copy it once and reuse.
+
+```
+Password (all accounts):  Test@1234
+```
+
+| Email | Password | Role | Persona |
+|---|---|---|---|
+| `admin@claapo.test` | `Test@1234` | admin | Platform admin — full admin panel access |
+| `company1@claapo.test` | `Test@1234` | company | **Demo Production House** (Mumbai) — main test account for company flows |
+| `company2@claapo.test` | `Test@1234` | company | **Sunrise Studios** (Delhi) — second company for cross-company testing |
+| `subuser1@claapo.test` | `Test@1234` | company sub-user | Producer under Demo Production House, assigned to Project 1 |
+| `freelancer1@claapo.test` | `Test@1234` | individual | **Riya Sharma** — DOP, Mumbai. Has locked booking, invoice, contract, reviews |
+| `freelancer2@claapo.test` | `Test@1234` | individual | **Arjun Verma** — Sound Engineer, Bangalore |
+| `freelancer3@claapo.test` | `Test@1234` | individual | **Priya Patel** — Editor, Mumbai. Has a pending booking request |
+| `freelancer4@claapo.test` | `Test@1234` | individual | **Karan Mehta** — Gaffer, Delhi. Has a declined booking |
+| `vendor1@claapo.test` | `Test@1234` | vendor | **Demo Cine Rentals** — equipment vendor (Sony FX6, ARRI SkyPanel) |
+| `vendor2@claapo.test` | `Test@1234` | vendor | **Reel Catering Co** — catering vendor. Has a `cancel_requested` booking |
+
+### Quick login snippets
+
+```bash
+# company flow
+curl -X POST http://localhost:3000/v1/auth/login \
+  -H 'Content-Type: application/json' \
+  -d '{"email":"company1@claapo.test","password":"Test@1234"}'
+
+# freelancer flow
+curl -X POST http://localhost:3000/v1/auth/login \
+  -H 'Content-Type: application/json' \
+  -d '{"email":"freelancer1@claapo.test","password":"Test@1234"}'
+
+# vendor flow
+curl -X POST http://localhost:3000/v1/auth/login \
+  -H 'Content-Type: application/json' \
+  -d '{"email":"vendor1@claapo.test","password":"Test@1234"}'
+
+# admin
+curl -X POST http://localhost:3000/v1/auth/login \
+  -H 'Content-Type: application/json' \
+  -d '{"email":"admin@claapo.test","password":"Test@1234"}'
+```
+
+> ⚠️ These credentials are **for local/dev only**. Never seed demo accounts against a production database.
 
 ---
 
@@ -193,9 +244,46 @@ The full, always-current list lives in **Swagger** at http://localhost:3000/docs
 | `npm run prisma:migrate` | Create + apply a new migration (dev) |
 | `npm run prisma:migrate:deploy` | Apply existing migrations (CI / prod / fresh clone) |
 | `npm run prisma:studio` | Open Prisma Studio |
-| `npm run prisma:seed` / `npm run seed` | Seed light demo data |
-| `npm run seed:massive` | Seed full demo dataset |
+| `npm run prisma:seed` / `npm run seed` | Seed light demo data (see below) |
+| `npm run seed:massive` | Seed full demo dataset (60 freelancers + 60 companies + 60 vendors — see `prisma/seeds/README.md`) |
 | `npm run prisma:wipe` | Wipe all tables (destructive) |
+
+---
+
+## Seed data
+
+Two seed scripts ship with the backend:
+
+- **Light seed** — `npm run prisma:seed` (or `npm run seed`) — runs `prisma/seeds/seed-light.ts`. Small, deterministic, fast. Intended for local dev and as a smoke test after migrations.
+- **Massive seed** — `npm run seed:massive` — runs `prisma/seeds/seed.ts`. ~180 users with thousands of related rows. See `prisma/seeds/README.md` for details.
+
+> **Both seeds wipe existing data first.** Do not run on a database that has anything you care about.
+
+For the list of demo accounts and shared password, see [Demo accounts (login credentials)](#demo-accounts-login-credentials) above.
+
+### Light seed — what it creates
+
+| Entity | Count | Notes |
+|---|---|---|
+| Users | 10 | Includes one sub-user (`mainUserId` set) |
+| Individual profiles | 4 | Full bios, skills, PAN, bank details, social URLs, showreel |
+| Company profiles | 2 | GST, PAN, bank details, `aboutUs`, social URLs |
+| Vendor profiles | 2 | GST, PAN, bank details, `aboutUs` |
+| Vendor equipment | 2 | Each with an availability window |
+| Portfolio items | 3 | Across 2 freelancers |
+| Projects | 3 | `active` (Monsoon Short), `open` (Q2 TVC), `draft` (Documentary Pitch) |
+| Project roles | 6 | DOP, Sound, Editor, Gaffer across the 3 projects |
+| Sub-user assignments | 1 | `subuser1` → Project 1 |
+| Availability slots | ~30 | Past work / booked / available / blocked across freelancers |
+| Booking requests | 7 | Covers `locked`, `accepted`, `pending`, `declined`, `cancel_requested`, plus a counter-offer (`counterRate` / `counterMessage`) — **includes a `shootDateLocations` example** |
+| Conversations | 2 | Between company1 ↔ freelancer1 and company1 ↔ freelancer2 |
+| Messages | 5 | With pinned + read/unread variations |
+| Invoices | 3 | One `draft`, one `sent` (with PDF attachment + line item), one `paid` |
+| Contracts | 1 | Signed by both parties, attached to the locked DOP booking |
+| Reviews | 2 | 5-star and 4-star, from company → freelancers |
+| Notifications | 5 | `booking_locked`, `booking_countered`, `booking_cancel_requested`, `booking_request`, `invoice_sent` — with `data` payloads |
+
+Every field on every current Prisma model is exercised somewhere in the light seed — including recent additions like `shootDateLocations`, `deliveryDate`, `aboutMe` / `aboutUs`, `profileScore`, `notificationPreferences`, and the counter/cancel booking fields. This makes the light seed a useful sanity check after schema changes: if it runs clean, the new fields are wired up correctly.
 
 ---
 

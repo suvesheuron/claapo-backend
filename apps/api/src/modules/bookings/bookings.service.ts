@@ -57,8 +57,10 @@ export class BookingsService {
       });
       if (!assigned) throw new ForbiddenException('This project is not assigned to your Sub-User ID');
     }
-    if (project.status !== 'draft' && project.status !== 'open') {
-      throw new BadRequestException('Project must be draft or open to send requests');
+    if (project.status === 'completed' || project.status === 'cancelled') {
+      throw new BadRequestException(
+        `Cannot send booking requests for a ${project.status} project`,
+      );
     }
     const target = await this.prisma.user.findFirst({ where: { id: dto.targetUserId, deletedAt: null } });
     if (!target) throw new NotFoundException('Target user not found');
