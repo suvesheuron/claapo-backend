@@ -355,6 +355,7 @@ model BookingRequest {
   message           String?
   shootDates        DateTime[]    @default([]) @map("shoot_dates")
   shootLocations    String[]      @default([]) @map("shoot_locations")
+  shootDateLocations Json?       @map("shoot_date_locations")
   lockedAt          DateTime?     @map("locked_at")
   respondedAt       DateTime?     @map("responded_at")
   expiresAt         DateTime?     @map("expires_at")
