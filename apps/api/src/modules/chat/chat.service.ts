@@ -26,6 +26,14 @@ export class ChatService {
       throw new BadRequestException('Invalid other user');
     }
 
+    // Verify the other user exists and is active
+    const otherUser = await this.prisma.user.findFirst({
+      where: { id: dto.otherUserId, deletedAt: null, isActive: true },
+    });
+    if (!otherUser) {
+      throw new NotFoundException('User not found or inactive');
+    }
+
     // Verify project exists and user has access (main/sub account scope + assignment checks)
     const project = await this.prisma.project.findUnique({
       where: { id: dto.projectId },
@@ -69,43 +77,16 @@ export class ChatService {
     }
     if (!hasAccess) throw new ForbiddenException('No access to this project');
 
-    let conv = await this.prisma.conversation.findUnique({
-      where: {
-        projectId_participantA_participantB: {
-          projectId: dto.projectId,
-          participantA,
-          participantB,
-        },
-      },
-      include: {
-        project: { select: { id: true, title: true } },
-        participantAUser: {
-          select: {
-            id: true,
-            email: true,
-            individualProfile: { select: { displayName: true } },
-            companyProfile: { select: { companyName: true } },
-            vendorProfile: { select: { companyName: true } },
+    // Use transaction to prevent race conditions when creating conversations
+    let conv = await this.prisma.$transaction(async (tx) => {
+      // Check if conversation already exists
+      let existing = await tx.conversation.findUnique({
+        where: {
+          projectId_participantA_participantB: {
+            projectId: dto.projectId,
+            participantA,
+            participantB,
           },
-        },
-        participantBUser: {
-          select: {
-            id: true,
-            email: true,
-            individualProfile: { select: { displayName: true } },
-            companyProfile: { select: { companyName: true } },
-            vendorProfile: { select: { companyName: true } },
-          },
-        },
-      },
-    });
-
-    if (!conv) {
-      conv = await this.prisma.conversation.create({
-        data: {
-          projectId: dto.projectId,
-          participantA,
-          participantB,
         },
         include: {
           project: { select: { id: true, title: true } },
@@ -129,7 +110,41 @@ export class ChatService {
           },
         },
       });
-    }
+
+      // Create if it doesn't exist
+      if (!existing) {
+        existing = await tx.conversation.create({
+          data: {
+            projectId: dto.projectId,
+            participantA,
+            participantB,
+          },
+          include: {
+            project: { select: { id: true, title: true } },
+            participantAUser: {
+              select: {
+                id: true,
+                email: true,
+                individualProfile: { select: { displayName: true } },
+                companyProfile: { select: { companyName: true } },
+                vendorProfile: { select: { companyName: true } },
+              },
+            },
+            participantBUser: {
+              select: {
+                id: true,
+                email: true,
+                individualProfile: { select: { displayName: true } },
+                companyProfile: { select: { companyName: true } },
+                vendorProfile: { select: { companyName: true } },
+              },
+            },
+          },
+        });
+      }
+
+      return existing;
+    });
 
     return this.formatConversation(conv, userId);
   }
