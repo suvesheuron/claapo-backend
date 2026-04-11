@@ -80,6 +80,12 @@ export class UpdateIndividualProfileDto {
   @Min(0)
   dailyBudget?: number;
 
+  @ApiPropertyOptional({ description: 'Personal or portfolio website URL' })
+  @IsOptional()
+  @Transform(normalizeUrl)
+  @IsString()
+  website?: string;
+
   @ApiPropertyOptional()
   @IsOptional()
   @Transform(normalizeUrl)

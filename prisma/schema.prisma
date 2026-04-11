@@ -118,6 +118,7 @@ model IndividualProfile {
   dailyBudget    Int?     @map("daily_budget")
   avatarKey      String?  @map("avatar_key")
   showreelKey    String?  @map("showreel_key")
+  website        String?  @map("website")
   imdbUrl        String?  @map("imdb_url")
   instagramUrl   String?  @map("instagram_url")
   linkedinUrl    String?  @map("linkedin_url")

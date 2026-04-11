@@ -98,6 +98,7 @@ export class ProfilesService {
       lat: dto.lat,
       lng: dto.lng,
       dailyBudget: dto.dailyBudget,
+      website: dto.website,
       imdbUrl: dto.imdbUrl,
       instagramUrl: dto.instagramUrl,
       youtubeUrl: dto.youtubeUrl,
