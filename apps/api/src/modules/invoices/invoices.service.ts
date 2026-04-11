@@ -459,9 +459,33 @@ export class InvoicesService {
 
     // Filter shoot dates to only include the date matching invoice creation date
     const invoiceDate = invoice.createdAt.toISOString().split('T')[0];
-    const allShootDates = (invoice.project as any)?.shootDates?.map((d: Date) => d.toISOString().split('T')[0]) ?? [];
-    const matchingShootDate = allShootDates.find((d: string) => d === invoiceDate) || allShootDates[allShootDates.length - 1] || null;
+    
+    // Find the booking for this invoice (the booking that the crew/vendor was hired for)
+    const relatedBooking = await this.prisma.bookingRequest.findFirst({
+      where: {
+        projectId: invoice.projectId,
+        targetUserId: invoice.issuerUserId,
+        status: { in: ['accepted', 'locked'] },
+      },
+      select: {
+        shootDates: true,
+        shootDateLocations: true,
+      },
+    });
+    
+    const bookingShootDates = relatedBooking?.shootDates?.map((d: Date) => d.toISOString().split('T')[0]) ?? [];
+    const bookingShootDateLocations = relatedBooking?.shootDateLocations as Array<{ date: string; location: string }> | null;
+    
+    // Find which shoot date matches the invoice date
+    const matchingShootDate = bookingShootDates.find((d: string) => d === invoiceDate) || bookingShootDates[bookingShootDates.length - 1] || null;
     const filteredShootDates = matchingShootDate ? [matchingShootDate] : null;
+    
+    // Get location for the matching date from shootDateLocations
+    let shootLocationForInvoice: string | null = null;
+    if (bookingShootDateLocations && matchingShootDate) {
+      const locationPair = bookingShootDateLocations.find(pair => pair.date === matchingShootDate);
+      shootLocationForInvoice = locationPair?.location ?? null;
+    }
 
     return {
       id: invoice.id,
@@ -474,7 +498,8 @@ export class InvoicesService {
       projectTitle: invoice.project?.title ?? null,
       projectId: invoice.projectId,
       projectShootDates: filteredShootDates,
-      projectShootLocations: (invoice.project as any)?.shootLocations ?? null,
+      // Use booking's date-location pair instead of project's generic locations
+      projectShootLocations: shootLocationForInvoice ? [shootLocationForInvoice] : ((invoice.project as any)?.shootLocations ?? null),
       fromName: getName(invoice.issuer),
       fromRole: issuerInd?.skills?.[0] ?? null,
       fromCity: getCity(invoice.issuer),

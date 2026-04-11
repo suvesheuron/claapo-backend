@@ -109,6 +109,41 @@ export class BookingsService {
         'You must select at least one specific date to hire this crew/vendor for. Bookings only block the chosen dates.',
       );
     }
+
+    // Validate and process shootDateLocations if provided
+    let shootDateLocationsData: any = null;
+    if (dto.shootDateLocations && dto.shootDateLocations.length > 0) {
+      // Validate that each date-location pair has a valid date
+      const validatedPairs = dto.shootDateLocations
+        .filter((pair) => pair.date && pair.location)
+        .map((pair) => {
+          const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(pair.date);
+          if (!m) return null;
+          const [_, y, mo, d] = m;
+          const dt = new Date(Date.UTC(Number(y), Number(mo) - 1, Number(d)));
+          if (Number.isNaN(dt.getTime())) return null;
+          return {
+            date: pair.date,
+            location: pair.location.trim(),
+          };
+        })
+        .filter((pair): pair is { date: string; location: string } => pair !== null);
+
+      if (validatedPairs.length > 0) {
+        shootDateLocationsData = validatedPairs;
+
+        // Validate that all dates in shootDateLocations are also in shootDates
+        const shootDateStrings = shootDates.map((d) => d.toISOString().slice(0, 10));
+        for (const pair of validatedPairs) {
+          if (!shootDateStrings.includes(pair.date)) {
+            throw new BadRequestException(
+              `Date ${pair.date} in shootDateLocations is not in the shootDates array.`,
+            );
+          }
+        }
+      }
+    }
+
     // Bookings outside the project window are nonsense — reject them.
     const projStartUtc = Date.UTC(
       project.startDate.getUTCFullYear(),
@@ -139,6 +174,7 @@ export class BookingsService {
         rateOffered: dto.rateOffered,
         message: dto.message,
         shootDates,
+        shootDateLocations: shootDateLocationsData,
         expiresAt,
       },
       include: { project: true, target: { select: { id: true, email: true, role: true } } },

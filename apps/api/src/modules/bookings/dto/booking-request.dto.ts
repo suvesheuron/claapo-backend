@@ -1,5 +1,16 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
-import { IsString, IsOptional, IsInt, Min, IsArray, IsDateString, ArrayMinSize } from 'class-validator';
+import { IsString, IsOptional, IsInt, Min, IsArray, IsDateString, ArrayMinSize, ValidateNested, IsObject } from 'class-validator';
+import { Type } from 'class-transformer';
+
+export class ShootDateLocationDto {
+  @ApiProperty({ description: 'Shoot date in ISO YYYY-MM-DD format' })
+  @IsDateString()
+  date: string;
+
+  @ApiProperty({ description: 'Location for this specific shoot date' })
+  @IsString()
+  location: string;
+}
 
 export class CreateBookingRequestDto {
   @ApiProperty()
@@ -40,4 +51,15 @@ export class CreateBookingRequestDto {
   @ArrayMinSize(1, { message: 'At least one shoot date must be selected for the booking.' })
   @IsDateString({}, { each: true })
   shootDates: string[];
+
+  @ApiPropertyOptional({
+    type: [ShootDateLocationDto],
+    description:
+      'Array of date-location pairs binding each shoot date to a specific location. This provides better structure than separate shootDates and shootLocations arrays.',
+  })
+  @IsOptional()
+  @IsArray()
+  @ValidateNested({ each: true })
+  @Type(() => ShootDateLocationDto)
+  shootDateLocations?: ShootDateLocationDto[];
 }
