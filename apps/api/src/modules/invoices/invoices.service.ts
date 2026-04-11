@@ -173,11 +173,12 @@ export class InvoicesService {
       include: {
         lineItems: true,
         attachments: true,
-        project: { select: { id: true, title: true } },
+        project: { select: { id: true, title: true, shootDates: true, shootLocations: true } },
         issuer: {
           select: {
             id: true,
             email: true,
+            phone: true,
             individualProfile: {
               select: {
                 displayName: true,
@@ -223,6 +224,7 @@ export class InvoicesService {
           select: {
             id: true,
             email: true,
+            phone: true,
             individualProfile: {
               select: {
                 displayName: true,
@@ -393,12 +395,16 @@ export class InvoicesService {
     const issuerVendor = invoice.issuer.vendorProfile;
     const recipientCompany = invoice.recipient.companyProfile;
     const recipientVendor = invoice.recipient.vendorProfile;
+    const issuerPhone = (invoice.issuer as any).phone ?? null;
+    const recipientPhone = (invoice.recipient as any).phone ?? null;
     const issuerDetails = issuerInd
       ? {
           name: issuerInd.displayName,
           gstNumber: null as string | null,
           address: issuerInd.address ?? null,
           panNumber: issuerInd.panNumber ?? null,
+          email: invoice.issuer.email,
+          phone: issuerPhone,
           bankAccountName: issuerInd.bankAccountName ?? null,
           bankAccountNumber: issuerInd.bankAccountNumber ?? null,
           ifscCode: issuerInd.ifscCode ?? null,
@@ -409,6 +415,8 @@ export class InvoicesService {
           gstNumber: issuerCompany?.gstNumber ?? issuerVendor?.gstNumber ?? null,
           address: issuerCompany?.address ?? issuerVendor?.address ?? null,
           panNumber: issuerCompany?.panNumber ?? issuerVendor?.panNumber ?? null,
+          email: invoice.issuer.email,
+          phone: issuerPhone,
           bankAccountName: issuerCompany?.bankAccountName ?? issuerVendor?.bankAccountName ?? null,
           bankAccountNumber: issuerCompany?.bankAccountNumber ?? issuerVendor?.bankAccountNumber ?? null,
           ifscCode: issuerCompany?.ifscCode ?? issuerVendor?.ifscCode ?? null,
@@ -420,6 +428,8 @@ export class InvoicesService {
           gstNumber: null as string | null,
           address: recipientInd.address ?? null,
           panNumber: recipientInd.panNumber ?? null,
+          email: invoice.recipient.email,
+          phone: recipientPhone,
           bankAccountName: recipientInd.bankAccountName ?? null,
           bankAccountNumber: recipientInd.bankAccountNumber ?? null,
           ifscCode: recipientInd.ifscCode ?? null,
@@ -430,6 +440,8 @@ export class InvoicesService {
           gstNumber: recipientCompany?.gstNumber ?? recipientVendor?.gstNumber ?? null,
           address: recipientCompany?.address ?? recipientVendor?.address ?? null,
           panNumber: recipientCompany?.panNumber ?? recipientVendor?.panNumber ?? null,
+          email: invoice.recipient.email,
+          phone: recipientPhone,
           bankAccountName: recipientCompany?.bankAccountName ?? recipientVendor?.bankAccountName ?? null,
           bankAccountNumber: recipientCompany?.bankAccountNumber ?? recipientVendor?.bankAccountNumber ?? null,
           ifscCode: recipientCompany?.ifscCode ?? recipientVendor?.ifscCode ?? null,
@@ -444,6 +456,13 @@ export class InvoicesService {
       downloadUrl: await this.storage.getSignedUrl(a.fileKey),
     }));
     const attachments = await Promise.all(attachmentsWithUrls);
+
+    // Filter shoot dates to only include the date matching invoice creation date
+    const invoiceDate = invoice.createdAt.toISOString().split('T')[0];
+    const allShootDates = (invoice.project as any)?.shootDates?.map((d: Date) => d.toISOString().split('T')[0]) ?? [];
+    const matchingShootDate = allShootDates.find((d: string) => d === invoiceDate) || allShootDates[allShootDates.length - 1] || null;
+    const filteredShootDates = matchingShootDate ? [matchingShootDate] : null;
+
     return {
       id: invoice.id,
       invoiceNumber: invoice.invoiceNumber,
@@ -454,6 +473,8 @@ export class InvoicesService {
       currency: invoice.currency,
       projectTitle: invoice.project?.title ?? null,
       projectId: invoice.projectId,
+      projectShootDates: filteredShootDates,
+      projectShootLocations: (invoice.project as any)?.shootLocations ?? null,
       fromName: getName(invoice.issuer),
       fromRole: issuerInd?.skills?.[0] ?? null,
       fromCity: getCity(invoice.issuer),
