@@ -105,6 +105,7 @@ export class ProfilesService {
       vimeoUrl: dto.vimeoUrl,
       isAvailable: dto.isAvailable,
       panNumber: dto.panNumber,
+      gstNumber: dto.gstNumber,
       bankAccountName: dto.bankAccountName,
       bankAccountNumber: dto.bankAccountNumber,
       ifscCode: dto.ifscCode,

@@ -133,6 +133,11 @@ export class UpdateIndividualProfileDto {
   @IsString()
   panNumber?: string;
 
+  @ApiPropertyOptional({ description: 'GST number (optional, shown on invoices)' })
+  @IsOptional()
+  @IsString()
+  gstNumber?: string;
+
   @ApiPropertyOptional({ description: 'Bank account name (for invoice details)' })
   @IsOptional()
   @IsString()

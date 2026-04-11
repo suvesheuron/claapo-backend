@@ -186,6 +186,7 @@ export class InvoicesService {
                 address: true,
                 skills: true,
                 panNumber: true,
+                gstNumber: true,
                 bankAccountName: true,
                 bankAccountNumber: true,
                 ifscCode: true,
@@ -231,6 +232,7 @@ export class InvoicesService {
                 locationCity: true,
                 address: true,
                 panNumber: true,
+                gstNumber: true,
                 bankAccountName: true,
                 bankAccountNumber: true,
                 ifscCode: true,
@@ -310,6 +312,7 @@ export class InvoicesService {
         address?: string | null;
         skills?: string[];
         panNumber?: string | null;
+        gstNumber?: string | null;
         bankAccountName?: string | null;
         bankAccountNumber?: string | null;
         ifscCode?: string | null;
@@ -346,6 +349,7 @@ export class InvoicesService {
         locationCity?: string | null;
         address?: string | null;
         panNumber?: string | null;
+        gstNumber?: string | null;
         bankAccountName?: string | null;
         bankAccountNumber?: string | null;
         ifscCode?: string | null;
@@ -400,7 +404,7 @@ export class InvoicesService {
     const issuerDetails = issuerInd
       ? {
           name: issuerInd.displayName,
-          gstNumber: null as string | null,
+          gstNumber: issuerInd.gstNumber ?? null,
           address: issuerInd.address ?? null,
           panNumber: issuerInd.panNumber ?? null,
           email: invoice.issuer.email,
@@ -425,7 +429,7 @@ export class InvoicesService {
     const recipientDetails = recipientInd
       ? {
           name: recipientInd.displayName,
-          gstNumber: null as string | null,
+          gstNumber: recipientInd.gstNumber ?? null,
           address: recipientInd.address ?? null,
           panNumber: recipientInd.panNumber ?? null,
           email: invoice.recipient.email,
