@@ -679,6 +679,43 @@ export class ChatService {
     ]);
 
     const ownerId = companyCtx.accountOwnerId;
+    
+    // Fetch unique participant IDs (other than the company owner) to get their names
+    const otherParticipantIds = new Set<string>();
+    for (const m of rows) {
+      const conv = m.conversation;
+      const otherId = conv.participantA === ownerId
+        ? conv.participantB
+        : conv.participantB === ownerId
+          ? conv.participantA
+          : (conv.participantA === m.senderId ? conv.participantB : conv.participantA);
+      if (otherId) otherParticipantIds.add(otherId);
+    }
+    
+    // Fetch names of other participants
+    const participantNames = new Map<string, string>();
+    if (otherParticipantIds.size > 0) {
+      const participants = await this.prisma.user.findMany({
+        where: {
+          id: { in: Array.from(otherParticipantIds) },
+        },
+        select: {
+          id: true,
+          email: true,
+          individualProfile: { select: { displayName: true } },
+          companyProfile: { select: { companyName: true } },
+          vendorProfile: { select: { companyName: true } },
+        },
+      });
+      for (const p of participants) {
+        const name = p.individualProfile?.displayName ??
+                     p.companyProfile?.companyName ??
+                     p.vendorProfile?.companyName ??
+                     p.email;
+        participantNames.set(p.id, name);
+      }
+    }
+    
     return {
       items: rows.map((m) => {
         const conv = m.conversation;
@@ -693,6 +730,10 @@ export class ChatService {
           createdAt: m.createdAt,
           conversationId: m.conversationId,
           otherParticipantId,
+          otherParticipant: otherParticipantId ? {
+            id: otherParticipantId,
+            displayName: participantNames.get(otherParticipantId) ?? '—',
+          } : undefined,
           sender: {
             id: m.sender.id,
             displayName:
