@@ -138,6 +138,11 @@ export class UpdateIndividualProfileDto {
   @IsString()
   gstNumber?: string;
 
+  @ApiPropertyOptional({ description: 'UPI ID (for payment on invoices)' })
+  @IsOptional()
+  @IsString()
+  upiId?: string;
+
   @ApiPropertyOptional({ description: 'Bank account name (for invoice details)' })
   @IsOptional()
   @IsString()

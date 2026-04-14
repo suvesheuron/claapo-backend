@@ -106,6 +106,7 @@ export class ProfilesService {
       isAvailable: dto.isAvailable,
       panNumber: dto.panNumber,
       gstNumber: dto.gstNumber,
+      upiId: dto.upiId,
       bankAccountName: dto.bankAccountName,
       bankAccountNumber: dto.bankAccountNumber,
       ifscCode: dto.ifscCode,
@@ -189,6 +190,7 @@ export class ProfilesService {
       bankAccountNumber: dto.bankAccountNumber,
       ifscCode: dto.ifscCode,
       bankName: dto.bankName,
+      upiId: dto.upiId,
       bio: dto.bio,
       aboutUs: dto.aboutUs,
     };

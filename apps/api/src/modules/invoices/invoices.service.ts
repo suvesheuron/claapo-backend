@@ -108,6 +108,7 @@ export class InvoicesService {
     const baseWhere = companyCtx
       ? {
           recipientUserId: companyCtx.accountOwnerId,
+          status: { not: 'draft' as const },
           ...(companyCtx.isMainUser
             ? {}
             : {
@@ -187,6 +188,7 @@ export class InvoicesService {
                 skills: true,
                 panNumber: true,
                 gstNumber: true,
+                upiId: true,
                 bankAccountName: true,
                 bankAccountNumber: true,
                 ifscCode: true,
@@ -200,6 +202,7 @@ export class InvoicesService {
                 address: true,
                 locationCity: true,
                 panNumber: true,
+                upiId: true,
                 bankAccountName: true,
                 bankAccountNumber: true,
                 ifscCode: true,
@@ -233,6 +236,7 @@ export class InvoicesService {
                 address: true,
                 panNumber: true,
                 gstNumber: true,
+                upiId: true,
                 bankAccountName: true,
                 bankAccountNumber: true,
                 ifscCode: true,
@@ -246,6 +250,7 @@ export class InvoicesService {
                 address: true,
                 locationCity: true,
                 panNumber: true,
+                upiId: true,
                 bankAccountName: true,
                 bankAccountNumber: true,
                 ifscCode: true,
@@ -313,6 +318,7 @@ export class InvoicesService {
         skills?: string[];
         panNumber?: string | null;
         gstNumber?: string | null;
+        upiId?: string | null;
         bankAccountName?: string | null;
         bankAccountNumber?: string | null;
         ifscCode?: string | null;
@@ -324,6 +330,7 @@ export class InvoicesService {
         address?: string | null;
         locationCity?: string | null;
         panNumber?: string | null;
+        upiId?: string | null;
         bankAccountName?: string | null;
         bankAccountNumber?: string | null;
         ifscCode?: string | null;
@@ -350,6 +357,7 @@ export class InvoicesService {
         address?: string | null;
         panNumber?: string | null;
         gstNumber?: string | null;
+        upiId?: string | null;
         bankAccountName?: string | null;
         bankAccountNumber?: string | null;
         ifscCode?: string | null;
@@ -361,6 +369,7 @@ export class InvoicesService {
         address?: string | null;
         locationCity?: string | null;
         panNumber?: string | null;
+        upiId?: string | null;
         bankAccountName?: string | null;
         bankAccountNumber?: string | null;
         ifscCode?: string | null;
@@ -407,6 +416,7 @@ export class InvoicesService {
           gstNumber: issuerInd.gstNumber ?? null,
           address: issuerInd.address ?? null,
           panNumber: issuerInd.panNumber ?? null,
+          upiId: issuerInd.upiId ?? null,
           email: invoice.issuer.email,
           phone: issuerPhone,
           bankAccountName: issuerInd.bankAccountName ?? null,
@@ -419,6 +429,7 @@ export class InvoicesService {
           gstNumber: issuerCompany?.gstNumber ?? issuerVendor?.gstNumber ?? null,
           address: issuerCompany?.address ?? issuerVendor?.address ?? null,
           panNumber: issuerCompany?.panNumber ?? issuerVendor?.panNumber ?? null,
+          upiId: issuerVendor?.upiId ?? null,
           email: invoice.issuer.email,
           phone: issuerPhone,
           bankAccountName: issuerCompany?.bankAccountName ?? issuerVendor?.bankAccountName ?? null,
@@ -432,6 +443,7 @@ export class InvoicesService {
           gstNumber: recipientInd.gstNumber ?? null,
           address: recipientInd.address ?? null,
           panNumber: recipientInd.panNumber ?? null,
+          upiId: recipientInd.upiId ?? null,
           email: invoice.recipient.email,
           phone: recipientPhone,
           bankAccountName: recipientInd.bankAccountName ?? null,
@@ -444,6 +456,7 @@ export class InvoicesService {
           gstNumber: recipientCompany?.gstNumber ?? recipientVendor?.gstNumber ?? null,
           address: recipientCompany?.address ?? recipientVendor?.address ?? null,
           panNumber: recipientCompany?.panNumber ?? recipientVendor?.panNumber ?? null,
+          upiId: recipientVendor?.upiId ?? null,
           email: invoice.recipient.email,
           phone: recipientPhone,
           bankAccountName: recipientCompany?.bankAccountName ?? recipientVendor?.bankAccountName ?? null,
