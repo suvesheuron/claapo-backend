@@ -180,7 +180,11 @@ export class AuthService {
       where: { id: user.id },
       data: { isVerified: true },
     });
-    return this.issueTokenPair(user);
+    const userWithMain = await this.prisma.user.findUnique({
+      where: { id: user.id },
+      select: { id: true, email: true, role: true, displayName: true, mainUserId: true },
+    });
+    return this.issueTokenPair(userWithMain!);
   }
 
   async login(dto: LoginDto): Promise<TokenPair> {
@@ -191,11 +195,15 @@ export class AuthService {
       throw new UnauthorizedException('Invalid email or password');
     }
     if (!user.isActive) throw new UnauthorizedException('Account is deactivated');
-    return this.issueTokenPair(user);
+    const userWithMain = await this.prisma.user.findUnique({
+      where: { id: user.id },
+      select: { id: true, email: true, role: true, displayName: true, mainUserId: true },
+    });
+    return this.issueTokenPair(userWithMain!);
   }
 
-  private async issueTokenPair(user: { id: string; email: string; role: UserRole }): Promise<TokenPair> {
-    const payload = { sub: user.id, email: user.email, role: user.role };
+  private async issueTokenPair(user: { id: string; email: string; role: UserRole; displayName?: string | null; mainUserId?: string | null }): Promise<TokenPair> {
+    const payload = { sub: user.id, email: user.email, role: user.role, displayName: user.displayName || null, mainUserId: user.mainUserId || null };
     const accessToken = this.jwtService.sign(payload, {
       expiresIn: this.config.get<string>('jwt.expiresIn'),
     });
@@ -243,7 +251,14 @@ export class AuthService {
     await this.prisma.refreshToken.update({ where: { id: token.id }, data: { revoked: true } });
     const user = token.user;
     if (user.deletedAt || !user.isActive) throw new UnauthorizedException('Account unavailable');
-    return this.issueTokenPair(user);
+    const userWithMain = {
+      id: user.id,
+      email: user.email,
+      role: user.role,
+      displayName: user.displayName,
+      mainUserId: user.mainUserId,
+    };
+    return this.issueTokenPair(userWithMain);
   }
 
   async logout(userId: string, refreshToken?: string): Promise<{ message: string }> {

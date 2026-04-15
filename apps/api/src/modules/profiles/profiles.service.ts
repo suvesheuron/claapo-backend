@@ -106,6 +106,7 @@ export class ProfilesService {
       isAvailable: dto.isAvailable,
       panNumber: dto.panNumber,
       gstNumber: dto.gstNumber,
+      upiId: dto.upiId,
       bankAccountName: dto.bankAccountName,
       bankAccountNumber: dto.bankAccountNumber,
       ifscCode: dto.ifscCode,
@@ -189,6 +190,7 @@ export class ProfilesService {
       bankAccountNumber: dto.bankAccountNumber,
       ifscCode: dto.ifscCode,
       bankName: dto.bankName,
+      upiId: dto.upiId,
       bio: dto.bio,
       aboutUs: dto.aboutUs,
     };
@@ -336,6 +338,7 @@ export class ProfilesService {
         id: true,
         email: true,
         phone: true,
+        displayName: true,
         isActive: true,
         createdAt: true,
         subUserProjectAssignments: {
@@ -386,12 +389,13 @@ export class ProfilesService {
       data: {
         email: dto.email,
         phone: dto.phone,
+        displayName: dto.displayName?.trim() || null,
         passwordHash,
         role: me.role,
         mainUserId: me.id,
         isVerified: true,
       },
-      select: { id: true, email: true, phone: true, role: true, mainUserId: true, isActive: true, createdAt: true },
+      select: { id: true, email: true, phone: true, displayName: true, role: true, mainUserId: true, isActive: true, createdAt: true },
     });
     return sub;
   }
@@ -450,7 +454,7 @@ export class ProfilesService {
       update: {},
       include: {
         project: { select: { id: true, title: true } },
-        subUser: { select: { id: true, email: true } },
+        subUser: { select: { id: true, email: true, displayName: true } },
       },
     });
   }

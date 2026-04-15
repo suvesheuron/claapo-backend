@@ -19,10 +19,15 @@ export class ChatService {
 
   /** Create or get existing conversation (1-to-1, project-scoped) */
   async createOrGetConversation(userId: string, role: UserRole, dto: CreateConversationDto) {
-    const [participantA, participantB] = this.orderParticipants(userId, dto.otherUserId);
+    // For sub-users, use the main user's ID as the conversation participant so they share
+    // conversations with the main account.
+    const user = await this.prisma.user.findUnique({ where: { id: userId }, select: { mainUserId: true, role: true } });
+    const participantUserId = user?.mainUserId ?? userId;
 
-    // Verify user is one of the participants
-    if (participantA !== userId && participantB !== userId) {
+    const [participantA, participantB] = this.orderParticipants(participantUserId, dto.otherUserId);
+
+    // Verify the resolved participant is the calling user or their main account
+    if (participantA !== participantUserId && participantB !== participantUserId) {
       throw new BadRequestException('Invalid other user');
     }
 
@@ -149,14 +154,62 @@ export class ChatService {
     return this.formatConversation(conv, userId);
   }
 
+  /** Build a WHERE clause for conversations that a user (or their sub-users) can access */
+  private async conversationWhereForUser(userId: string) {
+    // Check if user is a sub-user
+    const user = await this.prisma.user.findUnique({ where: { id: userId }, select: { mainUserId: true } });
+    if (user?.mainUserId) {
+      // Sub-user: include direct conversations + main user's conversations on assigned projects
+      const assignments = await this.prisma.subUserProjectAssignment.findMany({
+        where: { subUserId: userId },
+        select: { projectId: true },
+      });
+      const projectIds = assignments.map((a) => a.projectId);
+
+      const clauses: any[] = [
+        { participantA: userId },
+        { participantB: userId },
+      ];
+
+      // Add main user's conversations on assigned projects
+      if (projectIds.length > 0) {
+        clauses.push({
+          AND: [
+            { project: { id: { in: projectIds } } },
+            {
+              OR: [
+                { participantA: user.mainUserId },
+                { participantB: user.mainUserId },
+              ],
+            },
+          ],
+        });
+      }
+
+      return { OR: clauses };
+    }
+
+    // Regular user: direct conversations only
+    return { OR: [{ participantA: userId }, { participantB: userId }] };
+  }
+
   /** List user's conversations (paginated, sorted by last message) */
-  async listConversations(userId: string, page = 1, limit = 20) {
+  async listConversations(userId: string, page = 1, limit = 20, projectId?: string) {
     const skip = (page - 1) * limit;
+    const baseWhere = await this.conversationWhereForUser(userId);
+    
+    // Add project filter if provided
+    const where = projectId 
+      ? { ...baseWhere, projectId } 
+      : baseWhere;
+
+    // Fetch mainUserId for sub-user context
+    const userData = await this.prisma.user.findUnique({ where: { id: userId }, select: { mainUserId: true } });
+    const mainUserId = userData?.mainUserId ?? null;
+
     const [items, total] = await Promise.all([
       this.prisma.conversation.findMany({
-        where: {
-          OR: [{ participantA: userId }, { participantB: userId }],
-        },
+        where,
         include: {
           project: { select: { id: true, title: true } },
           participantAUser: {
@@ -188,15 +241,77 @@ export class ChatService {
         take: limit,
       }),
       this.prisma.conversation.count({
-        where: {
-          OR: [{ participantA: userId }, { participantB: userId }],
-        },
+        where,
       }),
     ]);
 
     return {
-      items: items.map((c) => this.formatConversation(c, userId)),
+      items: items.map((c) => this.formatConversation(c, userId, mainUserId)),
       meta: { total, page, limit, pages: Math.ceil(total / limit) },
+    };
+  }
+
+  /** Check if a user can access a conversation (direct participant or sub-user on assigned project) */
+  private async canAccessConversation(userId: string, conv: { projectId: string; participantA: string; participantB: string }): Promise<boolean> {
+    // Direct participant check
+    if (conv.participantA === userId || conv.participantB === userId) return true;
+
+    // Sub-user check: if user's main user is a participant and the project is assigned to this sub-user
+    const user = await this.prisma.user.findUnique({ where: { id: userId }, select: { mainUserId: true } });
+    if (user?.mainUserId) {
+      const isMainParticipant = conv.participantA === user.mainUserId || conv.participantB === user.mainUserId;
+      if (!isMainParticipant) return false;
+      const assignment = await this.prisma.subUserProjectAssignment.findFirst({
+        where: { subUserId: userId, projectId: conv.projectId },
+      });
+      return !!assignment;
+    }
+
+    return false;
+  }
+
+  /** Format a message for API response with account-aware sender info */
+  private formatMessage(m: any, currentUserId: string, mainUserId: string | null) {
+    // Determine if sender belongs to the current user's account.
+    // Two users are in the same account if:
+    // 1. They are the same user (direct match)
+    // 2. Sender is a subuser of the current main user (sender.mainUserId === currentUserId)
+    // 3. Sender is the main user of the current subuser (senderId === currentUserId.mainUserId)
+    // 4. Both are subusers under the same main user (sender.mainUserId === currentUserId.mainUserId)
+    const senderMainUserId = m.sender?.mainUserId ?? null;
+    const isSameAccount = m.senderId === currentUserId
+      || (senderMainUserId && senderMainUserId === currentUserId)
+      || (mainUserId && m.senderId === mainUserId)
+      || (senderMainUserId && mainUserId && senderMainUserId === mainUserId);
+
+    // Resolve a friendly display name for the sender
+    // Priority: User.displayName (for sub-users) > profile displayName > company/vendor name > email
+    const senderDisplayName =
+      m.sender?.displayName
+      ?? m.sender?.individualProfile?.displayName
+      ?? m.sender?.companyProfile?.companyName
+      ?? m.sender?.vendorProfile?.companyName
+      ?? m.sender?.email
+      ?? 'User';
+
+    return {
+      id: m.id,
+      conversationId: m.conversationId,
+      senderId: m.senderId,
+      senderDisplayName,
+      senderMainUserId,
+      isSameAccount,
+      type: m.type,
+      content: m.content,
+      mediaKey: m.mediaKey,
+      isRead: m.isRead,
+      isPinned: m.isPinned,
+      deletedAt: m.deletedAt,
+      forwardedFromId: m.forwardedFromId,
+      replyToId: (m as any).replyToId ?? null,
+      replyTo: m.replyTo ?? null,
+      readAt: (m as any).readAt ?? (m.isRead ? m.createdAt : null) ?? null,
+      createdAt: m.createdAt,
     };
   }
 
@@ -206,13 +321,29 @@ export class ChatService {
       where: { id: conversationId },
     });
     if (!conv) throw new NotFoundException('Conversation not found');
-    if (conv.participantA !== userId && conv.participantB !== userId) {
+    if (!(await this.canAccessConversation(userId, conv))) {
       throw new ForbiddenException('Not a participant');
     }
 
+    // Fetch mainUserId for account-aware formatting
+    const userData = await this.prisma.user.findUnique({ where: { id: userId }, select: { mainUserId: true } });
+    const mainUserId = userData?.mainUserId ?? null;
+
     const messages = await this.prisma.message.findMany({
       where: { conversationId },
-      include: { sender: { select: { id: true, email: true, individualProfile: { select: { displayName: true } }, companyProfile: { select: { companyName: true } }, vendorProfile: { select: { companyName: true } } } } },
+      include: {
+        sender: {
+          select: {
+            id: true,
+            email: true,
+            displayName: true,
+            mainUserId: true,
+            individualProfile: { select: { displayName: true } },
+            companyProfile: { select: { companyName: true } },
+            vendorProfile: { select: { companyName: true } },
+          },
+        },
+      },
       orderBy: { createdAt: 'desc' },
       take: limit + 1,
       ...(cursor && { cursor: { id: cursor }, skip: 1 }),
@@ -223,26 +354,7 @@ export class ChatService {
     const nextCursor = hasMore ? pageMessages[pageMessages.length - 1].id : null;
 
     return {
-      items: pageMessages.map((m) => ({
-        id: m.id,
-        conversationId: m.conversationId,
-        senderId: m.senderId,
-        type: m.type,
-        content: m.content,
-        mediaKey: m.mediaKey,
-        isRead: m.isRead,
-        isPinned: m.isPinned,
-        deletedAt: m.deletedAt,
-        forwardedFromId: m.forwardedFromId,
-        replyToId: (m as any).replyToId ?? null,
-        readAt: (m as any).readAt ?? null,
-        createdAt: m.createdAt,
-        sender: {
-          id: m.sender.id,
-          displayName:
-            m.sender.individualProfile?.displayName ?? m.sender.companyProfile?.companyName ?? m.sender.vendorProfile?.companyName ?? m.sender.email,
-        },
-      })),
+      items: pageMessages.map((m) => this.formatMessage(m, userId, mainUserId)),
       nextCursor,
     };
   }
@@ -253,7 +365,7 @@ export class ChatService {
       where: { id: conversationId },
     });
     if (!conv) throw new NotFoundException('Conversation not found');
-    if (conv.participantA !== userId && conv.participantB !== userId) {
+    if (!(await this.canAccessConversation(userId, conv))) {
       throw new ForbiddenException('Not a participant');
     }
 
@@ -264,6 +376,9 @@ export class ChatService {
     if ((type === 'image' || type === 'file') && !dto.mediaKey) {
       throw new BadRequestException('mediaKey required for image/file messages');
     }
+
+    const userData = await this.prisma.user.findUnique({ where: { id: userId }, select: { mainUserId: true } });
+    const mainUserId = userData?.mainUserId ?? null;
 
     const [message] = await this.prisma.$transaction([
       this.prisma.message.create({
@@ -276,7 +391,17 @@ export class ChatService {
           replyToId: dto.replyToId ?? null,
         },
         include: {
-          sender: { select: { id: true, individualProfile: { select: { displayName: true } }, companyProfile: { select: { companyName: true } }, vendorProfile: { select: { companyName: true } } } },
+          sender: {
+            select: {
+              id: true,
+              mainUserId: true,
+              email: true,
+              displayName: true,
+              individualProfile: { select: { displayName: true } },
+              companyProfile: { select: { companyName: true } },
+              vendorProfile: { select: { companyName: true } },
+            },
+          },
           replyTo: { select: { id: true, content: true, senderId: true } },
         },
       }),
@@ -286,27 +411,7 @@ export class ChatService {
       }),
     ]);
 
-    return {
-      id: message.id,
-      conversationId: message.conversationId,
-      senderId: message.senderId,
-      type: message.type,
-      content: message.content,
-      mediaKey: message.mediaKey,
-      isRead: message.isRead,
-      isPinned: message.isPinned,
-      deletedAt: message.deletedAt,
-      forwardedFromId: message.forwardedFromId,
-      replyToId: message.replyToId,
-      readAt: message.readAt,
-      createdAt: message.createdAt,
-      replyTo: message.replyTo,
-      sender: {
-        id: message.sender.id,
-        displayName:
-          message.sender.individualProfile?.displayName ?? message.sender.companyProfile?.companyName ?? message.sender.vendorProfile?.companyName ?? '—',
-      },
-    };
+    return this.formatMessage(message, userId, mainUserId);
   }
 
   /** Mark all messages in conversation as read (for current user as recipient) */
@@ -315,7 +420,7 @@ export class ChatService {
       where: { id: conversationId },
     });
     if (!conv) throw new NotFoundException('Conversation not found');
-    if (conv.participantA !== userId && conv.participantB !== userId) {
+    if (!(await this.canAccessConversation(userId, conv))) {
       throw new ForbiddenException('Not a participant');
     }
 
@@ -378,6 +483,11 @@ export class ChatService {
     if (!conv) {
       return { conversationId: null, items: [] };
     }
+
+    // Fetch mainUserId for account-aware formatting
+    const userData = await this.prisma.user.findUnique({ where: { id: userId }, select: { mainUserId: true } });
+    const mainUserId = userData?.mainUserId ?? null;
+
     const messages = await this.prisma.message.findMany({
       where: { conversationId: conv.id },
       include: {
@@ -385,6 +495,8 @@ export class ChatService {
           select: {
             id: true,
             email: true,
+            displayName: true,
+            mainUserId: true,
             individualProfile: { select: { displayName: true } },
             companyProfile: { select: { companyName: true } },
             vendorProfile: { select: { companyName: true } },
@@ -397,30 +509,7 @@ export class ChatService {
     });
     return {
       conversationId: conv.id,
-      items: messages.map((m) => ({
-        id: m.id,
-        conversationId: m.conversationId,
-        senderId: m.senderId,
-        type: m.type,
-        content: m.content,
-        mediaKey: m.mediaKey,
-        isRead: m.isRead,
-        isPinned: m.isPinned,
-        deletedAt: m.deletedAt,
-        forwardedFromId: m.forwardedFromId,
-        replyToId: m.replyToId,
-        readAt: m.readAt ?? (m.isRead ? m.createdAt : null),
-        createdAt: m.createdAt,
-        replyTo: m.replyTo,
-        sender: {
-          id: m.sender.id,
-          displayName:
-            m.sender.individualProfile?.displayName ??
-            m.sender.companyProfile?.companyName ??
-            m.sender.vendorProfile?.companyName ??
-            m.sender.email,
-        },
-      })),
+      items: messages.map((m) => this.formatMessage(m, userId, mainUserId)),
     };
   }
 
@@ -470,7 +559,7 @@ export class ChatService {
     });
     if (!message) throw new NotFoundException('Message not found');
     const conv = message.conversation;
-    if (conv.participantA !== userId && conv.participantB !== userId) {
+    if (!(await this.canAccessConversation(userId, conv))) {
       throw new ForbiddenException('Not a participant');
     }
 
@@ -490,7 +579,7 @@ export class ChatService {
 
     // Verify user is participant in source conversation
     const srcConv = originalMessage.conversation;
-    if (srcConv.participantA !== userId && srcConv.participantB !== userId) {
+    if (!(await this.canAccessConversation(userId, srcConv))) {
       throw new ForbiddenException('Not a participant in source conversation');
     }
 
@@ -499,7 +588,7 @@ export class ChatService {
       where: { id: targetConversationId },
     });
     if (!targetConv) throw new NotFoundException('Target conversation not found');
-    if (targetConv.participantA !== userId && targetConv.participantB !== userId) {
+    if (!(await this.canAccessConversation(userId, targetConv))) {
       throw new ForbiddenException('Not a participant in target conversation');
     }
 
@@ -521,6 +610,8 @@ export class ChatService {
           sender: {
             select: {
               id: true,
+              email: true,
+              displayName: true,
               individualProfile: { select: { displayName: true } },
               companyProfile: { select: { companyName: true } },
               vendorProfile: { select: { companyName: true } },
@@ -547,6 +638,7 @@ export class ChatService {
       sender: {
         id: forwardedMessage.sender.id,
         displayName:
+          forwardedMessage.sender.displayName ??
           forwardedMessage.sender.individualProfile?.displayName ??
           forwardedMessage.sender.companyProfile?.companyName ??
           forwardedMessage.sender.vendorProfile?.companyName ??
@@ -580,6 +672,7 @@ export class ChatService {
           select: {
             id: true,
             email: true,
+            displayName: true,
             individualProfile: { select: { displayName: true } },
             companyProfile: { select: { companyName: true } },
             vendorProfile: { select: { companyName: true } },
@@ -607,6 +700,7 @@ export class ChatService {
         sender: {
           id: m.sender.id,
           displayName:
+            m.sender.displayName ??
             m.sender.individualProfile?.displayName ??
             m.sender.companyProfile?.companyName ??
             m.sender.vendorProfile?.companyName ??
@@ -662,6 +756,8 @@ export class ChatService {
             select: {
               id: true,
               email: true,
+              displayName: true,
+              mainUserId: true,
               individualProfile: { select: { displayName: true } },
               companyProfile: { select: { companyName: true } },
               vendorProfile: { select: { companyName: true } },
@@ -679,7 +775,7 @@ export class ChatService {
     ]);
 
     const ownerId = companyCtx.accountOwnerId;
-    
+
     // Fetch unique participant IDs (other than the company owner) to get their names
     const otherParticipantIds = new Set<string>();
     for (const m of rows) {
@@ -724,6 +820,11 @@ export class ChatService {
           : conv.participantB === ownerId
             ? conv.participantA
             : (conv.participantA === m.senderId ? conv.participantB : conv.participantA);
+
+        // Compute isSameAccount: messages from the same account (main user or any subuser) show as "own"
+        const senderMainUserId = m.sender?.mainUserId ?? null;
+        const isSameAccount = m.senderId === ownerId || senderMainUserId === ownerId;
+
         return {
           id: m.id,
           content: m.content,
@@ -737,11 +838,13 @@ export class ChatService {
           sender: {
             id: m.sender.id,
             displayName:
+              m.sender.displayName ??
               m.sender.individualProfile?.displayName ??
               m.sender.companyProfile?.companyName ??
               m.sender.vendorProfile?.companyName ??
               m.sender.email,
           },
+          isSameAccount,
         };
       }),
       meta: { total, page, limit, pages: Math.max(1, Math.ceil(total / limit)) },
@@ -754,7 +857,7 @@ export class ChatService {
       where: { id: conversationId },
     });
     if (!conv) return null;
-    if (conv.participantA !== userId && conv.participantB !== userId) return null;
+    if (!(await this.canAccessConversation(userId, conv))) return null;
     return conv;
   }
 
@@ -764,7 +867,7 @@ export class ChatService {
       where: { id: conversationId },
     });
     if (!conv) throw new NotFoundException('Conversation not found');
-    if (conv.participantA !== userId && conv.participantB !== userId) {
+    if (!(await this.canAccessConversation(userId, conv))) {
       throw new ForbiddenException('Not a participant');
     }
     if (!this.storage.isConfigured()) {
@@ -810,8 +913,29 @@ export class ChatService {
     participantBUser: { id: string; email: string; individualProfile?: { displayName: string } | null; companyProfile?: { companyName: string } | null; vendorProfile?: { companyName: string } | null };
     project: { id: string; title: string } | null;
     messages?: { id: string; content: string | null; senderId: string; createdAt: Date; isRead: boolean }[];
-  }, currentUserId: string) {
-    const other = conv.participantA === currentUserId ? conv.participantBUser : conv.participantAUser;
+  }, currentUserId: string, mainUserId: string | null = null) {
+    // Determine the "other" participant
+    let other: { id: string; email: string; individualProfile?: { displayName: string } | null; companyProfile?: { companyName: string } | null; vendorProfile?: { companyName: string } | null };
+
+    if (conv.participantA === currentUserId) {
+      other = conv.participantBUser;
+    } else if (conv.participantB === currentUserId) {
+      other = conv.participantAUser;
+    } else if (mainUserId) {
+      // Sub-user: current user is not a direct participant. Find which participant is the main user
+      // (same account) and return the OTHER one (the actual chat partner).
+      if (conv.participantA === mainUserId) {
+        other = conv.participantBUser;
+      } else if (conv.participantB === mainUserId) {
+        other = conv.participantAUser;
+      } else {
+        // Fallback — shouldn't happen if access control is correct
+        other = conv.participantBUser;
+      }
+    } else {
+      other = conv.participantBUser;
+    }
+
     const displayName =
       other.individualProfile?.displayName ?? other.companyProfile?.companyName ?? other.vendorProfile?.companyName ?? other.email;
     const lastMsg = conv.messages?.[0] ?? null;

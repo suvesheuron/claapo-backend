@@ -162,6 +162,28 @@ export class ProjectsService {
     return { message: 'Project deleted' };
   }
 
+  async getProjectSubUsers(projectId: string, userId: string, role: UserRole) {
+    // Verify project exists and user has access
+    const project = await this.prisma.project.findUnique({
+      where: { id: projectId },
+      include: { subUserAssignments: { include: { subUser: { select: { id: true, email: true, displayName: true, individualProfile: { select: { displayName: true } } } } } } },
+    });
+    if (!project) throw new NotFoundException('Project not found');
+
+    if (role === UserRole.company) {
+      const ctx = await this.getCompanyAccountContext(userId);
+      if (project.companyUserId !== ctx.accountOwnerId) {
+        throw new ForbiddenException('You do not have access to this project');
+      }
+    } else {
+      throw new ForbiddenException('Only company users can view project assignments');
+    }
+
+    return {
+      items: project.subUserAssignments,
+    };
+  }
+
   async addRole(projectId: string, companyUserId: string, dto: AddProjectRoleDto) {
     const ctx = await this.getCompanyAccountContext(companyUserId);
     if (!ctx.isMainUser) throw new ForbiddenException('Only Main ID can edit role requirements');
@@ -203,5 +225,97 @@ export class ProjectsService {
     }
     const accountOwnerId = user.mainUserId ?? user.id;
     return { accountOwnerId, isMainUser: !user.mainUserId };
+  }
+
+  async listUserProjectsWithStats(userId: string, role: UserRole, page = 1, limit = 50) {
+    const skip = (page - 1) * limit;
+    
+    // Get user's main user ID context for sub-user handling
+    const user = await this.prisma.user.findUnique({ 
+      where: { id: userId }, 
+      select: { mainUserId: true, role: true } 
+    });
+    const mainUserId = user?.mainUserId ?? userId;
+    const isSubUser = !!user?.mainUserId;
+
+    // Build where clause based on user role
+    let whereClause: any = {};
+    
+    if (role === UserRole.company) {
+      // Company: projects they own
+      whereClause = {
+        companyUserId: mainUserId,
+        // For sub-users, only show assigned projects
+        ...(isSubUser ? {
+          OR: [
+            { subUserAssignments: { some: { subUserId: userId } } },
+          ]
+        } : {}),
+      };
+    } else if (role === UserRole.vendor) {
+      // Vendor: projects where they have bookings
+      whereClause = {
+        bookings: {
+          some: {
+            targetUserId: mainUserId,
+            status: { notIn: ['declined', 'expired', 'cancelled'] },
+          }
+        }
+      };
+    } else if (role === UserRole.individual) {
+      // Individual: projects where they have bookings
+      whereClause = {
+        bookings: {
+          some: {
+            targetUserId: userId,
+            status: { notIn: ['declined', 'expired', 'cancelled'] },
+          }
+        }
+      };
+    } else {
+      // Admin: all projects
+      whereClause = {};
+    }
+
+    // Fetch projects with conversation and invoice counts
+    const [items, total] = await Promise.all([
+      this.prisma.project.findMany({
+        where: whereClause,
+        select: {
+          id: true,
+          title: true,
+          status: true,
+          startDate: true,
+          endDate: true,
+          createdAt: true,
+          _count: {
+            select: {
+              conversations: true,
+              invoices: true,
+              bookings: true,
+            }
+          }
+        },
+        orderBy: { createdAt: 'desc' },
+        skip,
+        take: limit,
+      }),
+      this.prisma.project.count({ where: whereClause }),
+    ]);
+
+    return {
+      items: items.map((project) => ({
+        id: project.id,
+        title: project.title,
+        status: project.status,
+        startDate: project.startDate,
+        endDate: project.endDate,
+        createdAt: project.createdAt,
+        conversationCount: project._count.conversations,
+        invoiceCount: project._count.invoices,
+        bookingCount: project._count.bookings,
+      })),
+      meta: { total, page, limit, pages: Math.ceil(total / limit) },
+    };
   }
 }

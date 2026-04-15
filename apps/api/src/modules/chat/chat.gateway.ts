@@ -12,11 +12,12 @@ import { JwtService } from '@nestjs/jwt';
 import { ConfigService } from '@nestjs/config';
 import { MessageType } from '@prisma/client';
 import { ChatService } from './chat.service';
+import { PrismaService } from '../../database/prisma.service';
 import type { AuthUser } from '../auth/auth.service';
 
 export interface AuthenticatedSocket {
   id: string;
-  data: { userId: string; user: AuthUser };
+  data: { userId: string; user: AuthUser; mainUserId: string | null };
   join: (room: string) => void;
   leave: (room: string) => void;
   emit: (event: string, data: unknown) => void;
@@ -41,6 +42,7 @@ export class ChatGateway implements OnGatewayInit, OnGatewayConnection, OnGatewa
     private readonly jwtService: JwtService,
     private readonly config: ConfigService,
     private readonly chatService: ChatService,
+    private readonly prisma: PrismaService,
   ) {}
 
   afterInit() {
@@ -60,9 +62,15 @@ export class ChatGateway implements OnGatewayInit, OnGatewayConnection, OnGatewa
       }
       const secret = this.config.get<string>('jwt.secret');
       const payload = this.jwtService.verify<{ sub: string; email: string; role: string }>(token, { secret });
+
+      // Fetch mainUserId for sub-user account awareness
+      const userRecord = await this.prisma.user.findUnique({ where: { id: payload.sub }, select: { mainUserId: true } });
+      const mainUserId = userRecord?.mainUserId ?? null;
+
       (client as AuthenticatedSocket).data = {
         userId: payload.sub,
         user: { id: payload.sub, email: payload.email, role: payload.role as AuthUser['role'] },
+        mainUserId,
       };
       client.join(USER_ROOM(payload.sub));
       this.logger.debug(`User ${payload.sub} connected to chat`);
@@ -109,8 +117,22 @@ export class ChatGateway implements OnGatewayInit, OnGatewayConnection, OnGatewa
         content: payload.content,
         mediaKey: payload.mediaKey,
       });
+
+      // Broadcast to each participant with their own isSameAccount computed
       const room = CONV_ROOM(payload.conversationId);
-      this.server.to(room).emit('new_message', message);
+      const sockets = await this.server.in(room).fetchSockets();
+      for (const socket of sockets) {
+        const recipientId = (socket as unknown as AuthenticatedSocket).data?.userId;
+        if (!recipientId) continue;
+        const recipientMainUserId = (socket as unknown as AuthenticatedSocket).data?.mainUserId ?? null;
+        const senderMainUserId = (message as any).senderMainUserId ?? null;
+        // Compute isSameAccount: true if sender belongs to recipient's account
+        const isSameAccount = recipientId === message.senderId
+          || (senderMainUserId && senderMainUserId === recipientId)
+          || (recipientMainUserId && message.senderId === recipientMainUserId)
+          || (senderMainUserId && recipientMainUserId && senderMainUserId === recipientMainUserId);
+        (socket as unknown as { emit: (event: string, data: unknown) => void }).emit('new_message', { ...message, isSameAccount });
+      }
       return { ok: true, message };
     } catch (err) {
       return { error: (err as Error).message };

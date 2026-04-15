@@ -62,4 +62,16 @@ export class ProjectsController {
   addRole(@CurrentUser() user: AuthUser, @Param('id') id: string, @Body() dto: AddProjectRoleDto) {
     return this.projectsService.addRole(id, user.id, dto);
   }
+
+  @Get('my/with-stats')
+  @ApiOperation({ summary: 'List user accessible projects with conversation and invoice counts' })
+  listWithStats(@CurrentUser() user: AuthUser, @Query('page') page?: string, @Query('limit') limit?: string) {
+    return this.projectsService.listUserProjectsWithStats(user.id, user.role, parseInt(page ?? '1', 10), parseInt(limit ?? '50', 10));
+  }
+
+  @Get(':id/sub-users')
+  @ApiOperation({ summary: 'Get sub-users assigned to this project' })
+  getProjectSubUsers(@CurrentUser() user: AuthUser, @Param('id') id: string) {
+    return this.projectsService.getProjectSubUsers(id, user.id, user.role);
+  }
 }

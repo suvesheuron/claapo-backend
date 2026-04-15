@@ -31,10 +31,11 @@ export class ChatController {
     @CurrentUser() user: AuthUser,
     @Query('page') page?: string,
     @Query('limit') limit?: string,
+    @Query('projectId') projectId?: string,
   ) {
     const pageNum = parseInt(page ?? '1', 10);
     const limitNum = Math.min(parseInt(limit ?? '20', 10), 100);
-    return this.chatService.listConversations(user.id, pageNum, limitNum);
+    return this.chatService.listConversations(user.id, pageNum, limitNum, projectId);
   }
 
   @Get('search')

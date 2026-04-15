@@ -94,7 +94,7 @@ export class InvoicesService {
     return invoice;
   }
 
-  async list(userId: string, page = 1, limit = 20, issuedOn?: string) {
+  async list(userId: string, page = 1, limit = 20, issuedOn?: string, projectId?: string) {
     const companyCtx = await this.getCompanyAccountContextOrNull(userId);
     const vendorCtx = await this.getVendorAccountContextOrNull(userId);
     const skip = (page - 1) * limit;
@@ -105,9 +105,11 @@ export class InvoicesService {
       end.setUTCDate(end.getUTCDate() + 1);
       issuedOnFilter = { createdAt: { gte: start, lt: end } };
     }
-    const baseWhere = companyCtx
+    
+    let baseWhere: any = companyCtx
       ? {
           recipientUserId: companyCtx.accountOwnerId,
+          status: { not: 'draft' as const },
           ...(companyCtx.isMainUser
             ? {}
             : {
@@ -134,6 +136,12 @@ export class InvoicesService {
         : {
             OR: [{ issuerUserId: userId }, { recipientUserId: userId }],
           };
+    
+    // Add project filter if provided
+    if (projectId) {
+      baseWhere = { ...baseWhere, projectId };
+    }
+    
     const where = issuedOnFilter ? { ...baseWhere, ...issuedOnFilter } : baseWhere;
     const [items, total] = await Promise.all([
       this.prisma.invoice.findMany({
@@ -187,6 +195,7 @@ export class InvoicesService {
                 skills: true,
                 panNumber: true,
                 gstNumber: true,
+                upiId: true,
                 bankAccountName: true,
                 bankAccountNumber: true,
                 ifscCode: true,
@@ -200,6 +209,7 @@ export class InvoicesService {
                 address: true,
                 locationCity: true,
                 panNumber: true,
+                upiId: true,
                 bankAccountName: true,
                 bankAccountNumber: true,
                 ifscCode: true,
@@ -233,6 +243,7 @@ export class InvoicesService {
                 address: true,
                 panNumber: true,
                 gstNumber: true,
+                upiId: true,
                 bankAccountName: true,
                 bankAccountNumber: true,
                 ifscCode: true,
@@ -246,6 +257,7 @@ export class InvoicesService {
                 address: true,
                 locationCity: true,
                 panNumber: true,
+                upiId: true,
                 bankAccountName: true,
                 bankAccountNumber: true,
                 ifscCode: true,
@@ -313,6 +325,7 @@ export class InvoicesService {
         skills?: string[];
         panNumber?: string | null;
         gstNumber?: string | null;
+        upiId?: string | null;
         bankAccountName?: string | null;
         bankAccountNumber?: string | null;
         ifscCode?: string | null;
@@ -324,6 +337,7 @@ export class InvoicesService {
         address?: string | null;
         locationCity?: string | null;
         panNumber?: string | null;
+        upiId?: string | null;
         bankAccountName?: string | null;
         bankAccountNumber?: string | null;
         ifscCode?: string | null;
@@ -350,6 +364,7 @@ export class InvoicesService {
         address?: string | null;
         panNumber?: string | null;
         gstNumber?: string | null;
+        upiId?: string | null;
         bankAccountName?: string | null;
         bankAccountNumber?: string | null;
         ifscCode?: string | null;
@@ -361,6 +376,7 @@ export class InvoicesService {
         address?: string | null;
         locationCity?: string | null;
         panNumber?: string | null;
+        upiId?: string | null;
         bankAccountName?: string | null;
         bankAccountNumber?: string | null;
         ifscCode?: string | null;
@@ -407,6 +423,7 @@ export class InvoicesService {
           gstNumber: issuerInd.gstNumber ?? null,
           address: issuerInd.address ?? null,
           panNumber: issuerInd.panNumber ?? null,
+          upiId: issuerInd.upiId ?? null,
           email: invoice.issuer.email,
           phone: issuerPhone,
           bankAccountName: issuerInd.bankAccountName ?? null,
@@ -419,6 +436,7 @@ export class InvoicesService {
           gstNumber: issuerCompany?.gstNumber ?? issuerVendor?.gstNumber ?? null,
           address: issuerCompany?.address ?? issuerVendor?.address ?? null,
           panNumber: issuerCompany?.panNumber ?? issuerVendor?.panNumber ?? null,
+          upiId: issuerVendor?.upiId ?? null,
           email: invoice.issuer.email,
           phone: issuerPhone,
           bankAccountName: issuerCompany?.bankAccountName ?? issuerVendor?.bankAccountName ?? null,
@@ -432,6 +450,7 @@ export class InvoicesService {
           gstNumber: recipientInd.gstNumber ?? null,
           address: recipientInd.address ?? null,
           panNumber: recipientInd.panNumber ?? null,
+          upiId: recipientInd.upiId ?? null,
           email: invoice.recipient.email,
           phone: recipientPhone,
           bankAccountName: recipientInd.bankAccountName ?? null,
@@ -444,6 +463,7 @@ export class InvoicesService {
           gstNumber: recipientCompany?.gstNumber ?? recipientVendor?.gstNumber ?? null,
           address: recipientCompany?.address ?? recipientVendor?.address ?? null,
           panNumber: recipientCompany?.panNumber ?? recipientVendor?.panNumber ?? null,
+          upiId: recipientVendor?.upiId ?? null,
           email: invoice.recipient.email,
           phone: recipientPhone,
           bankAccountName: recipientCompany?.bankAccountName ?? recipientVendor?.bankAccountName ?? null,

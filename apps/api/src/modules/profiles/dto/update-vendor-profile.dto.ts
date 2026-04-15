@@ -88,6 +88,11 @@ export class UpdateVendorProfileDto {
   @IsString()
   bankName?: string;
 
+  @ApiPropertyOptional({ description: 'UPI ID (for payment on invoices)' })
+  @IsOptional()
+  @IsString()
+  upiId?: string;
+
   @ApiPropertyOptional()
   @IsOptional()
   @IsString()

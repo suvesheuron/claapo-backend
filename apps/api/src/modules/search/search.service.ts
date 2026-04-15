@@ -75,6 +75,8 @@ export class SearchService {
     }
 
     const hasSkillFilter = !!skillsFilter?.length;
+    const genreFilter = query.genre?.trim().toLowerCase() ?? null;
+
     const takeSize = startDate && endDate ? limit * 3 : limit + 1;
     const profiles = await this.prisma.individualProfile.findMany({
       where,
@@ -83,6 +85,7 @@ export class SearchService {
         displayName: true,
         bio: true,
         skills: true,
+        genres: true,
         locationCity: true,
         locationState: true,
         dailyBudget: true,
@@ -90,7 +93,7 @@ export class SearchService {
         isAvailable: true,
       },
       orderBy: { profileScore: 'desc' },
-      ...(hasSkillFilter ? {} : { skip, take: takeSize }),
+      ...(hasSkillFilter || genreFilter ? {} : { skip, take: takeSize }),
     });
 
     let filtered = profiles;
@@ -98,6 +101,12 @@ export class SearchService {
       filtered = filtered.filter((p) => {
         const profileSkills = (p.skills ?? []).map((s) => s.trim().toLowerCase());
         return skillsFilter.some((skill) => profileSkills.includes(skill));
+      });
+    }
+    if (genreFilter) {
+      filtered = filtered.filter((p) => {
+        const profileGenres = (p.genres ?? []).map((g) => g.trim().toLowerCase());
+        return profileGenres.some((g) => g.includes(genreFilter) || genreFilter.includes(g));
       });
     }
     if (startDate && endDate) {
@@ -113,10 +122,10 @@ export class SearchService {
       filtered = filtered.filter((p) => !unavailableSet.has(p.userId));
     }
 
-    const paged = hasSkillFilter ? filtered.slice(skip, skip + limit + 1) : filtered;
+    const paged = (hasSkillFilter || genreFilter) ? filtered.slice(skip, skip + limit + 1) : filtered;
     const items = paged.slice(0, limit);
     const hasMore = paged.length > limit;
-    const total = hasSkillFilter
+    const total = (hasSkillFilter || genreFilter)
       ? filtered.length
       : await this.prisma.individualProfile.count({ where });
     const userIds = items.map((i) => i.userId);

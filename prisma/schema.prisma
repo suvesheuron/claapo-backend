@@ -36,6 +36,7 @@ model User {
   mainUserId   String?   @map("main_user_id") @db.Uuid
   email        String    @unique
   phone        String    @unique
+  displayName  String?   @map("display_name")
   passwordHash String    @map("password_hash")
   role         UserRole
   isVerified   Boolean   @default(false) @map("is_verified")
@@ -129,6 +130,7 @@ model IndividualProfile {
   isAvailable    Boolean  @default(true) @map("is_available")
   panNumber      String?  @map("pan_number")
   gstNumber      String?  @map("gst_number")
+  upiId          String?  @map("upi_id")
   bankAccountName    String?  @map("bank_account_name")
   bankAccountNumber  String?  @map("bank_account_number")
   ifscCode       String?  @map("ifsc_code")
@@ -199,6 +201,7 @@ model VendorProfile {
   bankAccountNumber  String?  @map("bank_account_number")
   ifscCode       String?    @map("ifsc_code")
   bankName       String?    @map("bank_name")
+  upiId          String?    @map("upi_id")
   bio            String?
   aboutUs        String?  @map("about_us")
   createdAt      DateTime   @default(now()) @map("created_at")
