@@ -194,9 +194,14 @@ export class ChatService {
   }
 
   /** List user's conversations (paginated, sorted by last message) */
-  async listConversations(userId: string, page = 1, limit = 20) {
+  async listConversations(userId: string, page = 1, limit = 20, projectId?: string) {
     const skip = (page - 1) * limit;
-    const where = await this.conversationWhereForUser(userId);
+    const baseWhere = await this.conversationWhereForUser(userId);
+    
+    // Add project filter if provided
+    const where = projectId 
+      ? { ...baseWhere, projectId } 
+      : baseWhere;
 
     // Fetch mainUserId for sub-user context
     const userData = await this.prisma.user.findUnique({ where: { id: userId }, select: { mainUserId: true } });
@@ -280,8 +285,10 @@ export class ChatService {
       || (senderMainUserId && mainUserId && senderMainUserId === mainUserId);
 
     // Resolve a friendly display name for the sender
+    // Priority: User.displayName (for sub-users) > profile displayName > company/vendor name > email
     const senderDisplayName =
-      m.sender?.individualProfile?.displayName
+      m.sender?.displayName
+      ?? m.sender?.individualProfile?.displayName
       ?? m.sender?.companyProfile?.companyName
       ?? m.sender?.vendorProfile?.companyName
       ?? m.sender?.email
@@ -329,6 +336,7 @@ export class ChatService {
           select: {
             id: true,
             email: true,
+            displayName: true,
             mainUserId: true,
             individualProfile: { select: { displayName: true } },
             companyProfile: { select: { companyName: true } },
@@ -388,6 +396,7 @@ export class ChatService {
               id: true,
               mainUserId: true,
               email: true,
+              displayName: true,
               individualProfile: { select: { displayName: true } },
               companyProfile: { select: { companyName: true } },
               vendorProfile: { select: { companyName: true } },
@@ -486,6 +495,7 @@ export class ChatService {
           select: {
             id: true,
             email: true,
+            displayName: true,
             mainUserId: true,
             individualProfile: { select: { displayName: true } },
             companyProfile: { select: { companyName: true } },
@@ -600,6 +610,8 @@ export class ChatService {
           sender: {
             select: {
               id: true,
+              email: true,
+              displayName: true,
               individualProfile: { select: { displayName: true } },
               companyProfile: { select: { companyName: true } },
               vendorProfile: { select: { companyName: true } },
@@ -626,6 +638,7 @@ export class ChatService {
       sender: {
         id: forwardedMessage.sender.id,
         displayName:
+          forwardedMessage.sender.displayName ??
           forwardedMessage.sender.individualProfile?.displayName ??
           forwardedMessage.sender.companyProfile?.companyName ??
           forwardedMessage.sender.vendorProfile?.companyName ??
@@ -659,6 +672,7 @@ export class ChatService {
           select: {
             id: true,
             email: true,
+            displayName: true,
             individualProfile: { select: { displayName: true } },
             companyProfile: { select: { companyName: true } },
             vendorProfile: { select: { companyName: true } },
@@ -686,6 +700,7 @@ export class ChatService {
         sender: {
           id: m.sender.id,
           displayName:
+            m.sender.displayName ??
             m.sender.individualProfile?.displayName ??
             m.sender.companyProfile?.companyName ??
             m.sender.vendorProfile?.companyName ??
@@ -741,6 +756,7 @@ export class ChatService {
             select: {
               id: true,
               email: true,
+              displayName: true,
               mainUserId: true,
               individualProfile: { select: { displayName: true } },
               companyProfile: { select: { companyName: true } },
@@ -822,6 +838,7 @@ export class ChatService {
           sender: {
             id: m.sender.id,
             displayName:
+              m.sender.displayName ??
               m.sender.individualProfile?.displayName ??
               m.sender.companyProfile?.companyName ??
               m.sender.vendorProfile?.companyName ??

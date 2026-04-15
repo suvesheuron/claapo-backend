@@ -32,8 +32,9 @@ export class InvoicesController {
     @Query('page') page?: string,
     @Query('limit') limit?: string,
     @Query('issuedOn') issuedOn?: string,
+    @Query('projectId') projectId?: string,
   ) {
-    return this.invoicesService.list(user.id, parseInt(page ?? '1', 10), parseInt(limit ?? '20', 10), issuedOn);
+    return this.invoicesService.list(user.id, parseInt(page ?? '1', 10), parseInt(limit ?? '20', 10), issuedOn, projectId);
   }
 
   @Get(':id/attachments/upload-url')

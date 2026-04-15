@@ -94,7 +94,7 @@ export class InvoicesService {
     return invoice;
   }
 
-  async list(userId: string, page = 1, limit = 20, issuedOn?: string) {
+  async list(userId: string, page = 1, limit = 20, issuedOn?: string, projectId?: string) {
     const companyCtx = await this.getCompanyAccountContextOrNull(userId);
     const vendorCtx = await this.getVendorAccountContextOrNull(userId);
     const skip = (page - 1) * limit;
@@ -105,7 +105,8 @@ export class InvoicesService {
       end.setUTCDate(end.getUTCDate() + 1);
       issuedOnFilter = { createdAt: { gte: start, lt: end } };
     }
-    const baseWhere = companyCtx
+    
+    let baseWhere: any = companyCtx
       ? {
           recipientUserId: companyCtx.accountOwnerId,
           status: { not: 'draft' as const },
@@ -135,6 +136,12 @@ export class InvoicesService {
         : {
             OR: [{ issuerUserId: userId }, { recipientUserId: userId }],
           };
+    
+    // Add project filter if provided
+    if (projectId) {
+      baseWhere = { ...baseWhere, projectId };
+    }
+    
     const where = issuedOnFilter ? { ...baseWhere, ...issuedOnFilter } : baseWhere;
     const [items, total] = await Promise.all([
       this.prisma.invoice.findMany({

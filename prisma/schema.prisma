@@ -36,6 +36,7 @@ model User {
   mainUserId   String?   @map("main_user_id") @db.Uuid
   email        String    @unique
   phone        String    @unique
+  displayName  String?   @map("display_name")
   passwordHash String    @map("password_hash")
   role         UserRole
   isVerified   Boolean   @default(false) @map("is_verified")
