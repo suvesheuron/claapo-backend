@@ -16,6 +16,7 @@ const MAX_ATTACHMENTS_PER_INVOICE = 10;
 @Injectable()
 export class InvoicesService {
   private razorpay: Razorpay | null = null;
+  private static readonly GST_REGEX = /^[0-9]{2}[A-Z]{5}[0-9]{4}[A-Z][1-9A-Z]Z[0-9A-Z]$/;
 
   constructor(
     private readonly prisma: PrismaService,
@@ -35,6 +36,24 @@ export class InvoicesService {
     const timestamp = Date.now().toString(36).toUpperCase();
     const random = Math.random().toString(36).slice(2, 6).toUpperCase();
     return `${prefix}-${timestamp}-${random}`;
+  }
+
+  private isValidGstNumber(value?: string | null): boolean {
+    if (!value) return false;
+    return InvoicesService.GST_REGEX.test(value.trim().toUpperCase());
+  }
+
+  private async shouldApplyGstForIssuer(issuerUserId: string): Promise<boolean> {
+    const issuer = await this.prisma.user.findUnique({
+      where: { id: issuerUserId },
+      select: {
+        individualProfile: { select: { gstNumber: true } },
+        vendorProfile: { select: { gstNumber: true } },
+      },
+    });
+    if (!issuer) return false;
+    const gstNumber = issuer.individualProfile?.gstNumber ?? issuer.vendorProfile?.gstNumber ?? null;
+    return this.isValidGstNumber(gstNumber);
   }
 
   async create(issuerUserId: string, role: UserRole, dto: CreateInvoiceDto) {
@@ -72,7 +91,8 @@ export class InvoicesService {
         amount: itemAmount,
       };
     });
-    const gstAmount = Math.round(amount * 0.18);
+    const applyGst = await this.shouldApplyGstForIssuer(issuerAccountUserId);
+    const gstAmount = applyGst ? Math.round(amount * 0.18) : 0;
     const totalAmount = amount + gstAmount;
     const invoiceNumber = this.generateInvoiceNumber();
     const invoice = await this.prisma.invoice.create({
@@ -574,7 +594,8 @@ export class InvoicesService {
           amount: itemAmount,
         };
       });
-      const gstAmount = Math.round(amount * 0.18);
+      const applyGst = await this.shouldApplyGstForIssuer(issuerAccountUserId);
+      const gstAmount = applyGst ? Math.round(amount * 0.18) : 0;
       data.amount = amount;
       data.gstAmount = gstAmount;
       data.totalAmount = amount + gstAmount;

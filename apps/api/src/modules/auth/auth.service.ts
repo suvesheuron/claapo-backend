@@ -94,6 +94,12 @@ export class AuthService {
         phone: dto.phone,
         passwordHash,
         role: UserRole.company,
+        companyProfile: {
+          create: {
+            companyName: 'Unknown',
+            gstNumber: dto.gstNumber?.trim() || null,
+          },
+        },
       },
     });
     return { userId: user.id, message: 'Registration successful. Verify OTP to activate.' };

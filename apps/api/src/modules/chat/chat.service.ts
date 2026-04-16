@@ -94,7 +94,7 @@ export class ChatService {
           },
         },
         include: {
-          project: { select: { id: true, title: true } },
+          project: { select: { id: true, title: true, shootDates: true } },
           participantAUser: {
             select: {
               id: true,
@@ -125,7 +125,7 @@ export class ChatService {
             participantB,
           },
           include: {
-            project: { select: { id: true, title: true } },
+            project: { select: { id: true, title: true, shootDates: true } },
             participantAUser: {
               select: {
                 id: true,
@@ -150,6 +150,10 @@ export class ChatService {
 
       return existing;
     });
+
+    if (!conv) {
+      throw new NotFoundException('Conversation not found');
+    }
 
     return this.formatConversation(conv, userId);
   }
@@ -911,7 +915,7 @@ export class ChatService {
     lastMessageAt: Date | null;
     participantAUser: { id: string; email: string; individualProfile?: { displayName: string } | null; companyProfile?: { companyName: string } | null; vendorProfile?: { companyName: string } | null };
     participantBUser: { id: string; email: string; individualProfile?: { displayName: string } | null; companyProfile?: { companyName: string } | null; vendorProfile?: { companyName: string } | null };
-    project: { id: string; title: string } | null;
+    project: { id: string; title: string; shootDates?: Date[] } | null;
     messages?: { id: string; content: string | null; senderId: string; createdAt: Date; isRead: boolean }[];
   }, currentUserId: string, mainUserId: string | null = null) {
     // Determine the "other" participant
@@ -942,7 +946,15 @@ export class ChatService {
     return {
       id: conv.id,
       projectId: conv.projectId,
-      project: conv.project,
+      project: conv.project
+        ? {
+            id: conv.project.id,
+            title: conv.project.title,
+            shootDates: Array.isArray(conv.project.shootDates)
+              ? conv.project.shootDates.map((d) => d.toISOString())
+              : [],
+          }
+        : null,
       otherParticipant: { id: other.id, email: other.email, displayName },
       lastMessageAt: conv.lastMessageAt,
       lastMessage: lastMsg
