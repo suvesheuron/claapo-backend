@@ -169,6 +169,7 @@ export class AvailabilityService {
       status: matchingBooking.status,
       shootDates: matchingBooking.shootDates.map((d: Date) => this.toUtcDateKey(new Date(d))),
       shootLocations: matchingBooking.shootLocations,
+      shootDateLocations: matchingBooking.shootDateLocations ?? null,
       message: matchingBooking.message,
       invoiceId: invoice?.id,
       invoiceStatus: invoice?.status,
