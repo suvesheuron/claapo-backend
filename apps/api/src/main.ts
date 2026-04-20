@@ -1,13 +1,39 @@
 import { NestFactory } from '@nestjs/core';
-import { ValidationPipe } from '@nestjs/common';
+import { ValidationPipe, type LoggerService } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { SwaggerModule, DocumentBuilder } from '@nestjs/swagger';
 import { IoAdapter } from '@nestjs/platform-socket.io';
 import { AppModule } from './app.module';
 import { AllExceptionsFilter } from './common/filters/http-exception.filter';
 
+// Nest internals that flood startup with per-route / per-module lines.
+const NOISY_CONTEXTS = new Set([
+  'InstanceLoader',
+  'RoutesResolver',
+  'RouterExplorer',
+  'NestFactory',
+  'NestApplication',
+  'WebSocketsController',
+]);
+
+const quietLogger: LoggerService = {
+  log(message: unknown, context?: string) {
+    if (context && NOISY_CONTEXTS.has(context)) return;
+    console.log(context ? `[${context}] ${message}` : String(message));
+  },
+  warn(message: unknown, context?: string) {
+    if (context && NOISY_CONTEXTS.has(context)) return;
+    console.warn(context ? `[${context}] ${message}` : String(message));
+  },
+  error(message: unknown, trace?: string, context?: string) {
+    console.error(context ? `[${context}] ${message}` : String(message), trace ?? '');
+  },
+  debug() {},
+  verbose() {},
+};
+
 async function bootstrap() {
-  const app = await NestFactory.create(AppModule);
+  const app = await NestFactory.create(AppModule, { logger: quietLogger });
   app.useWebSocketAdapter(new IoAdapter(app));
   const config = app.get(ConfigService);
   const corsOriginsRaw = config.get<string[]>('corsOrigins') ?? ['http://localhost:3000'];
