@@ -1,5 +1,5 @@
 import { Injectable, ForbiddenException, NotFoundException } from '@nestjs/common';
-import { Prisma } from '@prisma/client';
+import { Prisma, UserRole } from '@prisma/client';
 import { PrismaService } from '../../database/prisma.service';
 import { NotificationPreferencesDto } from './dto/preferences.dto';
 
@@ -7,17 +7,38 @@ import { NotificationPreferencesDto } from './dto/preferences.dto';
 export class NotificationsService {
   constructor(private readonly prisma: PrismaService) {}
 
+  private async getNotificationAccountContext(userId: string) {
+    const user = await this.prisma.user.findUnique({
+      where: { id: userId },
+      select: { id: true, role: true, mainUserId: true },
+    });
+    if (!user) throw new NotFoundException('User not found');
+    const accountUserId = user.mainUserId ?? user.id;
+    const isSubUser = !!user.mainUserId;
+    const sharesAccountNotifications =
+      isSubUser && (user.role === UserRole.company || user.role === UserRole.vendor);
+    return {
+      role: user.role,
+      userId: user.id,
+      accountUserId,
+      isSubUser,
+      sharesAccountNotifications,
+    };
+  }
+
   async list(userId: string, page = 1, limit = 20) {
+    const ctx = await this.getNotificationAccountContext(userId);
+    const ownerNotificationUserId = ctx.sharesAccountNotifications ? ctx.accountUserId : userId;
     const skip = (page - 1) * limit;
     const [rawItems, total, unreadCount] = await Promise.all([
       this.prisma.notification.findMany({
-        where: { userId },
+        where: { userId: ownerNotificationUserId },
         orderBy: { createdAt: 'desc' },
         skip,
         take: limit,
       }),
-      this.prisma.notification.count({ where: { userId } }),
-      this.prisma.notification.count({ where: { userId, readAt: null } }),
+      this.prisma.notification.count({ where: { userId: ownerNotificationUserId } }),
+      this.prisma.notification.count({ where: { userId: ownerNotificationUserId, readAt: null } }),
     ]);
     const bookingIds = rawItems
       .filter((n) => n.data && typeof (n.data as Record<string, unknown>).bookingId === 'string')
@@ -110,9 +131,12 @@ export class NotificationsService {
   }
 
   async markRead(notificationId: string, userId: string) {
+    const ctx = await this.getNotificationAccountContext(userId);
     const n = await this.prisma.notification.findUnique({ where: { id: notificationId } });
     if (!n) throw new NotFoundException('Notification not found');
-    if (n.userId !== userId) throw new ForbiddenException('Not your notification');
+    const canReadOwn = n.userId === userId;
+    const canReadAccount = ctx.sharesAccountNotifications && n.userId === ctx.accountUserId;
+    if (!canReadOwn && !canReadAccount) throw new ForbiddenException('Not your notification');
     return this.prisma.notification.update({
       where: { id: notificationId },
       data: { readAt: new Date() },
@@ -120,8 +144,10 @@ export class NotificationsService {
   }
 
   async markAllRead(userId: string) {
+    const ctx = await this.getNotificationAccountContext(userId);
+    const ownerNotificationUserId = ctx.sharesAccountNotifications ? ctx.accountUserId : userId;
     await this.prisma.notification.updateMany({
-      where: { userId, readAt: null },
+      where: { userId: ownerNotificationUserId, readAt: null },
       data: { readAt: new Date() },
     });
     return { message: 'All notifications marked as read' };

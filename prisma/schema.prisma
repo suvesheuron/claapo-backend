@@ -118,6 +118,7 @@ model IndividualProfile {
   lng            Float?
   dailyBudget    Int?     @map("daily_budget")
   avatarKey      String?  @map("avatar_key")
+  coverKey       String?  @map("cover_key")
   showreelKey    String?  @map("showreel_key")
   website        String?  @map("website")
   imdbUrl        String?  @map("imdb_url")
@@ -194,6 +195,7 @@ model VendorProfile {
   youtubeUrl     String?    @map("youtube_url")
   vimeoUrl       String?    @map("vimeo_url")
   logoKey        String?    @map("logo_key")
+  coverKey       String?    @map("cover_key")
   address        String?
   locationCity   String?    @map("location_city")
   locationState  String?    @map("location_state")
@@ -397,6 +399,12 @@ enum InvoiceStatus {
   cancelled
 }
 
+enum InvoiceTaxType {
+  none
+  gst
+  igst
+}
+
 model Invoice {
   id                String        @id @default(uuid()) @db.Uuid
   projectId         String        @map("project_id") @db.Uuid
@@ -404,6 +412,8 @@ model Invoice {
   recipientUserId   String        @map("recipient_user_id") @db.Uuid
   invoiceNumber     String        @unique @map("invoice_number")
   amount            Int           // subtotal in paise (INR × 100)
+  taxType           InvoiceTaxType @default(none) @map("tax_type")
+  taxRatePct        Int           @default(0) @map("tax_rate_pct")
   gstAmount         Int           @default(0) @map("gst_amount")
   totalAmount       Int           @map("total_amount")
   currency          String        @default("INR")

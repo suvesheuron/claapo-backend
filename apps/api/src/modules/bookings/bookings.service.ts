@@ -39,6 +39,12 @@ export class BookingsService {
     });
   }
 
+  private hasDateOverlap(datesA: Date[], datesB: Date[]): boolean {
+    if (datesA.length === 0 || datesB.length === 0) return false;
+    const bSet = new Set(datesB.map((d) => d.toISOString().slice(0, 10)));
+    return datesA.some((d) => bSet.has(d.toISOString().slice(0, 10)));
+  }
+
   async createRequest(companyUserId: string, dto: CreateBookingRequestDto) {
     const companyCtx = await this.getCompanyAccountContext(companyUserId);
     const project = await this.prisma.project.findUnique({
@@ -278,11 +284,12 @@ export class BookingsService {
         id: true,
         projectId: true,
         vendorEquipmentId: true,
+        shootDates: true,
         project: { select: { title: true, startDate: true, endDate: true } },
       },
     });
 
-    const byEquipment: Record<string, Array<{ projectId: string; projectTitle: string; startDate: Date; endDate: Date }>> = {};
+    const byEquipment: Record<string, Array<{ projectId: string; projectTitle: string; startDate: Date; endDate: Date; shootDates: Date[] }>> = {};
     for (const ob of otherBookings) {
       if (!ob.vendorEquipmentId) continue;
       if (!byEquipment[ob.vendorEquipmentId]) byEquipment[ob.vendorEquipmentId] = [];
@@ -291,13 +298,19 @@ export class BookingsService {
         projectTitle: ob.project.title,
         startDate: ob.project.startDate,
         endDate: ob.project.endDate,
+        shootDates: ob.shootDates ?? [],
       });
     }
 
     return items.map((b) => {
       const base = { ...b };
       if (!b.vendorEquipmentId) return base;
-      const others = byEquipment[b.vendorEquipmentId]?.filter((o) => o.projectId !== b.projectId) ?? [];
+      const thisDates = this.resolveBookingDates(b as any);
+      const others = (byEquipment[b.vendorEquipmentId] ?? []).filter((o) => {
+        if (o.projectId === b.projectId) return false;
+        const otherDates = this.resolveBookingDates({ shootDates: o.shootDates });
+        return this.hasDateOverlap(thisDates, otherDates);
+      });
       const other = others[0];
       (base as any).equipmentAlreadyBookedFor = other
         ? { projectTitle: other.projectTitle, startDate: other.startDate, endDate: other.endDate }
@@ -460,49 +473,73 @@ export class BookingsService {
       );
     }
 
-    // Check if crew member already has booked/blocked slots for overlapping dates
-    const existingBookings = await this.prisma.availabilitySlot.findMany({
-      where: {
-        userId: booking.targetUserId,
-        date: { in: datesToCheck },
-        status: { in: ['booked', 'blocked'] },
-      },
-    });
+    if (role === UserRole.vendor) {
+      // Vendors should be blocked equipment-wise, not profile-wise.
+      if (booking.vendorEquipmentId) {
+        const conflictingBookings = await this.prisma.bookingRequest.findMany({
+          where: {
+            targetUserId: booking.targetUserId,
+            vendorEquipmentId: booking.vendorEquipmentId,
+            status: { in: ['accepted', 'locked'] },
+            id: { not: bookingId },
+          },
+          include: {
+            project: { select: { title: true } },
+          },
+        });
 
-    if (existingBookings.length > 0) {
-      // Find which other project(s) conflict — resolve each conflicting booking's
-      // exact dates via the same helper (booking.shootDates > project.shootDates > range).
-      const conflictingBookings = await this.prisma.bookingRequest.findMany({
-        where: {
-          targetUserId: booking.targetUserId,
-          status: { in: ['accepted', 'locked'] },
-          id: { not: bookingId },
-        },
-        include: {
-          project: { select: { title: true, startDate: true, endDate: true, shootDates: true } },
-        },
-      });
-
-      const conflictingProjects = conflictingBookings.filter((b) => {
-        const otherDates = this.resolveBookingDates(b as any).map((d) => d.toDateString());
-        return datesToCheck.some((d) => otherDates.includes(d.toDateString()));
-      });
-
-      if (conflictingProjects.length > 0) {
-        throw new BadRequestException(
-          `You are already booked for these dates on project(s): ${conflictingProjects.map((p) => p.project.title).join(', ')}`,
+        const conflictingProjects = conflictingBookings.filter((b) =>
+          this.hasDateOverlap(datesToCheck, this.resolveBookingDates(b as any)),
         );
-      }
-    }
 
-    // Block the dates for this booking
-    const datesToBlock: Date[] = datesToCheck;
-    for (const dateKey of datesToBlock) {
-      await this.prisma.availabilitySlot.upsert({
-        where: { userId_date: { userId: booking.targetUserId, date: dateKey } },
-        create: { userId: booking.targetUserId, date: dateKey, status: 'booked' },
-        update: { status: 'booked' },
+        if (conflictingProjects.length > 0) {
+          throw new BadRequestException(
+            `This equipment is already booked for these dates on project(s): ${conflictingProjects.map((p) => p.project.title).join(', ')}`,
+          );
+        }
+      }
+    } else {
+      // Individual crew remain profile-blocked via availability slots.
+      const existingBookings = await this.prisma.availabilitySlot.findMany({
+        where: {
+          userId: booking.targetUserId,
+          date: { in: datesToCheck },
+          status: { in: ['booked', 'blocked'] },
+        },
       });
+
+      if (existingBookings.length > 0) {
+        // Find which other project(s) conflict using exact booking dates.
+        const conflictingBookings = await this.prisma.bookingRequest.findMany({
+          where: {
+            targetUserId: booking.targetUserId,
+            status: { in: ['accepted', 'locked'] },
+            id: { not: bookingId },
+          },
+          include: {
+            project: { select: { title: true, startDate: true, endDate: true, shootDates: true } },
+          },
+        });
+
+        const conflictingProjects = conflictingBookings.filter((b) =>
+          this.hasDateOverlap(datesToCheck, this.resolveBookingDates(b as any)),
+        );
+
+        if (conflictingProjects.length > 0) {
+          throw new BadRequestException(
+            `You are already booked for these dates on project(s): ${conflictingProjects.map((p) => p.project.title).join(', ')}`,
+          );
+        }
+      }
+
+      // Block the dates for individual crew booking.
+      for (const dateKey of datesToCheck) {
+        await this.prisma.availabilitySlot.upsert({
+          where: { userId_date: { userId: booking.targetUserId, date: dateKey } },
+          create: { userId: booking.targetUserId, date: dateKey, status: 'booked' },
+          update: { status: 'booked' },
+        });
+      }
     }
     const updated = await this.prisma.bookingRequest.update({
       where: { id: bookingId },
