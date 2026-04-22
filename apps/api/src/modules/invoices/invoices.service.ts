@@ -1,6 +1,6 @@
 import { Injectable, ForbiddenException, NotFoundException, BadRequestException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { UserRole } from '@prisma/client';
+import { InvoiceTaxType, UserRole } from '@prisma/client';
 import { PrismaService } from '../../database/prisma.service';
 import Razorpay from 'razorpay';
 import crypto from 'crypto';
@@ -56,6 +56,23 @@ export class InvoicesService {
     return this.isValidGstNumber(gstNumber);
   }
 
+  private normalizeTaxInput(
+    taxTypeRaw: 'none' | 'gst' | 'igst' | undefined,
+    taxRateRaw: 0 | 5 | 18 | undefined,
+  ): { taxType: InvoiceTaxType; taxRatePct: number } {
+    const taxRatePct = taxRateRaw ?? 0;
+    if (taxRatePct <= 0) {
+      return { taxType: InvoiceTaxType.none, taxRatePct: 0 };
+    }
+    if (taxTypeRaw === 'igst') return { taxType: InvoiceTaxType.igst, taxRatePct };
+    return { taxType: InvoiceTaxType.gst, taxRatePct };
+  }
+
+  private computeTaxAmount(subtotalPaise: number, taxRatePct: number): number {
+    if (subtotalPaise <= 0 || taxRatePct <= 0) return 0;
+    return Math.round(subtotalPaise * (taxRatePct / 100));
+  }
+
   async create(issuerUserId: string, role: UserRole, dto: CreateInvoiceDto) {
     if (role !== 'individual' && role !== 'vendor') {
       throw new ForbiddenException('Only individuals and vendors can create invoices');
@@ -91,8 +108,12 @@ export class InvoicesService {
         amount: itemAmount,
       };
     });
-    const applyGst = await this.shouldApplyGstForIssuer(issuerAccountUserId);
-    const gstAmount = applyGst ? Math.round(amount * 0.18) : 0;
+    const hasValidGst = await this.shouldApplyGstForIssuer(issuerAccountUserId);
+    const requestedTax = this.normalizeTaxInput(dto.taxType, dto.taxRatePct);
+    if ((requestedTax.taxType === InvoiceTaxType.gst || requestedTax.taxType === InvoiceTaxType.igst) && !hasValidGst) {
+      throw new BadRequestException('A valid GST number is required to apply GST/IGST.');
+    }
+    const gstAmount = this.computeTaxAmount(amount, requestedTax.taxRatePct);
     const totalAmount = amount + gstAmount;
     const invoiceNumber = this.generateInvoiceNumber();
     const invoice = await this.prisma.invoice.create({
@@ -102,6 +123,8 @@ export class InvoicesService {
         recipientUserId: project.companyUserId,
         invoiceNumber,
         amount,
+        taxType: requestedTax.taxType,
+        taxRatePct: requestedTax.taxRatePct,
         gstAmount,
         totalAmount,
         dueDate: dto.dueDate ? new Date(dto.dueDate) : null,
@@ -329,6 +352,8 @@ export class InvoicesService {
     paidAt: Date | null;
     currency: string;
     amount: number;
+    taxType: InvoiceTaxType;
+    taxRatePct: number;
     gstAmount: number;
     totalAmount: number;
     issuerUserId: string;
@@ -491,7 +516,14 @@ export class InvoicesService {
           ifscCode: recipientCompany?.ifscCode ?? recipientVendor?.ifscCode ?? null,
           bankName: recipientCompany?.bankName ?? recipientVendor?.bankName ?? null,
         };
-    const taxRatePct = invoice.amount > 0 ? Math.round((invoice.gstAmount / invoice.amount) * 100) : 18;
+    const taxRatePct = invoice.taxRatePct > 0
+      ? invoice.taxRatePct
+      : (invoice.amount > 0 ? Math.round((invoice.gstAmount / invoice.amount) * 100) : 0);
+    const taxType: 'none' | 'gst' | 'igst' = invoice.taxType === InvoiceTaxType.igst
+      ? 'igst'
+      : invoice.taxType === InvoiceTaxType.gst
+        ? 'gst'
+        : (invoice.gstAmount > 0 ? 'gst' : 'none');
     const attachmentsWithUrls = (invoice.attachments ?? []).map(async (a) => ({
       id: a.id,
       fileName: a.fileName,
@@ -557,6 +589,7 @@ export class InvoicesService {
         unitAmountPaise: li.unitPrice,
       })),
       subtotalPaise: invoice.amount,
+      taxType,
       taxRatePct,
       taxAmountPaise: invoice.gstAmount,
       totalPaise: invoice.totalAmount,
@@ -580,6 +613,21 @@ export class InvoicesService {
     if (invoice.status !== 'draft') throw new BadRequestException('Only draft invoices can be updated');
     const data: Record<string, unknown> = {};
     if (dto.dueDate !== undefined) data.dueDate = new Date(dto.dueDate);
+    const requestedTax = this.normalizeTaxInput(dto.taxType, dto.taxRatePct);
+    const hasTaxSelection = dto.taxType !== undefined || dto.taxRatePct !== undefined;
+    if (hasTaxSelection) {
+      const hasValidGst = await this.shouldApplyGstForIssuer(issuerAccountUserId);
+      if ((requestedTax.taxType === InvoiceTaxType.gst || requestedTax.taxType === InvoiceTaxType.igst) && !hasValidGst) {
+        throw new BadRequestException('A valid GST number is required to apply GST/IGST.');
+      }
+      data.taxType = requestedTax.taxType;
+      data.taxRatePct = requestedTax.taxRatePct;
+      if (!dto.lineItems?.length) {
+        const gstAmount = this.computeTaxAmount(invoice.amount, requestedTax.taxRatePct);
+        data.gstAmount = gstAmount;
+        data.totalAmount = invoice.amount + gstAmount;
+      }
+    }
     if (dto.lineItems?.length) {
       await this.prisma.invoiceLineItem.deleteMany({ where: { invoiceId } });
       let amount = 0;
@@ -594,8 +642,8 @@ export class InvoicesService {
           amount: itemAmount,
         };
       });
-      const applyGst = await this.shouldApplyGstForIssuer(issuerAccountUserId);
-      const gstAmount = applyGst ? Math.round(amount * 0.18) : 0;
+      const taxRatePct = (data.taxRatePct as number | undefined) ?? invoice.taxRatePct ?? 0;
+      const gstAmount = this.computeTaxAmount(amount, taxRatePct);
       data.amount = amount;
       data.gstAmount = gstAmount;
       data.totalAmount = amount + gstAmount;

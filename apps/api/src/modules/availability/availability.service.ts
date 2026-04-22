@@ -357,6 +357,14 @@ export class AvailabilityService {
     if (viewerRole !== 'company') {
       throw new ForbiddenException('Only companies can view another user calendar');
     }
+    const viewer = await this.prisma.user.findFirst({
+      where: { id: viewerId, deletedAt: null, isActive: true },
+      select: { id: true, role: true, mainUserId: true },
+    });
+    if (!viewer || viewer.role !== UserRole.company) {
+      throw new ForbiddenException('Only company users can view another user calendar');
+    }
+    const viewerAccountOwnerId = viewer.mainUserId ?? viewer.id;
     const target = await this.prisma.user.findFirst({
       where: { id: targetUserId, deletedAt: null, isActive: true },
     });
@@ -383,7 +391,10 @@ export class AvailabilityService {
       });
       const allowed =
         row &&
-        (row.requesterUserId === viewerId || row.project.companyUserId === viewerId);
+        (
+          row.requesterUserId === viewerAccountOwnerId ||
+          row.project.companyUserId === viewerAccountOwnerId
+        );
       if (allowed) {
         bookingDetails[key] = booking;
       }

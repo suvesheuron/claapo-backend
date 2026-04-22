@@ -5,8 +5,8 @@ import type { SearchCrewQueryDto, SearchVendorsQueryDto } from './dto/search-que
 
 @Injectable()
 export class SearchService {
-  /** Days after project wrap when gear is still treated at shoot location (travel / prep). */
-  private readonly LOCATION_RETURN_BUFFER_DAYS = 5;
+  /** Days after shoot end where temporary location still applies. */
+  private readonly TEMP_LOCATION_BUFFER_DAYS = 2;
 
   constructor(private readonly prisma: PrismaService) {}
 
@@ -24,6 +24,31 @@ export class SearchService {
     return false;
   }
 
+  private normalizeUtcDate(input: Date): Date {
+    return new Date(Date.UTC(input.getUTCFullYear(), input.getUTCMonth(), input.getUTCDate()));
+  }
+
+  private resolveBookingShootRange(
+    shootDates: Date[] | null | undefined,
+    projectStart?: Date,
+    projectEnd?: Date,
+  ): { start: Date; end: Date } | null {
+    const normalizedShootDates = (shootDates ?? [])
+      .map((d) => this.normalizeUtcDate(new Date(d)))
+      .filter((d) => !Number.isNaN(d.getTime()));
+    if (normalizedShootDates.length > 0) {
+      const sorted = normalizedShootDates.sort((a, b) => a.getTime() - b.getTime());
+      return { start: sorted[0], end: sorted[sorted.length - 1] };
+    }
+    if (projectStart && projectEnd) {
+      return {
+        start: this.normalizeUtcDate(projectStart),
+        end: this.normalizeUtcDate(projectEnd),
+      };
+    }
+    return null;
+  }
+
   async searchCrew(viewerId: string, viewerRole: UserRole, query: SearchCrewQueryDto) {
     if (viewerRole !== 'company') {
       throw new ForbiddenException('Only companies can search crew');
@@ -38,6 +63,9 @@ export class SearchService {
 
     const startDate = query.startDate ? new Date(query.startDate) : null;
     const endDate = query.endDate ? new Date(query.endDate) : null;
+    const requestedStart = startDate ?? endDate;
+    const requestedEnd = endDate ?? startDate;
+    const requestedCityNorm = query.city?.trim().toLowerCase() ?? '';
     const rateMin = query.rateMin ?? null;
     const rateMax = query.rateMax ?? null;
 
@@ -49,9 +77,6 @@ export class SearchService {
       user: { deletedAt: null, isActive: true },
       AND: [] as any[],
     };
-    if (query.city) {
-      where.AND.push({ locationCity: { equals: query.city, mode: 'insensitive' } });
-    }
     if (query.state) {
       where.AND.push({ locationState: { equals: query.state, mode: 'insensitive' } });
     }
@@ -109,11 +134,59 @@ export class SearchService {
         return profileGenres.some((g) => g.includes(genreFilter) || genreFilter.includes(g));
       });
     }
-    if (startDate && endDate) {
+    if (requestedCityNorm) {
+      let tempLocationUserIds = new Set<string>();
+      if (requestedStart && requestedEnd && filtered.length > 0) {
+        const assignmentRows = await this.prisma.bookingRequest.findMany({
+          where: {
+            targetUserId: { in: filtered.map((p) => p.userId) },
+            status: { in: ['accepted', 'locked'] },
+          },
+          select: {
+            targetUserId: true,
+            shootDates: true,
+            project: {
+              select: {
+                locationCity: true,
+                shootLocations: true,
+                startDate: true,
+                endDate: true,
+              },
+            },
+          },
+        });
+        tempLocationUserIds = new Set(
+          assignmentRows
+            .filter((row) => {
+              if (!this.projectLocationMatchesCity(row.project, requestedCityNorm)) return false;
+              const shootRange = this.resolveBookingShootRange(
+                row.shootDates,
+                row.project.startDate,
+                row.project.endDate,
+              );
+              if (!shootRange) return false;
+              const shootEndWithBuffer = new Date(shootRange.end);
+              shootEndWithBuffer.setUTCDate(
+                shootEndWithBuffer.getUTCDate() + this.TEMP_LOCATION_BUFFER_DAYS,
+              );
+              return shootRange.start <= requestedEnd && shootEndWithBuffer >= requestedStart;
+            })
+            .map((row) => row.targetUserId),
+        );
+      }
+
+      filtered = filtered.filter((p) => {
+        const baseCity = p.locationCity?.trim().toLowerCase() ?? '';
+        const isBaseCityMatch =
+          !!baseCity && (baseCity.includes(requestedCityNorm) || requestedCityNorm.includes(baseCity));
+        return isBaseCityMatch || tempLocationUserIds.has(p.userId);
+      });
+    }
+    if (requestedStart && requestedEnd) {
       const userIdsUnavailable = await this.prisma.availabilitySlot.findMany({
         where: {
-          date: { gte: startDate, lte: endDate },
-          status: { in: ['booked', 'blocked'] },
+          date: { gte: requestedStart, lte: requestedEnd },
+          status: 'blocked',
         },
         select: { userId: true },
         distinct: ['userId'],
@@ -163,6 +236,8 @@ export class SearchService {
     const skip = (page - 1) * limit;
     const requestedStart = query.startDate ? new Date(query.startDate) : null;
     const requestedEnd = query.endDate ? new Date(query.endDate) : null;
+    const requestedWindowStart = requestedStart ?? requestedEnd;
+    const requestedWindowEnd = requestedEnd ?? requestedStart;
     const requestedCity = query.city?.trim().toLowerCase();
     const equipmentName = query.equipmentName?.trim().toLowerCase();
     const companyName = query.companyName?.trim();
@@ -179,25 +254,6 @@ export class SearchService {
 
     if (rateMin != null && rateMax != null && rateMin > rateMax) {
       throw new BadRequestException('rateMin cannot be greater than rateMax');
-    }
-
-    // Equipment IDs that are already booked (accepted/locked) for shoots overlapping the requested date range
-    let bookedEquipmentIds = new Set<string>();
-    if (requestedStart && requestedEnd) {
-      const bookings = await this.prisma.bookingRequest.findMany({
-        where: {
-          vendorEquipmentId: { not: null },
-          status: { in: ['accepted', 'locked'] },
-          project: {
-            startDate: { lte: requestedEnd },
-            endDate: { gte: requestedStart },
-          },
-        },
-        select: { vendorEquipmentId: true },
-      });
-      bookings.forEach((b) => {
-        if (b.vendorEquipmentId) bookedEquipmentIds.add(b.vendorEquipmentId);
-      });
     }
 
     const where: Record<string, unknown> = {
@@ -234,10 +290,11 @@ export class SearchService {
     });
 
     const allEquipmentIds = rawItems.flatMap((p) => (p.user.vendorEquipment ?? []).map((eq) => eq.id));
+    const bookedEquipmentIds = new Set<string>();
 
     /** Kit is on a job site (or return window) matching `requestedCity` — still discoverable for that region. */
     const locationBoostByEquip = new Map<string, string>();
-    if (requestedCity && requestedStart && requestedEnd && allEquipmentIds.length > 0) {
+    if (requestedWindowStart && requestedWindowEnd && allEquipmentIds.length > 0) {
       const assignmentRows = await this.prisma.bookingRequest.findMany({
         where: {
           vendorEquipmentId: { in: allEquipmentIds },
@@ -245,6 +302,7 @@ export class SearchService {
         },
         select: {
           vendorEquipmentId: true,
+          shootDates: true,
           project: {
             select: {
               locationCity: true,
@@ -257,13 +315,27 @@ export class SearchService {
       });
       for (const row of assignmentRows) {
         const eqId = row.vendorEquipmentId;
-        if (!eqId || bookedEquipmentIds.has(eqId)) continue;
+        if (!eqId) continue;
+        const shootRange = this.resolveBookingShootRange(
+          row.shootDates,
+          row.project.startDate,
+          row.project.endDate,
+        );
+        if (!shootRange) continue;
+
+        // Hard conflict window: exact shoot dates only.
+        if (shootRange.start <= requestedWindowEnd && shootRange.end >= requestedWindowStart) {
+          bookedEquipmentIds.add(eqId);
+        }
+
+        if (!requestedCity || bookedEquipmentIds.has(eqId)) continue;
         const proj = row.project;
         if (!this.projectLocationMatchesCity(proj, requestedCity)) continue;
-        const pStart = new Date(proj.startDate);
-        const pEndBuf = new Date(proj.endDate);
-        pEndBuf.setUTCDate(pEndBuf.getUTCDate() + this.LOCATION_RETURN_BUFFER_DAYS);
-        if (pStart <= requestedEnd && pEndBuf >= requestedStart) {
+        const shootEndWithBuffer = new Date(shootRange.end);
+        shootEndWithBuffer.setUTCDate(
+          shootEndWithBuffer.getUTCDate() + this.TEMP_LOCATION_BUFFER_DAYS,
+        );
+        if (shootRange.start <= requestedWindowEnd && shootEndWithBuffer >= requestedWindowStart) {
           const label =
             proj.locationCity?.trim() || proj.shootLocations?.[0]?.trim() || requestedCity;
           if (!locationBoostByEquip.has(eqId)) locationBoostByEquip.set(eqId, label);

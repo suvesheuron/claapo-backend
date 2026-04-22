@@ -11,6 +11,7 @@ import { CreateSubUserDto } from './dto/create-sub-user.dto';
 @Injectable()
 export class ProfilesService {
   private static readonly SUB_USER_PASSWORD_ROUNDS = 12;
+  private static readonly ALLOWED_COVER_CONTENT_TYPES = ['image/jpeg', 'image/png', 'image/webp'] as const;
 
   constructor(
     private readonly prisma: PrismaService,
@@ -35,13 +36,16 @@ export class ProfilesService {
     });
     if (!user) throw new NotFoundException('User not found');
     const profile = this.getProfileByRole(user);
-    const p = profile as { avatarKey?: string; showreelKey?: string; logoKey?: string } | null;
+    const p = profile as { avatarKey?: string; coverKey?: string; showreelKey?: string; logoKey?: string } | null;
     const avatarKey = p?.avatarKey ?? p?.logoKey;
     const avatarUrl = avatarKey
       ? (await this.storage.getSignedUrl(avatarKey)) ?? this.storage.getPublicUrl(avatarKey)
       : null;
     const showreelUrl = p?.showreelKey
       ? (await this.storage.getSignedUrl(p.showreelKey)) ?? this.storage.getPublicUrl(p.showreelKey)
+      : null;
+    const coverUrl = p?.coverKey
+      ? (await this.storage.getSignedUrl(p.coverKey)) ?? this.storage.getPublicUrl(p.coverKey)
       : null;
     const logoUrl = p?.logoKey
       ? (await this.storage.getSignedUrl(p.logoKey)) ?? this.storage.getPublicUrl(p.logoKey)
@@ -50,6 +54,7 @@ export class ProfilesService {
       ? {
           ...profile,
           avatarUrl,
+          coverUrl: coverUrl ?? undefined,
           showreelUrl: showreelUrl ?? undefined,
           logoUrl: logoUrl ?? undefined,
           ...(user.role === UserRole.vendor && (user as { vendorEquipment?: unknown[] }).vendorEquipment
@@ -252,6 +257,9 @@ export class ProfilesService {
     const showreelUrl = base.showreelKey
       ? await this.storage.getSignedUrl(base.showreelKey as string) ?? this.storage.getPublicUrl(base.showreelKey as string)
       : null;
+    const coverUrl = base.coverKey
+      ? await this.storage.getSignedUrl(base.coverKey as string) ?? this.storage.getPublicUrl(base.coverKey as string)
+      : null;
     const logoUrl = base.logoKey
       ? await this.storage.getSignedUrl(base.logoKey as string) ?? this.storage.getPublicUrl(base.logoKey as string)
       : null;
@@ -261,8 +269,18 @@ export class ProfilesService {
     return {
       id: target.id,
       role: target.role,
-      profile: { ...sanitized, avatarUrl, showreelUrl, logoUrl, ...(equipment ? { equipment } : {}) },
+      profile: { ...sanitized, avatarUrl, coverUrl, showreelUrl, logoUrl, ...(equipment ? { equipment } : {}) },
     };
+  }
+
+  private resolveCoverContentType(contentType?: string): { contentType: string; extension: string } {
+    const normalized = (contentType ?? 'image/jpeg').toLowerCase();
+    if (!ProfilesService.ALLOWED_COVER_CONTENT_TYPES.includes(normalized as typeof ProfilesService.ALLOWED_COVER_CONTENT_TYPES[number])) {
+      return { contentType: 'image/jpeg', extension: 'jpg' };
+    }
+    if (normalized === 'image/png') return { contentType: normalized, extension: 'png' };
+    if (normalized === 'image/webp') return { contentType: normalized, extension: 'webp' };
+    return { contentType: normalized, extension: 'jpg' };
   }
 
   async getPresignedAvatarUrl(userId: string): Promise<{ uploadUrl: string; key: string }> {
@@ -293,6 +311,42 @@ export class ProfilesService {
         where: { userId },
         create: { userId, companyName: 'Unknown', vendorType: VendorType.equipment, logoKey: key },
         update: { logoKey: key },
+      });
+    }
+    return { key };
+  }
+
+  async getPresignedCoverUrl(
+    userId: string,
+    role: UserRole,
+    contentType?: string,
+  ): Promise<{ uploadUrl: string; key: string }> {
+    if (role !== UserRole.individual && role !== UserRole.vendor) {
+      throw new ForbiddenException('Cover photo is only available for individual/vendor profiles');
+    }
+    if (!this.storage.isConfigured() && !this.storage.isSupabaseConfigured()) {
+      throw new Error('Storage is not configured. Set AWS_S3_BUCKET or SUPABASE_* env vars.');
+    }
+    const resolved = this.resolveCoverContentType(contentType);
+    const key = `covers/${userId}/${Date.now()}.${resolved.extension}`;
+    return this.storage.getPresignedPutUrl(key, resolved.contentType);
+  }
+
+  async setCoverKey(userId: string, role: UserRole, key: string) {
+    if (role !== UserRole.individual && role !== UserRole.vendor) {
+      throw new ForbiddenException('Cover photo is only available for individual/vendor profiles');
+    }
+    if (role === UserRole.individual) {
+      await this.prisma.individualProfile.upsert({
+        where: { userId },
+        create: { userId, displayName: 'Unknown', coverKey: key },
+        update: { coverKey: key },
+      });
+    } else {
+      await this.prisma.vendorProfile.upsert({
+        where: { userId },
+        create: { userId, companyName: 'Unknown', vendorType: VendorType.equipment, coverKey: key },
+        update: { coverKey: key },
       });
     }
     return { key };
