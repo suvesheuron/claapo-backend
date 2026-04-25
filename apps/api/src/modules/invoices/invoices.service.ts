@@ -31,11 +31,11 @@ export class InvoicesService {
     }
   }
 
-  private generateInvoiceNumber(): string {
-    const prefix = 'INV';
-    const timestamp = Date.now().toString(36).toUpperCase();
-    const random = Math.random().toString(36).slice(2, 6).toUpperCase();
-    return `${prefix}-${timestamp}-${random}`;
+  private static readonly INVOICE_SEQUENCE_RETRY_LIMIT = 3;
+
+  private formatInvoiceNumber(serialNumber: number): string {
+    const padded = String(serialNumber).padStart(4, '0');
+    return `INV-${padded}`;
   }
 
   private isValidGstNumber(value?: string | null): boolean {
@@ -115,26 +115,46 @@ export class InvoicesService {
     }
     const gstAmount = this.computeTaxAmount(amount, requestedTax.taxRatePct);
     const totalAmount = amount + gstAmount;
-    const invoiceNumber = this.generateInvoiceNumber();
-    const invoice = await this.prisma.invoice.create({
-      data: {
-        projectId: dto.projectId,
-        issuerUserId: issuerAccountUserId,
-        recipientUserId: project.companyUserId,
-        invoiceNumber,
-        amount,
-        taxType: requestedTax.taxType,
-        taxRatePct: requestedTax.taxRatePct,
-        gstAmount,
-        totalAmount,
-        dueDate: dto.dueDate ? new Date(dto.dueDate) : null,
-        lineItems: {
-          create: lineItemsData,
-        },
-      },
-      include: { lineItems: true, project: true },
-    });
-    return invoice;
+    for (let attempt = 1; attempt <= InvoicesService.INVOICE_SEQUENCE_RETRY_LIMIT; attempt += 1) {
+      try {
+        const invoice = await this.prisma.$transaction(async (tx) => {
+          const latestInvoice = await tx.invoice.findFirst({
+            where: { issuerUserId: issuerAccountUserId, serialNumber: { not: null } },
+            select: { serialNumber: true },
+            orderBy: { serialNumber: 'desc' },
+          });
+          const serialNumber = (latestInvoice?.serialNumber ?? 0) + 1;
+          const invoiceNumber = this.formatInvoiceNumber(serialNumber);
+          return tx.invoice.create({
+            data: {
+              projectId: dto.projectId,
+              issuerUserId: issuerAccountUserId,
+              recipientUserId: project.companyUserId,
+              invoiceNumber,
+              serialNumber,
+              amount,
+              taxType: requestedTax.taxType,
+              taxRatePct: requestedTax.taxRatePct,
+              gstAmount,
+              totalAmount,
+              dueDate: dto.dueDate ? new Date(dto.dueDate) : null,
+              lineItems: {
+                create: lineItemsData,
+              },
+            },
+            include: { lineItems: true, project: true },
+          });
+        });
+        return invoice;
+      } catch (error) {
+        const maybePrisma = error as { code?: string };
+        const isUniqueConflict = maybePrisma?.code === 'P2002';
+        const shouldRetry = isUniqueConflict && attempt < InvoicesService.INVOICE_SEQUENCE_RETRY_LIMIT;
+        if (shouldRetry) continue;
+        throw error;
+      }
+    }
+    throw new BadRequestException('Failed to allocate invoice number. Please retry.');
   }
 
   async list(userId: string, page = 1, limit = 20, issuedOn?: string, projectId?: string) {
@@ -238,6 +258,7 @@ export class InvoicesService {
                 skills: true,
                 panNumber: true,
                 gstNumber: true,
+                sacCode: true,
                 upiId: true,
                 bankAccountName: true,
                 bankAccountNumber: true,
@@ -249,6 +270,7 @@ export class InvoicesService {
               select: {
                 companyName: true,
                 gstNumber: true,
+                sacCode: true,
                 address: true,
                 locationCity: true,
                 panNumber: true,
@@ -264,6 +286,7 @@ export class InvoicesService {
                 companyName: true,
                 locationCity: true,
                 gstNumber: true,
+                sacCode: true,
                 address: true,
                 panNumber: true,
                 bankAccountName: true,
@@ -286,6 +309,7 @@ export class InvoicesService {
                 address: true,
                 panNumber: true,
                 gstNumber: true,
+                sacCode: true,
                 upiId: true,
                 bankAccountName: true,
                 bankAccountNumber: true,
@@ -297,6 +321,7 @@ export class InvoicesService {
               select: {
                 companyName: true,
                 gstNumber: true,
+                sacCode: true,
                 address: true,
                 locationCity: true,
                 panNumber: true,
@@ -312,6 +337,7 @@ export class InvoicesService {
                 companyName: true,
                 locationCity: true,
                 gstNumber: true,
+                sacCode: true,
                 address: true,
                 panNumber: true,
                 bankAccountName: true,
@@ -370,6 +396,7 @@ export class InvoicesService {
         skills?: string[];
         panNumber?: string | null;
         gstNumber?: string | null;
+        sacCode?: string | null;
         upiId?: string | null;
         bankAccountName?: string | null;
         bankAccountNumber?: string | null;
@@ -379,6 +406,7 @@ export class InvoicesService {
       vendorProfile?: {
         companyName: string;
         gstNumber?: string | null;
+        sacCode?: string | null;
         address?: string | null;
         locationCity?: string | null;
         panNumber?: string | null;
@@ -392,6 +420,7 @@ export class InvoicesService {
         companyName: string;
         locationCity?: string | null;
         gstNumber?: string | null;
+        sacCode?: string | null;
         address?: string | null;
         panNumber?: string | null;
         bankAccountName?: string | null;
@@ -409,6 +438,7 @@ export class InvoicesService {
         address?: string | null;
         panNumber?: string | null;
         gstNumber?: string | null;
+        sacCode?: string | null;
         upiId?: string | null;
         bankAccountName?: string | null;
         bankAccountNumber?: string | null;
@@ -418,6 +448,7 @@ export class InvoicesService {
       vendorProfile?: {
         companyName: string;
         gstNumber?: string | null;
+        sacCode?: string | null;
         address?: string | null;
         locationCity?: string | null;
         panNumber?: string | null;
@@ -431,6 +462,7 @@ export class InvoicesService {
         companyName: string;
         locationCity?: string | null;
         gstNumber?: string | null;
+        sacCode?: string | null;
         address?: string | null;
         panNumber?: string | null;
         bankAccountName?: string | null;
@@ -466,6 +498,7 @@ export class InvoicesService {
       ? {
           name: issuerInd.displayName,
           gstNumber: issuerInd.gstNumber ?? null,
+          sacCode: issuerInd.sacCode ?? null,
           address: issuerInd.address ?? null,
           panNumber: issuerInd.panNumber ?? null,
           upiId: issuerInd.upiId ?? null,
@@ -479,6 +512,7 @@ export class InvoicesService {
       : {
           name: issuerCompany?.companyName ?? issuerVendor?.companyName ?? invoice.issuer.email,
           gstNumber: issuerCompany?.gstNumber ?? issuerVendor?.gstNumber ?? null,
+          sacCode: issuerCompany?.sacCode ?? issuerVendor?.sacCode ?? null,
           address: issuerCompany?.address ?? issuerVendor?.address ?? null,
           panNumber: issuerCompany?.panNumber ?? issuerVendor?.panNumber ?? null,
           upiId: issuerVendor?.upiId ?? null,
@@ -493,6 +527,7 @@ export class InvoicesService {
       ? {
           name: recipientInd.displayName,
           gstNumber: recipientInd.gstNumber ?? null,
+          sacCode: recipientInd.sacCode ?? null,
           address: recipientInd.address ?? null,
           panNumber: recipientInd.panNumber ?? null,
           upiId: recipientInd.upiId ?? null,
@@ -506,6 +541,7 @@ export class InvoicesService {
       : {
           name: recipientCompany?.companyName ?? recipientVendor?.companyName ?? invoice.recipient.email,
           gstNumber: recipientCompany?.gstNumber ?? recipientVendor?.gstNumber ?? null,
+          sacCode: recipientCompany?.sacCode ?? recipientVendor?.sacCode ?? null,
           address: recipientCompany?.address ?? recipientVendor?.address ?? null,
           panNumber: recipientCompany?.panNumber ?? recipientVendor?.panNumber ?? null,
           upiId: recipientVendor?.upiId ?? null,

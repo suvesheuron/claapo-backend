@@ -24,6 +24,11 @@ export class UpdateCompanyProfileDto {
   @ApiPropertyOptional()
   @IsOptional()
   @IsString()
+  sacCode?: string;
+
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsString()
   panNumber?: string;
 
   @ApiPropertyOptional({ example: 'ad_agency' })

@@ -69,8 +69,9 @@ export class ChatService {
       }
       hasAccess = hasBooking;
     }
-    // Allow vendor users access to chat on any project (flexible communication)
-    if (!hasAccess && role === UserRole.vendor) {
+    // Allow only main vendor users broad chat access.
+    // Vendor sub-users must be explicitly assigned to the project.
+    if (!hasAccess && role === UserRole.vendor && !user?.mainUserId) {
       hasAccess = true;
     }
     // Allow individual/crew users access if they are one of the conversation participants
@@ -161,15 +162,35 @@ export class ChatService {
   /** Build a WHERE clause for conversations that a user (or their sub-users) can access */
   private async conversationWhereForUser(userId: string) {
     // Check if user is a sub-user
-    const user = await this.prisma.user.findUnique({ where: { id: userId }, select: { mainUserId: true } });
+    const user = await this.prisma.user.findUnique({
+      where: { id: userId },
+      select: { mainUserId: true, role: true },
+    });
     if (user?.mainUserId) {
-      // Sub-user: include direct conversations + main user's conversations on assigned projects
+      // Vendor sub-user: strict visibility — only conversations for explicitly assigned projects.
       const assignments = await this.prisma.subUserProjectAssignment.findMany({
         where: { subUserId: userId },
         select: { projectId: true },
       });
       const projectIds = assignments.map((a) => a.projectId);
 
+      if (user.role === UserRole.vendor) {
+        return {
+          AND: [
+            { projectId: { in: projectIds } },
+            {
+              OR: [
+                { participantA: userId },
+                { participantB: userId },
+                { participantA: user.mainUserId },
+                { participantB: user.mainUserId },
+              ],
+            },
+          ],
+        };
+      }
+
+      // Company sub-user: include direct conversations + main user's conversations on assigned projects
       const clauses: any[] = [
         { participantA: userId },
         { participantB: userId },
@@ -257,11 +278,31 @@ export class ChatService {
 
   /** Check if a user can access a conversation (direct participant or sub-user on assigned project) */
   private async canAccessConversation(userId: string, conv: { projectId: string; participantA: string; participantB: string }): Promise<boolean> {
+    const user = await this.prisma.user.findUnique({
+      where: { id: userId },
+      select: { mainUserId: true, role: true },
+    });
+
+    // Vendor sub-user: strict visibility — assigned projects only.
+    if (user?.mainUserId && user.role === UserRole.vendor) {
+      if (!conv.projectId) return false;
+      const assignment = await this.prisma.subUserProjectAssignment.findFirst({
+        where: { subUserId: userId, projectId: conv.projectId },
+        select: { id: true },
+      });
+      if (!assignment) return false;
+      return (
+        conv.participantA === userId
+        || conv.participantB === userId
+        || conv.participantA === user.mainUserId
+        || conv.participantB === user.mainUserId
+      );
+    }
+
     // Direct participant check
     if (conv.participantA === userId || conv.participantB === userId) return true;
 
     // Sub-user check: if user's main user is a participant and the project is assigned to this sub-user
-    const user = await this.prisma.user.findUnique({ where: { id: userId }, select: { mainUserId: true } });
     if (user?.mainUserId) {
       const isMainParticipant = conv.participantA === user.mainUserId || conv.participantB === user.mainUserId;
       if (!isMainParticipant) return false;
@@ -479,13 +520,9 @@ export class ChatService {
 
   /** Find (or return empty) conversation between two users, for the /with/:userId convenience route */
   async getConversationWithUser(userId: string, otherUserId: string, limit = 50) {
-    const [participantA, participantB] = this.orderParticipants(userId, otherUserId);
-    const conv = await this.prisma.conversation.findFirst({
-      where: { participantA, participantB },
-      orderBy: { lastMessageAt: 'desc' },
-    });
+    const conv = await this.findMostRecentAccessibleConversationWithUser(userId, otherUserId);
     if (!conv) {
-      return { conversationId: null, items: [] };
+      return { conversationId: null, project: null, items: [] };
     }
 
     // Fetch mainUserId for account-aware formatting
@@ -511,24 +548,55 @@ export class ChatService {
       orderBy: { createdAt: 'asc' },
       take: limit,
     });
+    const project = conv.projectId
+      ? await this.prisma.project.findUnique({
+          where: { id: conv.projectId },
+          select: { id: true, title: true },
+        })
+      : null;
     return {
       conversationId: conv.id,
+      project,
       items: messages.map((m) => this.formatMessage(m, userId, mainUserId)),
     };
   }
 
   /** Send a message to a user by their userId (finds the most recent shared conversation) */
   async sendMessageToUserByUserId(userId: string, otherUserId: string, content: string, replyToId?: string) {
-    const [participantA, participantB] = this.orderParticipants(userId, otherUserId);
-    const conv = await this.prisma.conversation.findFirst({
-      where: { participantA, participantB },
-      orderBy: { lastMessageAt: 'desc' },
-    });
+    const conv = await this.findMostRecentAccessibleConversationWithUser(userId, otherUserId);
     if (!conv) {
       throw new NotFoundException('No conversation found. Start a chat from a shared project first.');
     }
     const dto: CreateMessageDto = { content, type: 'text', replyToId };
     return this.sendMessage(userId, conv.id, dto);
+  }
+
+  /** Resolve the latest conversation with a user in current account scope, enforcing access rules. */
+  private async findMostRecentAccessibleConversationWithUser(userId: string, otherUserId: string) {
+    const user = await this.prisma.user.findUnique({
+      where: { id: userId },
+      select: { mainUserId: true },
+    });
+    const accountIds = user?.mainUserId ? [userId, user.mainUserId] : [userId];
+
+    const candidates = await this.prisma.conversation.findMany({
+      where: {
+        OR: [
+          { participantA: { in: accountIds }, participantB: otherUserId },
+          { participantB: { in: accountIds }, participantA: otherUserId },
+        ],
+      },
+      orderBy: { lastMessageAt: 'desc' },
+      take: 100,
+      select: { id: true, projectId: true, participantA: true, participantB: true },
+    });
+
+    for (const conv of candidates) {
+      if (await this.canAccessConversation(userId, conv)) {
+        return conv;
+      }
+    }
+    return null;
   }
 
   /** Soft-delete a message (only the sender can delete) */

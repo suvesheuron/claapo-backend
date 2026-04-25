@@ -138,6 +138,11 @@ export class UpdateIndividualProfileDto {
   @IsString()
   gstNumber?: string;
 
+  @ApiPropertyOptional({ description: 'SAC code (required when GST is provided)' })
+  @IsOptional()
+  @IsString()
+  sacCode?: string;
+
   @ApiPropertyOptional({ description: 'UPI ID (for payment on invoices)' })
   @IsOptional()
   @IsString()

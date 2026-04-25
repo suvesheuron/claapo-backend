@@ -131,6 +131,7 @@ model IndividualProfile {
   isAvailable    Boolean  @default(true) @map("is_available")
   panNumber      String?  @map("pan_number")
   gstNumber      String?  @map("gst_number")
+  sacCode        String?  @map("sac_code")
   upiId          String?  @map("upi_id")
   bankAccountName    String?  @map("bank_account_name")
   bankAccountNumber  String?  @map("bank_account_number")
@@ -149,6 +150,7 @@ model CompanyProfile {
   userId         String   @unique @map("user_id") @db.Uuid
   companyName    String   @map("company_name")
   gstNumber      String?  @unique @map("gst_number")
+  sacCode        String?  @map("sac_code")
   panNumber      String?  @map("pan_number")
   companyType    String?  @map("company_type")
   skills         String[] @default([])
@@ -185,6 +187,7 @@ model VendorProfile {
   vendorType     VendorType @map("vendor_type")
   vendorServiceCategory String? @map("vendor_service_category")
   gstNumber      String?    @unique @map("gst_number")
+  sacCode        String?    @map("sac_code")
   panNumber      String?    @map("pan_number")
   isGstVerified  Boolean    @default(false) @map("is_gst_verified")
   website        String?
@@ -410,7 +413,8 @@ model Invoice {
   projectId         String        @map("project_id") @db.Uuid
   issuerUserId      String        @map("issuer_user_id") @db.Uuid
   recipientUserId   String        @map("recipient_user_id") @db.Uuid
-  invoiceNumber     String        @unique @map("invoice_number")
+  invoiceNumber     String        @map("invoice_number")
+  serialNumber      Int?          @map("serial_number")
   amount            Int           // subtotal in paise (INR × 100)
   taxType           InvoiceTaxType @default(none) @map("tax_type")
   taxRatePct        Int           @default(0) @map("tax_rate_pct")
@@ -432,6 +436,8 @@ model Invoice {
   attachments InvoiceAttachment[]
 
   @@map("invoices")
+  @@unique([issuerUserId, invoiceNumber])
+  @@unique([issuerUserId, serialNumber])
 }
 
 model InvoiceAttachment {
