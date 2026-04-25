@@ -26,6 +26,11 @@ export class UpdateVendorProfileDto {
   @ApiPropertyOptional()
   @IsOptional()
   @IsString()
+  sacCode?: string;
+
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsString()
   panNumber?: string;
 
   @ApiPropertyOptional()

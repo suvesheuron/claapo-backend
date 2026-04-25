@@ -18,6 +18,19 @@ export class ProfilesService {
     private readonly storage: StorageService,
   ) {}
 
+  private normalizeOptionalText(value?: string | null): string | null | undefined {
+    if (value === undefined) return undefined;
+    if (value === null) return null;
+    const trimmed = value.trim();
+    return trimmed ? trimmed : null;
+  }
+
+  private assertSacCodeRule(gstNumber?: string | null, sacCode?: string | null): void {
+    if (gstNumber && !sacCode) {
+      throw new BadRequestException('SAC code is required when GST number is provided.');
+    }
+  }
+
   async getMe(userId: string, role: UserRole) {
     const user = await this.prisma.user.findFirst({
       where: { id: userId, deletedAt: null },
@@ -91,6 +104,12 @@ export class ProfilesService {
     const existing = await this.prisma.individualProfile.findUnique({ where: { userId } });
     const skillsNormalized = dto.skills?.map((s) => String(s).trim().toUpperCase()).filter(Boolean);
     const genresNormalized = dto.genres?.map((g) => String(g).trim()).filter(Boolean);
+    const nextGstNumber = this.normalizeOptionalText(dto.gstNumber) ?? this.normalizeOptionalText(existing?.gstNumber ?? null) ?? null;
+    const nextSacCode = this.normalizeOptionalText(dto.sacCode) ?? this.normalizeOptionalText((existing as { sacCode?: string | null } | null)?.sacCode ?? null) ?? null;
+    this.assertSacCodeRule(nextGstNumber, nextSacCode);
+
+    const normalizedGst = this.normalizeOptionalText(dto.gstNumber);
+    const normalizedSac = normalizedGst === null ? null : this.normalizeOptionalText(dto.sacCode);
     const data = {
       displayName: dto.displayName,
       bio: dto.bio,
@@ -110,7 +129,8 @@ export class ProfilesService {
       vimeoUrl: dto.vimeoUrl,
       isAvailable: dto.isAvailable,
       panNumber: dto.panNumber,
-      gstNumber: dto.gstNumber,
+      gstNumber: normalizedGst,
+      sacCode: normalizedSac,
       upiId: dto.upiId,
       bankAccountName: dto.bankAccountName,
       bankAccountNumber: dto.bankAccountNumber,
@@ -137,9 +157,16 @@ export class ProfilesService {
     await this.ensureRole(userId, UserRole.company);
     const existing = await this.prisma.companyProfile.findUnique({ where: { userId } });
     const skillsNormalized = dto.skills?.map((s) => String(s).trim()).filter(Boolean);
+    const nextGstNumber = this.normalizeOptionalText(dto.gstNumber) ?? this.normalizeOptionalText(existing?.gstNumber ?? null) ?? null;
+    const nextSacCode = this.normalizeOptionalText(dto.sacCode) ?? this.normalizeOptionalText((existing as { sacCode?: string | null } | null)?.sacCode ?? null) ?? null;
+    this.assertSacCodeRule(nextGstNumber, nextSacCode);
+
+    const normalizedGst = this.normalizeOptionalText(dto.gstNumber);
+    const normalizedSac = normalizedGst === null ? null : this.normalizeOptionalText(dto.sacCode);
     const data = {
       companyName: dto.companyName,
-      gstNumber: dto.gstNumber,
+      gstNumber: normalizedGst,
+      sacCode: normalizedSac,
       panNumber: dto.panNumber,
       companyType: dto.companyType,
       skills: skillsNormalized,
@@ -177,11 +204,18 @@ export class ProfilesService {
   async updateVendor(userId: string, dto: UpdateVendorProfileDto) {
     await this.ensureRole(userId, UserRole.vendor);
     const existing = await this.prisma.vendorProfile.findUnique({ where: { userId } });
+    const nextGstNumber = this.normalizeOptionalText(dto.gstNumber) ?? this.normalizeOptionalText(existing?.gstNumber ?? null) ?? null;
+    const nextSacCode = this.normalizeOptionalText(dto.sacCode) ?? this.normalizeOptionalText((existing as { sacCode?: string | null } | null)?.sacCode ?? null) ?? null;
+    this.assertSacCodeRule(nextGstNumber, nextSacCode);
+
+    const normalizedGst = this.normalizeOptionalText(dto.gstNumber);
+    const normalizedSac = normalizedGst === null ? null : this.normalizeOptionalText(dto.sacCode);
     const data = {
       companyName: dto.companyName,
       vendorType: dto.vendorType,
       vendorServiceCategory: dto.vendorServiceCategory,
-      gstNumber: dto.gstNumber,
+      gstNumber: normalizedGst,
+      sacCode: normalizedSac,
       panNumber: dto.panNumber,
       website: dto.website,
       imdbUrl: dto.imdbUrl,
@@ -269,6 +303,7 @@ export class ProfilesService {
     return {
       id: target.id,
       role: target.role,
+      phone: target.phone,
       profile: { ...sanitized, avatarUrl, coverUrl, showreelUrl, logoUrl, ...(equipment ? { equipment } : {}) },
     };
   }
