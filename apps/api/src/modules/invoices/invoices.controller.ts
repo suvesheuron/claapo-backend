@@ -9,6 +9,7 @@ import { AuthUser } from '../auth/auth.service';
 import { CreateInvoiceDto } from './dto/create-invoice.dto';
 import { UpdateInvoiceDto } from './dto/update-invoice.dto';
 import { AddInvoiceAttachmentDto } from './dto/add-invoice-attachment.dto';
+import { DeclineInvoiceDto } from './dto/decline-invoice.dto';
 
 @ApiTags('invoices')
 @Controller('invoices')
@@ -125,5 +126,17 @@ export class InvoicesController {
   @ApiOperation({ summary: 'Mark invoice as paid (recipient / manual confirmation)' })
   markPaid(@CurrentUser() user: AuthUser, @Param('id') id: string) {
     return this.invoicesService.markAsPaid(id, user.id);
+  }
+
+  @Patch(':id/decline')
+  @UseGuards(RolesGuard)
+  @Roles('company')
+  @ApiOperation({ summary: 'Decline invoice as recipient with optional reason' })
+  decline(
+    @CurrentUser() user: AuthUser,
+    @Param('id') id: string,
+    @Body() dto: DeclineInvoiceDto,
+  ) {
+    return this.invoicesService.declineAsRecipient(id, user.id, dto.reason);
   }
 }

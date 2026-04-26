@@ -369,6 +369,54 @@ export class InvoicesService {
     });
   }
 
+  async declineAsRecipient(invoiceId: string, userId: string, reason?: string) {
+    const companyCtx = await this.getCompanyAccountContextOrNull(userId);
+    if (!companyCtx) throw new ForbiddenException('Only company users can decline invoices');
+    const invoice = await this.prisma.invoice.findUnique({
+      where: { id: invoiceId },
+      include: { project: { select: { id: true, title: true } } },
+    });
+    if (!invoice) throw new NotFoundException('Invoice not found');
+    if (invoice.recipientUserId !== companyCtx.accountOwnerId) throw new ForbiddenException('Not your invoice');
+    if (invoice.status !== 'sent') throw new BadRequestException('Only sent invoices can be declined');
+
+    const updated = await this.prisma.invoice.update({
+      where: { id: invoiceId },
+      data: { status: 'cancelled' },
+      select: { id: true, status: true },
+    });
+
+    // Clear any unread "invoice_sent" alerts for this invoice so company badges
+    // do not keep showing after the invoice is declined.
+    await this.prisma.notification.updateMany({
+      where: {
+        userId: companyCtx.accountOwnerId,
+        type: 'invoice_sent',
+        readAt: null,
+        data: {
+          path: ['invoiceId'],
+          equals: invoice.id,
+        },
+      },
+      data: { readAt: new Date() },
+    });
+
+    const cleanReason = reason?.trim() || null;
+    await this.notifications.createForUser(
+      invoice.issuerUserId,
+      'invoice_declined',
+      'Invoice declined',
+      `Your invoice ${invoice.invoiceNumber} for project "${invoice.project?.title ?? 'Untitled project'}" was declined.${cleanReason ? ` Reason: ${cleanReason}` : ''}`,
+      {
+        invoiceId: invoice.id,
+        projectId: invoice.projectId,
+        projectTitle: invoice.project?.title ?? null,
+        declineReason: cleanReason,
+      },
+    );
+    return updated;
+  }
+
   private async formatInvoiceDetail(invoice: {
     id: string;
     invoiceNumber: string;

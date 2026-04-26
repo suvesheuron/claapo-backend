@@ -241,6 +241,7 @@ export class SearchService {
     const requestedCity = query.city?.trim().toLowerCase();
     const equipmentName = query.equipmentName?.trim().toLowerCase();
     const companyName = query.companyName?.trim();
+    const vendorServiceCategory = query.vendorServiceCategory?.trim();
     const rateMin = query.rateMin ?? null;
     const rateMax = query.rateMax ?? null;
     const hasEquipmentAvailabilityFilter = !!(
@@ -267,6 +268,12 @@ export class SearchService {
     }
     if (companyName) {
       (where as any).companyName = { contains: companyName, mode: 'insensitive' };
+    }
+    if (vendorServiceCategory) {
+      (where as any).vendorServiceCategory = {
+        equals: vendorServiceCategory,
+        mode: 'insensitive',
+      };
     }
 
     const rawItems = await this.prisma.vendorProfile.findMany({
@@ -407,6 +414,7 @@ export class SearchService {
           userId: p.userId,
           companyName: p.companyName,
           vendorType: p.vendorType,
+          vendorServiceCategory: p.vendorServiceCategory,
           isGstVerified: p.isGstVerified,
           email: p.user.email,
           locationCity,
