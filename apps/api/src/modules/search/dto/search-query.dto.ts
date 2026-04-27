@@ -99,6 +99,11 @@ export class SearchVendorsQueryDto {
   @IsString()
   equipmentName?: string;
 
+  @ApiPropertyOptional({ description: 'Filter by vendor service category (Camera, Lights, ...)' })
+  @IsOptional()
+  @IsString()
+  vendorServiceCategory?: string;
+
   @ApiPropertyOptional({ description: 'Daily budget min INR' })
   @IsOptional()
   @Type(() => Number)
