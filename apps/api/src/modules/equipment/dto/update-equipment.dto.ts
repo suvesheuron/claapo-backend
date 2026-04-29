@@ -29,4 +29,11 @@ export class UpdateEquipmentDto {
   @Min(0)
   @Type(() => Number)
   dailyBudget?: number;
+
+  @ApiPropertyOptional({ description: 'Total units available for this equipment type' })
+  @IsOptional()
+  @IsInt()
+  @Min(1)
+  @Type(() => Number)
+  quantityTotal?: number;
 }

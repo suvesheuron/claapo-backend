@@ -83,9 +83,6 @@ export class InvoicesService {
       where: { id: dto.projectId },
     });
     if (!project) throw new NotFoundException('Project not found');
-    if (vendorCtx && !vendorCtx.isMainUser) {
-      await this.ensureProjectAssignedToSubUser(vendorCtx.accountOwnerId, issuerUserId, dto.projectId);
-    }
     const relatedBooking = await this.prisma.bookingRequest.findFirst({
       where: {
         projectId: dto.projectId,
@@ -186,15 +183,6 @@ export class InvoicesService {
       : vendorCtx
         ? {
             issuerUserId: vendorCtx.accountOwnerId,
-            ...(vendorCtx.isMainUser
-              ? {}
-              : {
-                  project: {
-                    subUserAssignments: {
-                      some: { accountUserId: vendorCtx.accountOwnerId, subUserId: userId },
-                    },
-                  },
-                }),
           }
         : {
             OR: [{ issuerUserId: userId }, { recipientUserId: userId }],
@@ -691,9 +679,6 @@ export class InvoicesService {
     const invoice = await this.prisma.invoice.findUnique({ where: { id: invoiceId } });
     if (!invoice) throw new NotFoundException('Invoice not found');
     if (invoice.issuerUserId !== issuerAccountUserId) throw new ForbiddenException('Not your invoice');
-    if (vendorCtx && !vendorCtx.isMainUser) {
-      await this.ensureProjectAssignedToSubUser(vendorCtx.accountOwnerId, userId, invoice.projectId);
-    }
     if (invoice.status !== 'draft') throw new BadRequestException('Only draft invoices can be updated');
     const data: Record<string, unknown> = {};
     if (dto.dueDate !== undefined) data.dueDate = new Date(dto.dueDate);
@@ -759,9 +744,6 @@ export class InvoicesService {
     });
     if (!invoice) throw new NotFoundException('Invoice not found');
     if (invoice.issuerUserId !== issuerAccountUserId) throw new ForbiddenException('Not your invoice');
-    if (vendorCtx && !vendorCtx.isMainUser) {
-      await this.ensureProjectAssignedToSubUser(vendorCtx.accountOwnerId, userId, invoice.projectId);
-    }
     if (invoice.status !== 'draft') throw new BadRequestException('Only draft can be sent');
     const updated = await this.prisma.invoice.update({
       where: { id: invoiceId },
@@ -790,9 +772,6 @@ export class InvoicesService {
     const invoice = await this.prisma.invoice.findUnique({ where: { id: invoiceId } });
     if (!invoice) throw new NotFoundException('Invoice not found');
     if (invoice.issuerUserId !== issuerAccountUserId) throw new ForbiddenException('Only issuer can cancel');
-    if (vendorCtx && !vendorCtx.isMainUser) {
-      await this.ensureProjectAssignedToSubUser(vendorCtx.accountOwnerId, userId, invoice.projectId);
-    }
     if (invoice.status !== 'draft' && invoice.status !== 'sent') {
       throw new BadRequestException('Only draft or sent invoices can be cancelled');
     }
@@ -823,9 +802,6 @@ export class InvoicesService {
     });
     if (!invoice) throw new NotFoundException('Invoice not found');
     if (invoice.issuerUserId !== issuerAccountUserId) throw new ForbiddenException('Not your invoice');
-    if (vendorCtx && !vendorCtx.isMainUser) {
-      await this.ensureProjectAssignedToSubUser(vendorCtx.accountOwnerId, userId, invoice.projectId);
-    }
     if (invoice.status !== 'draft' && invoice.status !== 'sent') {
       throw new BadRequestException('Attachments can only be added to draft or sent invoices');
     }
@@ -848,9 +824,6 @@ export class InvoicesService {
     });
     if (!invoice) throw new NotFoundException('Invoice not found');
     if (invoice.issuerUserId !== issuerAccountUserId) throw new ForbiddenException('Not your invoice');
-    if (vendorCtx && !vendorCtx.isMainUser) {
-      await this.ensureProjectAssignedToSubUser(vendorCtx.accountOwnerId, userId, invoice.projectId);
-    }
     if (invoice.status !== 'draft' && invoice.status !== 'sent') {
       throw new BadRequestException('Attachments can only be added to draft or sent invoices');
     }
@@ -905,9 +878,6 @@ export class InvoicesService {
     const vendorCtx = role === UserRole.vendor ? await this.getVendorAccountContext(userId) : null;
     const issuerAccountUserId = vendorCtx ? vendorCtx.accountOwnerId : userId;
     if (attachment.invoice.issuerUserId !== issuerAccountUserId) throw new ForbiddenException('Not your invoice');
-    if (vendorCtx && !vendorCtx.isMainUser) {
-      await this.ensureProjectAssignedToSubUser(vendorCtx.accountOwnerId, userId, attachment.invoice.projectId);
-    }
     await this.prisma.invoiceAttachment.delete({ where: { id: attachmentId } });
     if (this.storage.isConfigured()) {
       await this.storage.deleteObject(attachment.fileKey).catch(() => {});
@@ -975,9 +945,6 @@ export class InvoicesService {
     }
     const vendorCtx = await this.getVendorAccountContextOrNull(userId);
     if (vendorCtx && issuerUserId === vendorCtx.accountOwnerId) {
-      if (!vendorCtx.isMainUser) {
-        await this.ensureProjectAssignedToSubUser(vendorCtx.accountOwnerId, userId, projectId);
-      }
       return;
     }
     if (issuerUserId !== userId && recipientUserId !== userId) {

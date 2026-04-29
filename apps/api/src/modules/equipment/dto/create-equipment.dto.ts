@@ -28,4 +28,11 @@ export class CreateEquipmentDto {
   @Min(0)
   @Type(() => Number)
   dailyBudget?: number;
+
+  @ApiPropertyOptional({ description: 'Total units available for this equipment type', default: 1 })
+  @IsOptional()
+  @IsInt()
+  @Min(1)
+  @Type(() => Number)
+  quantityTotal?: number;
 }

@@ -64,9 +64,6 @@ export class ChatService {
           && b.status !== 'expired'
           && b.status !== 'cancelled',
       );
-      if (hasBooking && vendorCtx && !vendorCtx.isMainUser) {
-        await this.ensureProjectAssignedToSubUser(vendorCtx.accountOwnerId, userId, dto.projectId);
-      }
       hasAccess = hasBooking;
     }
     // Allow only main vendor users broad chat access.
@@ -167,28 +164,22 @@ export class ChatService {
       select: { mainUserId: true, role: true },
     });
     if (user?.mainUserId) {
-      // Vendor sub-user: strict visibility — only conversations for explicitly assigned projects.
+      if (user.role === UserRole.vendor) {
+        return {
+          OR: [
+            { participantA: userId },
+            { participantB: userId },
+            { participantA: user.mainUserId },
+            { participantB: user.mainUserId },
+          ],
+        };
+      }
+      // Company sub-user: strict by assigned projects.
       const assignments = await this.prisma.subUserProjectAssignment.findMany({
         where: { subUserId: userId },
         select: { projectId: true },
       });
       const projectIds = assignments.map((a) => a.projectId);
-
-      if (user.role === UserRole.vendor) {
-        return {
-          AND: [
-            { projectId: { in: projectIds } },
-            {
-              OR: [
-                { participantA: userId },
-                { participantB: userId },
-                { participantA: user.mainUserId },
-                { participantB: user.mainUserId },
-              ],
-            },
-          ],
-        };
-      }
 
       // Company sub-user: include direct conversations + main user's conversations on assigned projects
       const clauses: any[] = [
@@ -283,14 +274,8 @@ export class ChatService {
       select: { mainUserId: true, role: true },
     });
 
-    // Vendor sub-user: strict visibility — assigned projects only.
+    // Vendor sub-user: main account conversation visibility (no assignment gating).
     if (user?.mainUserId && user.role === UserRole.vendor) {
-      if (!conv.projectId) return false;
-      const assignment = await this.prisma.subUserProjectAssignment.findFirst({
-        where: { subUserId: userId, projectId: conv.projectId },
-        select: { id: true },
-      });
-      if (!assignment) return false;
       return (
         conv.participantA === userId
         || conv.participantB === userId

@@ -104,15 +104,6 @@ export class ProjectsService {
           projectId,
           targetUserId: vendorCtx.accountOwnerId,
           status: { in: ['accepted', 'locked'] },
-          ...(vendorCtx.isMainUser
-            ? {}
-            : {
-                project: {
-                  subUserAssignments: {
-                    some: { subUserId: userId, accountUserId: vendorCtx.accountOwnerId },
-                  },
-                },
-              }),
         },
       });
       if (hasBooking) return project;
@@ -287,6 +278,7 @@ export class ProjectsService {
           status: true,
           startDate: true,
           endDate: true,
+          budget: true,
           createdAt: true,
           _count: {
             select: {
@@ -303,16 +295,89 @@ export class ProjectsService {
       this.prisma.project.count({ where: whereClause }),
     ]);
 
+    const projectIds = items.map((project) => project.id);
+    const invoiceWhere: Record<string, unknown> = { projectId: { in: projectIds } };
+    if (role === UserRole.company) {
+      // Company invoices page is "received invoices", so count/aggregate by recipient.
+      invoiceWhere.recipientUserId = mainUserId;
+    } else if (role === UserRole.vendor) {
+      // Vendor should see only invoices sent by their own account.
+      invoiceWhere.issuerUserId = mainUserId;
+    } else if (role === UserRole.individual) {
+      // Individual should see only invoices they sent.
+      invoiceWhere.issuerUserId = userId;
+    }
+
+    const invoiceAggregates =
+      projectIds.length === 0
+        ? []
+        : await this.prisma.invoice.groupBy({
+            by: ['projectId', 'status'],
+            where: invoiceWhere as any,
+            _sum: {
+              amount: true,
+              gstAmount: true,
+              totalAmount: true,
+            },
+            _count: {
+              _all: true,
+            },
+          });
+
+    const amountStatsByProject = new Map<
+      string,
+      {
+        invoiceCount: number;
+        closureAmount: number;
+        gstOrIgstAmount: number;
+        paidAmount: number;
+        unpaidAmount: number;
+      }
+    >();
+
+    for (const row of invoiceAggregates) {
+      const current = amountStatsByProject.get(row.projectId) ?? {
+        invoiceCount: 0,
+        closureAmount: 0,
+        gstOrIgstAmount: 0,
+        paidAmount: 0,
+        unpaidAmount: 0,
+      };
+      current.invoiceCount += row._count._all ?? 0;
+      const sumAmount = row._sum.amount ?? 0;
+      const sumTax = row._sum.gstAmount ?? 0;
+      const sumTotal = row._sum.totalAmount ?? 0;
+
+      if (row.status !== 'cancelled') {
+        current.closureAmount += sumAmount;
+        current.gstOrIgstAmount += sumTax;
+      }
+      if (row.status === 'paid') {
+        current.paidAmount += sumTotal;
+      } else if (row.status === 'sent' || row.status === 'overdue' || row.status === 'draft') {
+        current.unpaidAmount += sumTotal;
+      }
+      amountStatsByProject.set(row.projectId, current);
+    }
+
     return {
       items: items.map((project) => ({
+        ...(amountStatsByProject.get(project.id) ?? {
+          invoiceCount: 0,
+          closureAmount: 0,
+          gstOrIgstAmount: 0,
+          paidAmount: 0,
+          unpaidAmount: 0,
+        }),
         id: project.id,
         title: project.title,
         status: project.status,
         startDate: project.startDate,
         endDate: project.endDate,
+        approvedBudget: project.budget ?? 0,
         createdAt: project.createdAt,
         conversationCount: project._count.conversations,
-        invoiceCount: project._count.invoices,
+        invoiceCount: (amountStatsByProject.get(project.id)?.invoiceCount ?? 0),
         bookingCount: project._count.bookings,
       })),
       meta: { total, page, limit, pages: Math.ceil(total / limit) },
