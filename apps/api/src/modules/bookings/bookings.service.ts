@@ -29,6 +29,25 @@ export class BookingsService {
     }
   }
 
+  private async getActorDisplayName(userId: string): Promise<string> {
+    const actor = await this.prisma.user.findUnique({
+      where: { id: userId },
+      select: {
+        email: true,
+        individualProfile: { select: { displayName: true } },
+        companyProfile: { select: { companyName: true } },
+        vendorProfile: { select: { companyName: true } },
+      },
+    });
+    return (
+      actor?.individualProfile?.displayName ??
+      actor?.companyProfile?.companyName ??
+      actor?.vendorProfile?.companyName ??
+      actor?.email ??
+      'User'
+    );
+  }
+
   /**
    * Resolve the exact list of UTC-normalized dates a booking covers.
    *
@@ -56,6 +75,22 @@ export class BookingsService {
     if (datesA.length === 0 || datesB.length === 0) return false;
     const bSet = new Set(datesB.map((d) => d.toISOString().slice(0, 10)));
     return datesA.some((d) => bSet.has(d.toISOString().slice(0, 10)));
+  }
+
+  private countEquipmentBookingsPerDate(
+    dates: Date[],
+    bookings: Array<{ shootDates?: Date[] | null }>,
+  ): Map<string, number> {
+    const requestedKeys = new Set(dates.map((d) => d.toISOString().slice(0, 10)));
+    const perDate = new Map<string, number>();
+    for (const b of bookings) {
+      const keys = this.resolveBookingDates(b).map((d) => d.toISOString().slice(0, 10));
+      for (const key of keys) {
+        if (!requestedKeys.has(key)) continue;
+        perDate.set(key, (perDate.get(key) ?? 0) + 1);
+      }
+    }
+    return perDate;
   }
 
   async createRequest(companyUserId: string, dto: CreateBookingRequestDto) {
@@ -242,16 +277,7 @@ export class BookingsService {
     const raw = await this.prisma.bookingRequest.findMany({
       where: {
         targetUserId: targetUid,
-        status: { in: [...ONGOING_BOOKING_STATUSES] },
-        ...(incomingCtx && !incomingCtx.isMainUser
-          ? {
-              project: {
-                subUserAssignments: {
-                  some: { accountUserId: incomingCtx.accountOwnerId, subUserId: userId },
-                },
-              },
-            }
-          : {}),
+        status: { in: [...ONGOING_BOOKING_STATUSES, 'cancelled'] },
       },
       include: {
         project: {
@@ -313,6 +339,13 @@ export class BookingsService {
         project: { select: { title: true, startDate: true, endDate: true } },
       },
     });
+    const equipmentRows = (await this.prisma.vendorEquipment.findMany({
+      where: { id: { in: equipmentIds } },
+      select: { id: true, ...({ quantityTotal: true } as any) },
+    })) as unknown as Array<{ id: string; quantityTotal?: number }>;
+    const quantityByEquipment: Map<string, number> = new Map<string, number>(
+      equipmentRows.map((eq) => [eq.id, Math.max(1, eq.quantityTotal || 1)]),
+    );
 
     const byEquipment: Record<string, Array<{ projectId: string; projectTitle: string; startDate: Date; endDate: Date; shootDates: Date[] }>> = {};
     for (const ob of otherBookings) {
@@ -336,7 +369,15 @@ export class BookingsService {
         const otherDates = this.resolveBookingDates({ shootDates: o.shootDates });
         return this.hasDateOverlap(thisDates, otherDates);
       });
-      const other = others[0];
+      const capacity = quantityByEquipment.get(b.vendorEquipmentId) ?? 1;
+      const usageByDate = this.countEquipmentBookingsPerDate(
+        thisDates,
+        others.map((o) => ({ shootDates: o.shootDates })),
+      );
+      const fullyBookedDates = Array.from(usageByDate.entries())
+        .filter(([, count]) => count >= capacity)
+        .map(([date]) => date);
+      const other = fullyBookedDates.length > 0 ? others[0] : null;
       (base as any).equipmentAlreadyBookedFor = other
         ? { projectTitle: other.projectTitle, startDate: other.startDate, endDate: other.endDate }
         : null;
@@ -357,13 +398,6 @@ export class BookingsService {
         status: { in: ['accepted', 'locked'] },
         project: {
           status: 'completed',
-          ...(vendorCtx && !vendorCtx.isMainUser
-            ? {
-                subUserAssignments: {
-                  some: { accountUserId: vendorCtx.accountOwnerId, subUserId: userId },
-                },
-              }
-            : {}),
         },
       },
       include: {
@@ -480,12 +514,6 @@ export class BookingsService {
     if (role === UserRole.vendor) {
       const vendorCtx = await this.getVendorAccountContext(userId);
       if (booking.targetUserId !== vendorCtx.accountOwnerId) throw new ForbiddenException('Not your booking');
-      if (!vendorCtx.isMainUser) {
-        const assigned = await this.prisma.subUserProjectAssignment.findFirst({
-          where: { accountUserId: vendorCtx.accountOwnerId, subUserId: userId, projectId: booking.projectId },
-        });
-        if (!assigned) throw new ForbiddenException('This project is not assigned to your Sub-User ID');
-      }
     } else if (booking.targetUserId !== userId) {
       throw new ForbiddenException('Not your booking');
     }
@@ -507,6 +535,11 @@ export class BookingsService {
     if (role === UserRole.vendor) {
       // Vendors should be blocked equipment-wise, not profile-wise.
       if (booking.vendorEquipmentId) {
+        const equipment = await this.prisma.vendorEquipment.findUnique({
+          where: { id: booking.vendorEquipmentId },
+          select: { ...({ quantityTotal: true } as any) },
+        });
+        const quantityTotal = Math.max(1, (equipment as any)?.quantityTotal ?? 1);
         const conflictingBookings = await this.prisma.bookingRequest.findMany({
           where: {
             targetUserId: booking.targetUserId,
@@ -518,12 +551,20 @@ export class BookingsService {
             project: { select: { title: true } },
           },
         });
-
-        const conflictingProjects = conflictingBookings.filter((b) =>
-          this.hasDateOverlap(datesToCheck, this.resolveBookingDates(b as any)),
+        const overlappingBookings = conflictingBookings.filter((b) =>
+          this.hasDateOverlap(datesToCheck, this.resolveBookingDates(b)),
         );
-
-        if (conflictingProjects.length > 0) {
+        const usageByDate = this.countEquipmentBookingsPerDate(datesToCheck, overlappingBookings);
+        const fullyBookedDates = datesToCheck
+          .map((d) => d.toISOString().slice(0, 10))
+          .filter((dateKey) => (usageByDate.get(dateKey) ?? 0) >= quantityTotal);
+        if (fullyBookedDates.length > 0) {
+          const conflictingProjects = overlappingBookings.filter((b) =>
+            this.hasDateOverlap(
+              datesToCheck.filter((d) => fullyBookedDates.includes(d.toISOString().slice(0, 10))),
+              this.resolveBookingDates(b),
+            ),
+          );
           throw new BadRequestException(
             `This equipment is already booked for these dates on project(s): ${conflictingProjects.map((p) => p.project.title).join(', ')}`,
           );
@@ -588,7 +629,7 @@ export class BookingsService {
       booking.targetUserId,
       booking.requesterUserId,
       booking.projectId,
-      `Booking update: your request for "${booking.project.title}" was accepted.`,
+      `Booking request has been accepted`,
     );
     return updated;
   }
@@ -603,12 +644,6 @@ export class BookingsService {
     if (role === UserRole.vendor) {
       const vendorCtx = await this.getVendorAccountContext(userId);
       if (booking.targetUserId !== vendorCtx.accountOwnerId) throw new ForbiddenException('Not your booking');
-      if (!vendorCtx.isMainUser) {
-        const assigned = await this.prisma.subUserProjectAssignment.findFirst({
-          where: { accountUserId: vendorCtx.accountOwnerId, subUserId: userId, projectId: booking.projectId },
-        });
-        if (!assigned) throw new ForbiddenException('This project is not assigned to your Sub-User ID');
-      }
     } else if (booking.targetUserId !== userId) {
       throw new ForbiddenException('Not your booking');
     }
@@ -623,6 +658,12 @@ export class BookingsService {
       'Booking declined',
       `Your booking request for project "${booking.project.title}" was declined.`,
       { bookingId: booking.id, projectId: booking.projectId, projectTitle: booking.project.title },
+    );
+    await this.sendBookingStatusChatMessage(
+      booking.targetUserId,
+      booking.requesterUserId,
+      booking.projectId,
+      `Booking request has been declined`,
     );
     return updated;
   }
@@ -711,12 +752,6 @@ export class BookingsService {
       });
       if (!assigned) throw new ForbiddenException('This project is not assigned to your Sub-User ID');
     }
-    if (vendorCtx && !vendorCtx.isMainUser && isTarget) {
-      const assigned = await this.prisma.subUserProjectAssignment.findFirst({
-        where: { accountUserId: vendorCtx.accountOwnerId, subUserId: userId, projectId: booking.projectId },
-      });
-      if (!assigned) throw new ForbiddenException('This project is not assigned to your Sub-User ID');
-    }
     if (booking.status !== 'accepted' && booking.status !== 'locked') {
       throw new BadRequestException('Only accepted or locked bookings can request cancellation');
     }
@@ -778,6 +813,7 @@ export class BookingsService {
     if (!(await this.isCancellationRequestedByTarget(booking))) {
       throw new BadRequestException('This cancellation request must be responded by the crew/vendor');
     }
+    const actorName = await this.getActorDisplayName(ctx.accountOwnerId);
     if (accept) {
       // Free availability slots using the same date set that accept() locked.
       const datesToFree: Date[] = this.resolveBookingDates(booking as any);
@@ -798,6 +834,12 @@ export class BookingsService {
         `Your cancellation request for project "${booking.project.title}" has been approved.`,
         { bookingId: booking.id, projectId: booking.projectId, projectTitle: booking.project.title },
       );
+      await this.sendBookingStatusChatMessage(
+        ctx.accountOwnerId,
+        booking.targetUserId,
+        booking.projectId,
+        `Cancellation request has been accepted by ${actorName}`,
+      );
       return updated;
     } else {
       const updated = await this.prisma.bookingRequest.update({
@@ -814,6 +856,12 @@ export class BookingsService {
         'Cancellation Denied',
         `Your cancellation request for project "${booking.project.title}" was not approved. You remain booked.`,
         { bookingId: booking.id, projectId: booking.projectId, projectTitle: booking.project.title },
+      );
+      await this.sendBookingStatusChatMessage(
+        ctx.accountOwnerId,
+        booking.targetUserId,
+        booking.projectId,
+        `Cancellation request has been declined by ${actorName}`,
       );
       return updated;
     }
@@ -834,14 +882,9 @@ export class BookingsService {
     }
     const vendorCtx = role === UserRole.vendor ? await this.getVendorAccountContextOrNull(userId) : null;
     const targetActorId = vendorCtx?.accountOwnerId ?? userId;
+    const actorName = await this.getActorDisplayName(targetActorId);
     const isTarget = booking.targetUserId === targetActorId || booking.targetUserId === userId;
     if (!isTarget) throw new ForbiddenException('Not your booking');
-    if (vendorCtx && !vendorCtx.isMainUser) {
-      const assigned = await this.prisma.subUserProjectAssignment.findFirst({
-        where: { accountUserId: vendorCtx.accountOwnerId, subUserId: userId, projectId: booking.projectId },
-      });
-      if (!assigned) throw new ForbiddenException('This project is not assigned to your Sub-User ID');
-    }
     if (await this.isCancellationRequestedByTarget(booking)) {
       throw new BadRequestException('This cancellation request must be responded by the company');
     }
@@ -864,6 +907,12 @@ export class BookingsService {
         `Your cancellation request for "${booking.project.title}" has been approved by the crew/vendor.`,
         { bookingId: booking.id, projectId: booking.projectId, projectTitle: booking.project.title },
       );
+      await this.sendBookingStatusChatMessage(
+        targetActorId,
+        booking.requesterUserId,
+        booking.projectId,
+        `Cancellation request has been accepted by ${actorName}`,
+      );
       return updated;
     }
     const updated = await this.prisma.bookingRequest.update({
@@ -880,6 +929,12 @@ export class BookingsService {
       'Cancellation Denied',
       `Your cancellation request for "${booking.project.title}" was not approved by the crew/vendor.`,
       { bookingId: booking.id, projectId: booking.projectId, projectTitle: booking.project.title },
+    );
+    await this.sendBookingStatusChatMessage(
+      targetActorId,
+      booking.requesterUserId,
+      booking.projectId,
+      `Cancellation request has been declined by ${actorName}`,
     );
     return updated;
   }
@@ -898,12 +953,6 @@ export class BookingsService {
     if (requesterCtx && !requesterCtx.isMainUser && isRequester) {
       const assigned = await this.prisma.subUserProjectAssignment.findFirst({
         where: { accountUserId: requesterCtx.accountOwnerId, subUserId: userId, projectId: booking.projectId },
-      });
-      if (!assigned) throw new ForbiddenException('This project is not assigned to your Sub-User ID');
-    }
-    if (targetVendorCtx && !targetVendorCtx.isMainUser && isTarget) {
-      const assigned = await this.prisma.subUserProjectAssignment.findFirst({
-        where: { accountUserId: targetVendorCtx.accountOwnerId, subUserId: userId, projectId: booking.projectId },
       });
       if (!assigned) throw new ForbiddenException('This project is not assigned to your Sub-User ID');
     }

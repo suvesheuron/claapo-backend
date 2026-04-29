@@ -72,6 +72,16 @@ export class EquipmentService {
         availabilities: {
           orderBy: { availableFrom: 'asc' },
         },
+        bookingRequests: {
+          where: {
+            status: { in: ['accepted', 'locked', 'cancel_requested'] },
+          },
+          select: {
+            id: true,
+            status: true,
+            shootDates: true,
+          },
+        },
       },
       orderBy: { name: 'asc' },
     });
@@ -87,6 +97,7 @@ export class EquipmentService {
         imageUrl: dto.imageUrl?.trim() ?? null,
         currentCity: dto.currentCity?.trim() ?? null,
         dailyBudget: dto.dailyBudget ?? null,
+        quantityTotal: dto.quantityTotal ?? 1,
       },
     });
   }
@@ -103,12 +114,14 @@ export class EquipmentService {
       imageUrl?: string | null;
       currentCity?: string | null;
       dailyBudget?: number | null;
+      quantityTotal?: number;
     } = {};
     if (dto.name !== undefined) data.name = dto.name.trim();
     if (dto.description !== undefined) data.description = dto.description?.trim() ?? null;
     if (dto.imageUrl !== undefined) data.imageUrl = dto.imageUrl?.trim() ?? null;
     if (dto.currentCity !== undefined) data.currentCity = dto.currentCity?.trim() ?? null;
     if (dto.dailyBudget !== undefined) data.dailyBudget = dto.dailyBudget;
+    if (dto.quantityTotal !== undefined) data.quantityTotal = dto.quantityTotal;
     return this.prisma.vendorEquipment.update({
       where: { id: equipmentId },
       data,
