@@ -38,6 +38,12 @@ export class InvoicesService {
     return `INV-${padded}`;
   }
 
+  private normalizeCustomInvoiceNumber(raw?: string): string | null {
+    const trimmed = raw?.trim();
+    if (!trimmed) return null;
+    return trimmed;
+  }
+
   private isValidGstNumber(value?: string | null): boolean {
     if (!value) return false;
     return InvoicesService.GST_REGEX.test(value.trim().toUpperCase());
@@ -112,6 +118,39 @@ export class InvoicesService {
     }
     const gstAmount = this.computeTaxAmount(amount, requestedTax.taxRatePct);
     const totalAmount = amount + gstAmount;
+    const customInvoiceNumber = this.normalizeCustomInvoiceNumber(dto.invoiceNumber);
+    if (customInvoiceNumber) {
+      const duplicate = await this.prisma.invoice.findFirst({
+        where: {
+          issuerUserId: issuerAccountUserId,
+          invoiceNumber: customInvoiceNumber,
+        },
+        select: { id: true },
+      });
+      if (duplicate) {
+        throw new BadRequestException('Invoice number already exists. Please use a different invoice number.');
+      }
+      const invoice = await this.prisma.invoice.create({
+        data: {
+          projectId: dto.projectId,
+          issuerUserId: issuerAccountUserId,
+          recipientUserId: project.companyUserId,
+          invoiceNumber: customInvoiceNumber,
+          serialNumber: null,
+          amount,
+          taxType: requestedTax.taxType,
+          taxRatePct: requestedTax.taxRatePct,
+          gstAmount,
+          totalAmount,
+          dueDate: dto.dueDate ? new Date(dto.dueDate) : null,
+          lineItems: {
+            create: lineItemsData,
+          },
+        },
+        include: { lineItems: true, project: true },
+      });
+      return invoice;
+    }
     for (let attempt = 1; attempt <= InvoicesService.INVOICE_SEQUENCE_RETRY_LIMIT; attempt += 1) {
       try {
         const invoice = await this.prisma.$transaction(async (tx) => {
@@ -241,6 +280,7 @@ export class InvoicesService {
             individualProfile: {
               select: {
                 displayName: true,
+                billingName: true,
                 locationCity: true,
                 address: true,
                 skills: true,
@@ -257,6 +297,7 @@ export class InvoicesService {
             vendorProfile: {
               select: {
                 companyName: true,
+                billingName: true,
                 gstNumber: true,
                 sacCode: true,
                 address: true,
@@ -293,6 +334,7 @@ export class InvoicesService {
             individualProfile: {
               select: {
                 displayName: true,
+                billingName: true,
                 locationCity: true,
                 address: true,
                 panNumber: true,
@@ -308,6 +350,7 @@ export class InvoicesService {
             vendorProfile: {
               select: {
                 companyName: true,
+                billingName: true,
                 gstNumber: true,
                 sacCode: true,
                 address: true,
@@ -427,6 +470,7 @@ export class InvoicesService {
       email: string;
       individualProfile?: {
         displayName: string;
+        billingName?: string | null;
         locationCity?: string | null;
         address?: string | null;
         skills?: string[];
@@ -441,6 +485,7 @@ export class InvoicesService {
       } | null;
       vendorProfile?: {
         companyName: string;
+        billingName?: string | null;
         gstNumber?: string | null;
         sacCode?: string | null;
         address?: string | null;
@@ -470,6 +515,7 @@ export class InvoicesService {
       email: string;
       individualProfile?: {
         displayName: string;
+        billingName?: string | null;
         locationCity?: string | null;
         address?: string | null;
         panNumber?: string | null;
@@ -483,6 +529,7 @@ export class InvoicesService {
       } | null;
       vendorProfile?: {
         companyName: string;
+        billingName?: string | null;
         gstNumber?: string | null;
         sacCode?: string | null;
         address?: string | null;
@@ -512,10 +559,16 @@ export class InvoicesService {
   }) {
     const getName = (u: {
       email: string;
-      individualProfile?: { displayName: string } | null;
-      vendorProfile?: { companyName: string } | null;
+      individualProfile?: { displayName: string; billingName?: string | null } | null;
+      vendorProfile?: { companyName: string; billingName?: string | null } | null;
       companyProfile?: { companyName: string } | null;
-    }) => u.individualProfile?.displayName ?? u.vendorProfile?.companyName ?? u.companyProfile?.companyName ?? u.email;
+    }) =>
+      u.individualProfile?.billingName
+      ?? u.individualProfile?.displayName
+      ?? u.vendorProfile?.billingName
+      ?? u.vendorProfile?.companyName
+      ?? u.companyProfile?.companyName
+      ?? u.email;
     const getCity = (u: {
       individualProfile?: { locationCity?: string | null } | null;
       companyProfile?: { locationCity?: string | null } | null;
@@ -530,9 +583,10 @@ export class InvoicesService {
     const recipientVendor = invoice.recipient.vendorProfile;
     const issuerPhone = (invoice.issuer as any).phone ?? null;
     const recipientPhone = (invoice.recipient as any).phone ?? null;
+    const issuerBillingName = issuerInd?.billingName ?? issuerVendor?.billingName ?? null;
     const issuerDetails = issuerInd
       ? {
-          name: issuerInd.displayName,
+          name: issuerBillingName ?? issuerInd.displayName,
           gstNumber: issuerInd.gstNumber ?? null,
           sacCode: issuerInd.sacCode ?? null,
           address: issuerInd.address ?? null,
@@ -546,7 +600,7 @@ export class InvoicesService {
           bankName: issuerInd.bankName ?? null,
         }
       : {
-          name: issuerCompany?.companyName ?? issuerVendor?.companyName ?? invoice.issuer.email,
+          name: issuerBillingName ?? issuerCompany?.companyName ?? issuerVendor?.companyName ?? invoice.issuer.email,
           gstNumber: issuerCompany?.gstNumber ?? issuerVendor?.gstNumber ?? null,
           sacCode: issuerCompany?.sacCode ?? issuerVendor?.sacCode ?? null,
           address: issuerCompany?.address ?? issuerVendor?.address ?? null,
@@ -648,7 +702,7 @@ export class InvoicesService {
       projectShootDates: filteredShootDates,
       // Use booking's date-location pair instead of project's generic locations
       projectShootLocations: shootLocationForInvoice ? [shootLocationForInvoice] : ((invoice.project as any)?.shootLocations ?? null),
-      fromName: getName(invoice.issuer),
+      fromName: issuerBillingName ?? getName(invoice.issuer),
       fromRole: issuerInd?.skills?.[0] ?? null,
       fromCity: getCity(invoice.issuer),
       toName: getName(invoice.recipient),

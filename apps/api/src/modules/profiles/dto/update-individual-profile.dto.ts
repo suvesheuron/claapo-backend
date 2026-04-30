@@ -133,6 +133,11 @@ export class UpdateIndividualProfileDto {
   @IsString()
   panNumber?: string;
 
+  @ApiPropertyOptional({ description: 'Billing name shown in invoice From section' })
+  @IsOptional()
+  @IsString()
+  billingName?: string;
+
   @ApiPropertyOptional({ description: 'GST number (optional, shown on invoices)' })
   @IsOptional()
   @IsString()

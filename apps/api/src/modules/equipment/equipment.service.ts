@@ -25,6 +25,7 @@ export class EquipmentService {
           where: { status: { in: ['accepted', 'locked'] } },
           select: {
             id: true,
+            shootDates: true,
             project: {
               select: {
                 title: true,

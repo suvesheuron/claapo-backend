@@ -130,6 +130,7 @@ model IndividualProfile {
   profileScore   Int      @default(0) @map("profile_score")
   isAvailable    Boolean  @default(true) @map("is_available")
   panNumber      String?  @map("pan_number")
+  billingName    String?  @map("billing_name")
   gstNumber      String?  @map("gst_number")
   sacCode        String?  @map("sac_code")
   upiId          String?  @map("upi_id")
@@ -189,6 +190,7 @@ model VendorProfile {
   gstNumber      String?    @unique @map("gst_number")
   sacCode        String?    @map("sac_code")
   panNumber      String?    @map("pan_number")
+  billingName    String?    @map("billing_name")
   isGstVerified  Boolean    @default(false) @map("is_gst_verified")
   website        String?
   imdbUrl        String?    @map("imdb_url")

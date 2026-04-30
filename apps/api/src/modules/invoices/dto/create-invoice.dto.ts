@@ -19,6 +19,11 @@ export class InvoiceLineItemDto {
 }
 
 export class CreateInvoiceDto {
+  @ApiPropertyOptional({ description: 'Custom invoice number. If omitted, system generates one.' })
+  @IsOptional()
+  @IsString()
+  invoiceNumber?: string;
+
   @ApiProperty()
   @IsString()
   projectId: string;

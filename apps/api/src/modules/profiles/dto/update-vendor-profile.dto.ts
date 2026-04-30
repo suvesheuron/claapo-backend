@@ -33,6 +33,11 @@ export class UpdateVendorProfileDto {
   @IsString()
   panNumber?: string;
 
+  @ApiPropertyOptional({ description: 'Billing name shown in invoice From section' })
+  @IsOptional()
+  @IsString()
+  billingName?: string;
+
   @ApiPropertyOptional()
   @IsOptional()
   @IsUrl()
