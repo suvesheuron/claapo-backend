@@ -300,6 +300,7 @@ export class ProjectsService {
     if (role === UserRole.company) {
       // Company invoices page is "received invoices", so count/aggregate by recipient.
       invoiceWhere.recipientUserId = mainUserId;
+      invoiceWhere.status = { not: 'draft' as const };
     } else if (role === UserRole.vendor) {
       // Vendor should see only invoices sent by their own account.
       invoiceWhere.issuerUserId = mainUserId;

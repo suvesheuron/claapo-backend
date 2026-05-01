@@ -49,6 +49,24 @@ export class SearchService {
     return null;
   }
 
+  private dateInRange(date: Date, start: Date, end: Date): boolean {
+    return date >= start && date <= end;
+  }
+
+  private getLatestApplicableAssignmentForDay<T extends { shootStart: Date; shootEndWithBuffer: Date }>(
+    day: Date,
+    assignments: T[],
+  ): T | null {
+    const applicable = assignments.filter((a) => this.dateInRange(day, a.shootStart, a.shootEndWithBuffer));
+    if (applicable.length === 0) return null;
+    applicable.sort((a, b) => {
+      const endDiff = b.shootStart.getTime() - a.shootStart.getTime();
+      if (endDiff !== 0) return endDiff;
+      return b.shootEndWithBuffer.getTime() - a.shootEndWithBuffer.getTime();
+    });
+    return applicable[0];
+  }
+
   async searchCrew(viewerId: string, viewerRole: UserRole, query: SearchCrewQueryDto) {
     if (viewerRole !== 'company') {
       throw new ForbiddenException('Only companies can search crew');
@@ -155,24 +173,51 @@ export class SearchService {
             },
           },
         });
-        tempLocationUserIds = new Set(
-          assignmentRows
-            .filter((row) => {
-              if (!this.projectLocationMatchesCity(row.project, requestedCityNorm)) return false;
-              const shootRange = this.resolveBookingShootRange(
-                row.shootDates,
-                row.project.startDate,
-                row.project.endDate,
-              );
-              if (!shootRange) return false;
-              const shootEndWithBuffer = new Date(shootRange.end);
-              shootEndWithBuffer.setUTCDate(
-                shootEndWithBuffer.getUTCDate() + this.TEMP_LOCATION_BUFFER_DAYS,
-              );
-              return shootRange.start <= requestedEnd && shootEndWithBuffer >= requestedStart;
-            })
-            .map((row) => row.targetUserId),
-        );
+        const assignmentsByUser = new Map<
+          string,
+          Array<{
+            shootStart: Date;
+            shootEndWithBuffer: Date;
+            locationMatchesRequestedCity: boolean;
+          }>
+        >();
+        for (const row of assignmentRows) {
+          const shootRange = this.resolveBookingShootRange(
+            row.shootDates,
+            row.project.startDate,
+            row.project.endDate,
+          );
+          if (!shootRange) continue;
+          const shootEndWithBuffer = new Date(shootRange.end);
+          shootEndWithBuffer.setUTCDate(
+            shootEndWithBuffer.getUTCDate() + this.TEMP_LOCATION_BUFFER_DAYS,
+          );
+          if (shootRange.start > requestedEnd || shootEndWithBuffer < requestedStart) continue;
+          const arr = assignmentsByUser.get(row.targetUserId) ?? [];
+          arr.push({
+            shootStart: shootRange.start,
+            shootEndWithBuffer,
+            locationMatchesRequestedCity: this.projectLocationMatchesCity(row.project, requestedCityNorm),
+          });
+          assignmentsByUser.set(row.targetUserId, arr);
+        }
+
+        const nextDay = new Date(requestedEnd);
+        nextDay.setUTCDate(nextDay.getUTCDate() + 1);
+        for (const [userId, assignments] of assignmentsByUser) {
+          let foundMatch = false;
+          for (
+            let day = new Date(requestedStart);
+            day < nextDay && !foundMatch;
+            day = new Date(Date.UTC(day.getUTCFullYear(), day.getUTCMonth(), day.getUTCDate() + 1))
+          ) {
+            const latest = this.getLatestApplicableAssignmentForDay(day, assignments);
+            if (latest?.locationMatchesRequestedCity) {
+              foundMatch = true;
+            }
+          }
+          if (foundMatch) tempLocationUserIds.add(userId);
+        }
       }
 
       filtered = filtered.filter((p) => {
@@ -334,18 +379,57 @@ export class SearchService {
         if (shootRange.start <= requestedWindowEnd && shootRange.end >= requestedWindowStart) {
           bookedEquipmentIds.add(eqId);
         }
+      }
 
-        if (!requestedCity || bookedEquipmentIds.has(eqId)) continue;
-        const proj = row.project;
-        if (!this.projectLocationMatchesCity(proj, requestedCity)) continue;
-        const shootEndWithBuffer = new Date(shootRange.end);
-        shootEndWithBuffer.setUTCDate(
-          shootEndWithBuffer.getUTCDate() + this.TEMP_LOCATION_BUFFER_DAYS,
-        );
-        if (shootRange.start <= requestedWindowEnd && shootEndWithBuffer >= requestedWindowStart) {
-          const label =
-            proj.locationCity?.trim() || proj.shootLocations?.[0]?.trim() || requestedCity;
-          if (!locationBoostByEquip.has(eqId)) locationBoostByEquip.set(eqId, label);
+      if (requestedCity) {
+        const assignmentsByEquip = new Map<
+          string,
+          Array<{
+            shootStart: Date;
+            shootEndWithBuffer: Date;
+            locationMatchesRequestedCity: boolean;
+            label: string;
+          }>
+        >();
+        for (const row of assignmentRows) {
+          const eqId = row.vendorEquipmentId;
+          if (!eqId || bookedEquipmentIds.has(eqId)) continue;
+          const shootRange = this.resolveBookingShootRange(
+            row.shootDates,
+            row.project.startDate,
+            row.project.endDate,
+          );
+          if (!shootRange) continue;
+          const shootEndWithBuffer = new Date(shootRange.end);
+          shootEndWithBuffer.setUTCDate(
+            shootEndWithBuffer.getUTCDate() + this.TEMP_LOCATION_BUFFER_DAYS,
+          );
+          if (shootRange.start > requestedWindowEnd || shootEndWithBuffer < requestedWindowStart) continue;
+          const arr = assignmentsByEquip.get(eqId) ?? [];
+          arr.push({
+            shootStart: shootRange.start,
+            shootEndWithBuffer,
+            locationMatchesRequestedCity: this.projectLocationMatchesCity(row.project, requestedCity),
+            label: row.project.locationCity?.trim() || row.project.shootLocations?.[0]?.trim() || requestedCity,
+          });
+          assignmentsByEquip.set(eqId, arr);
+        }
+
+        const nextDay = new Date(requestedWindowEnd);
+        nextDay.setUTCDate(nextDay.getUTCDate() + 1);
+        for (const [eqId, assignments] of assignmentsByEquip) {
+          let labelForMatch: string | null = null;
+          for (
+            let day = new Date(requestedWindowStart);
+            day < nextDay && !labelForMatch;
+            day = new Date(Date.UTC(day.getUTCFullYear(), day.getUTCMonth(), day.getUTCDate() + 1))
+          ) {
+            const latest = this.getLatestApplicableAssignmentForDay(day, assignments);
+            if (latest?.locationMatchesRequestedCity) {
+              labelForMatch = latest.label;
+            }
+          }
+          if (labelForMatch) locationBoostByEquip.set(eqId, labelForMatch);
         }
       }
     }
