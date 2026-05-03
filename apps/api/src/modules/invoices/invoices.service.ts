@@ -1,12 +1,14 @@
 import { Injectable, ForbiddenException, NotFoundException, BadRequestException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { InvoiceTaxType, UserRole } from '@prisma/client';
+import { InvoiceTaxType, Prisma, UserRole } from '@prisma/client';
 import { PrismaService } from '../../database/prisma.service';
 import Razorpay from 'razorpay';
 import crypto from 'crypto';
 import { CreateInvoiceDto } from './dto/create-invoice.dto';
 import { UpdateInvoiceDto } from './dto/update-invoice.dto';
 import { AddInvoiceAttachmentDto } from './dto/add-invoice-attachment.dto';
+import { RecordOfflineCompanyInvoiceDto } from './dto/record-offline-company-invoice.dto';
+import { SendOfflineVendorInvoiceDto } from './dto/send-offline-vendor-invoice.dto';
 import { NotificationsService } from '../notifications/notifications.service';
 import { StorageService } from '../storage/storage.service';
 
@@ -193,6 +195,191 @@ export class InvoicesService {
     throw new BadRequestException('Failed to allocate invoice number. Please retry.');
   }
 
+  private parseIssuedOnDate(raw?: string): Date | undefined {
+    if (!raw || !/^\d{4}-\d{2}-\d{2}$/.test(raw.trim())) return undefined;
+    return new Date(raw.trim() + 'T12:00:00.000Z');
+  }
+
+  async recordOfflineCompanyInvoice(userId: string, dto: RecordOfflineCompanyInvoiceDto) {
+    const companyCtx = await this.getCompanyAccountContext(userId);
+    const project = await this.prisma.project.findUnique({ where: { id: dto.projectId } });
+    if (!project) throw new NotFoundException('Project not found');
+    if (project.companyUserId !== companyCtx.accountOwnerId) {
+      throw new ForbiddenException('You can only record offline invoices for your own projects');
+    }
+    if (!companyCtx.isMainUser) {
+      await this.ensureProjectAssignedToSubUser(companyCtx.accountOwnerId, userId, dto.projectId);
+    }
+    const amount = dto.amountPaise;
+    if (!Number.isFinite(amount) || amount < 1) throw new BadRequestException('Invalid amount');
+    const requestedTax = this.normalizeTaxInput(dto.taxType, dto.taxRatePct);
+    const gstAmount = this.computeTaxAmount(amount, requestedTax.taxRatePct);
+    const totalAmount = amount + gstAmount;
+    const billingName = dto.billingName.trim();
+    if (!billingName) throw new BadRequestException('Billing name is required');
+    const department = dto.department.trim();
+    if (!department) throw new BadRequestException('Department is required');
+    const companyOwnerId = companyCtx.accountOwnerId;
+    const issuedAt = this.parseIssuedOnDate(dto.issuedOn);
+
+    const lineItemCreate = {
+      description: 'Offline recorded invoice',
+      quantity: new Prisma.Decimal(1),
+      unitPrice: amount,
+      amount,
+    };
+
+    for (let attempt = 1; attempt <= InvoicesService.INVOICE_SEQUENCE_RETRY_LIMIT; attempt += 1) {
+      try {
+        const invoice = await this.prisma.$transaction(async (tx) => {
+          const latestInvoice = await tx.invoice.findFirst({
+            where: { issuerUserId: companyOwnerId, serialNumber: { not: null } },
+            select: { serialNumber: true },
+            orderBy: { serialNumber: 'desc' },
+          });
+          const serialNumber = (latestInvoice?.serialNumber ?? 0) + 1;
+          const invoiceNumber = this.formatInvoiceNumber(serialNumber);
+          return tx.invoice.create({
+            data: {
+              projectId: dto.projectId,
+              issuerUserId: companyOwnerId,
+              recipientUserId: companyOwnerId,
+              invoiceNumber,
+              serialNumber,
+              amount,
+              taxType: requestedTax.taxType,
+              taxRatePct: requestedTax.taxRatePct,
+              gstAmount,
+              totalAmount,
+              status: 'sent',
+              offlineBillingName: billingName,
+              offlineDepartment: department,
+              recordedOfflineByCompany: true,
+              dueDate: null,
+              lineItems: { create: lineItemCreate },
+              ...(issuedAt ? { createdAt: issuedAt } : {}),
+            },
+            include: { lineItems: true, project: true },
+          });
+        });
+        return invoice;
+      } catch (error) {
+        const maybePrisma = error as { code?: string };
+        const isUniqueConflict = maybePrisma?.code === 'P2002';
+        const shouldRetry = isUniqueConflict && attempt < InvoicesService.INVOICE_SEQUENCE_RETRY_LIMIT;
+        if (shouldRetry) continue;
+        throw error;
+      }
+    }
+    throw new BadRequestException('Failed to allocate invoice number. Please retry.');
+  }
+
+  async sendOfflineVendorInvoice(userId: string, role: UserRole, dto: SendOfflineVendorInvoiceDto) {
+    if (role !== UserRole.individual && role !== UserRole.vendor) {
+      throw new ForbiddenException('Only individuals and vendors can send offline invoices');
+    }
+    const vendorCtx = role === UserRole.vendor ? await this.getVendorAccountContext(userId) : null;
+    const issuerAccountUserId = vendorCtx ? vendorCtx.accountOwnerId : userId;
+    const project = await this.prisma.project.findUnique({
+      where: { id: dto.projectId },
+      select: { id: true, title: true, companyUserId: true },
+    });
+    if (!project) throw new NotFoundException('Project not found');
+    const relatedBooking = await this.prisma.bookingRequest.findFirst({
+      where: {
+        projectId: dto.projectId,
+        targetUserId: issuerAccountUserId,
+        status: { in: ['accepted', 'locked'] },
+      },
+      select: { id: true },
+    });
+    if (!relatedBooking) {
+      throw new ForbiddenException('You can send invoices only for projects where you are booked');
+    }
+    const amount = dto.amountPaise;
+    if (!Number.isFinite(amount) || amount < 1) throw new BadRequestException('Invalid amount');
+    const requestedTax = this.normalizeTaxInput(dto.taxType, dto.taxRatePct);
+    const hasValidGst = await this.shouldApplyGstForIssuer(issuerAccountUserId);
+    if ((requestedTax.taxType === InvoiceTaxType.gst || requestedTax.taxType === InvoiceTaxType.igst) && !hasValidGst) {
+      throw new BadRequestException('A valid GST number is required to apply GST/IGST.');
+    }
+    const gstAmount = this.computeTaxAmount(amount, requestedTax.taxRatePct);
+    const totalAmount = amount + gstAmount;
+    const issuedAt = this.parseIssuedOnDate(dto.issuedOn);
+
+    const lineItemCreate = {
+      description: 'Offline invoice',
+      quantity: new Prisma.Decimal(1),
+      unitPrice: amount,
+      amount,
+    };
+
+    for (let attempt = 1; attempt <= InvoicesService.INVOICE_SEQUENCE_RETRY_LIMIT; attempt += 1) {
+      try {
+        const invoice = await this.prisma.$transaction(async (tx) => {
+          const latestInvoice = await tx.invoice.findFirst({
+            where: { issuerUserId: issuerAccountUserId, serialNumber: { not: null } },
+            select: { serialNumber: true },
+            orderBy: { serialNumber: 'desc' },
+          });
+          const serialNumber = (latestInvoice?.serialNumber ?? 0) + 1;
+          const invoiceNumber = this.formatInvoiceNumber(serialNumber);
+          return tx.invoice.create({
+            data: {
+              projectId: dto.projectId,
+              issuerUserId: issuerAccountUserId,
+              recipientUserId: project.companyUserId,
+              invoiceNumber,
+              serialNumber,
+              amount,
+              taxType: requestedTax.taxType,
+              taxRatePct: requestedTax.taxRatePct,
+              gstAmount,
+              totalAmount,
+              status: 'sent',
+              recordedOfflineByCompany: false,
+              dueDate: null,
+              lineItems: { create: lineItemCreate },
+              ...(issuedAt ? { createdAt: issuedAt } : {}),
+            },
+            include: {
+              lineItems: true,
+              project: { select: { id: true, title: true } },
+              issuer: {
+                select: {
+                  individualProfile: { select: { displayName: true } },
+                  companyProfile: { select: { companyName: true } },
+                  vendorProfile: { select: { companyName: true } },
+                },
+              },
+            },
+          });
+        });
+        const issuerName =
+          invoice.issuer.individualProfile?.displayName ??
+          invoice.issuer.vendorProfile?.companyName ??
+          invoice.issuer.companyProfile?.companyName ??
+          'A crew member';
+        const amountFormatted = `₹${(invoice.totalAmount / 100).toLocaleString('en-IN')}`;
+        await this.notifications.createForUser(
+          project.companyUserId,
+          'invoice_sent',
+          'New invoice received',
+          `${issuerName} sent you an invoice for ${amountFormatted} for project "${project.title}".`,
+          { invoiceId: invoice.id, projectId: invoice.projectId, projectTitle: project.title },
+        );
+        return invoice;
+      } catch (error) {
+        const maybePrisma = error as { code?: string };
+        const isUniqueConflict = maybePrisma?.code === 'P2002';
+        const shouldRetry = isUniqueConflict && attempt < InvoicesService.INVOICE_SEQUENCE_RETRY_LIMIT;
+        if (shouldRetry) continue;
+        throw error;
+      }
+    }
+    throw new BadRequestException('Failed to allocate invoice number. Please retry.');
+  }
+
   async list(userId: string, page = 1, limit = 20, issuedOn?: string, projectId?: string) {
     const companyCtx = await this.getCompanyAccountContextOrNull(userId);
     const vendorCtx = await this.getVendorAccountContextOrNull(userId);
@@ -242,17 +429,17 @@ export class InvoicesService {
           issuer: {
             select: {
               id: true,
-              individualProfile: { select: { displayName: true } },
+              individualProfile: { select: { displayName: true, skills: true } },
               companyProfile: { select: { companyName: true } },
-              vendorProfile: { select: { companyName: true } },
+              vendorProfile: { select: { companyName: true, vendorServiceCategory: true } },
             },
           },
           recipient: {
             select: {
               id: true,
-              individualProfile: { select: { displayName: true } },
+              individualProfile: { select: { displayName: true, skills: true } },
               companyProfile: { select: { companyName: true } },
-              vendorProfile: { select: { companyName: true } },
+              vendorProfile: { select: { companyName: true, vendorServiceCategory: true } },
             },
           },
         },
@@ -433,18 +620,20 @@ export class InvoicesService {
     });
 
     const cleanReason = reason?.trim() || null;
-    await this.notifications.createForUser(
-      invoice.issuerUserId,
-      'invoice_declined',
-      'Invoice declined',
-      `Your invoice ${invoice.invoiceNumber} for project "${invoice.project?.title ?? 'Untitled project'}" was declined.${cleanReason ? ` Reason: ${cleanReason}` : ''}`,
-      {
-        invoiceId: invoice.id,
-        projectId: invoice.projectId,
-        projectTitle: invoice.project?.title ?? null,
-        declineReason: cleanReason,
-      },
-    );
+    if (invoice.issuerUserId !== invoice.recipientUserId) {
+      await this.notifications.createForUser(
+        invoice.issuerUserId,
+        'invoice_declined',
+        'Invoice declined',
+        `Your invoice ${invoice.invoiceNumber} for project "${invoice.project?.title ?? 'Untitled project'}" was declined.${cleanReason ? ` Reason: ${cleanReason}` : ''}`,
+        {
+          invoiceId: invoice.id,
+          projectId: invoice.projectId,
+          projectTitle: invoice.project?.title ?? null,
+          declineReason: cleanReason,
+        },
+      );
+    }
     return updated;
   }
 
@@ -556,7 +745,18 @@ export class InvoicesService {
     };
     lineItems: { description: string; quantity: unknown; unitPrice: number; amount: number }[];
     attachments?: { id: string; fileKey: string; fileName: string; mimeType: string; size: number }[];
+    offlineBillingName?: string | null;
+    offlineDepartment?: string | null;
+    recordedOfflineByCompany?: boolean;
   }) {
+    const offlineBillingLabel =
+      invoice.recordedOfflineByCompany && invoice.offlineBillingName?.trim()
+        ? invoice.offlineBillingName.trim()
+        : null;
+    const offlineDepartmentLabel =
+      invoice.recordedOfflineByCompany && invoice.offlineDepartment?.trim()
+        ? invoice.offlineDepartment.trim()
+        : null;
     const getName = (u: {
       email: string;
       individualProfile?: { displayName: string; billingName?: string | null } | null;
@@ -586,10 +786,11 @@ export class InvoicesService {
     const issuerBillingName = issuerInd?.billingName ?? issuerVendor?.billingName ?? null;
     const issuerDetails = issuerInd
       ? {
-          name: issuerBillingName ?? issuerInd.displayName,
+          name: offlineBillingLabel ?? issuerBillingName ?? issuerInd.displayName,
           gstNumber: issuerInd.gstNumber ?? null,
           sacCode: issuerInd.sacCode ?? null,
-          address: issuerInd.address ?? null,
+          address: invoice.recordedOfflineByCompany ? null : (issuerInd.address ?? null),
+          department: offlineDepartmentLabel,
           panNumber: issuerInd.panNumber ?? null,
           upiId: issuerInd.upiId ?? null,
           email: invoice.issuer.email,
@@ -600,10 +801,11 @@ export class InvoicesService {
           bankName: issuerInd.bankName ?? null,
         }
       : {
-          name: issuerBillingName ?? issuerCompany?.companyName ?? issuerVendor?.companyName ?? invoice.issuer.email,
+          name: offlineBillingLabel ?? issuerBillingName ?? issuerCompany?.companyName ?? issuerVendor?.companyName ?? invoice.issuer.email,
           gstNumber: issuerCompany?.gstNumber ?? issuerVendor?.gstNumber ?? null,
           sacCode: issuerCompany?.sacCode ?? issuerVendor?.sacCode ?? null,
-          address: issuerCompany?.address ?? issuerVendor?.address ?? null,
+          address: invoice.recordedOfflineByCompany ? null : (issuerCompany?.address ?? issuerVendor?.address ?? null),
+          department: offlineDepartmentLabel,
           panNumber: issuerCompany?.panNumber ?? issuerVendor?.panNumber ?? null,
           upiId: issuerVendor?.upiId ?? null,
           email: invoice.issuer.email,
@@ -618,7 +820,8 @@ export class InvoicesService {
           name: recipientInd.displayName,
           gstNumber: recipientInd.gstNumber ?? null,
           sacCode: recipientInd.sacCode ?? null,
-          address: recipientInd.address ?? null,
+          address: invoice.recordedOfflineByCompany ? null : (recipientInd.address ?? null),
+          department: offlineDepartmentLabel,
           panNumber: recipientInd.panNumber ?? null,
           upiId: recipientInd.upiId ?? null,
           email: invoice.recipient.email,
@@ -632,7 +835,8 @@ export class InvoicesService {
           name: recipientCompany?.companyName ?? recipientVendor?.companyName ?? invoice.recipient.email,
           gstNumber: recipientCompany?.gstNumber ?? recipientVendor?.gstNumber ?? null,
           sacCode: recipientCompany?.sacCode ?? recipientVendor?.sacCode ?? null,
-          address: recipientCompany?.address ?? recipientVendor?.address ?? null,
+          address: invoice.recordedOfflineByCompany ? null : (recipientCompany?.address ?? recipientVendor?.address ?? null),
+          department: offlineDepartmentLabel,
           panNumber: recipientCompany?.panNumber ?? recipientVendor?.panNumber ?? null,
           upiId: recipientVendor?.upiId ?? null,
           email: invoice.recipient.email,
@@ -702,7 +906,13 @@ export class InvoicesService {
       projectShootDates: filteredShootDates,
       // Use booking's date-location pair instead of project's generic locations
       projectShootLocations: shootLocationForInvoice ? [shootLocationForInvoice] : ((invoice.project as any)?.shootLocations ?? null),
-      fromName: issuerBillingName ?? getName(invoice.issuer),
+      fromName: offlineBillingLabel ?? issuerBillingName ?? getName(invoice.issuer),
+      fromDepartment: offlineDepartmentLabel,
+      // Offline-recorded invoice flags so the UI can render an "Offline" badge
+      // and highlight the attached invoice document.
+      recordedOfflineByCompany: !!invoice.recordedOfflineByCompany,
+      offlineBillingName: invoice.offlineBillingName ?? null,
+      offlineDepartment: invoice.offlineDepartment ?? null,
       fromRole: issuerInd?.skills?.[0] ?? null,
       fromCity: getCity(invoice.issuer),
       toName: getName(invoice.recipient),
@@ -847,15 +1057,33 @@ export class InvoicesService {
   }
 
   async getAttachmentUploadUrl(invoiceId: string, userId: string, role: UserRole, contentType?: string) {
-    if (role !== 'individual' && role !== 'vendor') throw new ForbiddenException('Only issuer can add attachments');
-    const vendorCtx = role === UserRole.vendor ? await this.getVendorAccountContext(userId) : null;
-    const issuerAccountUserId = vendorCtx ? vendorCtx.accountOwnerId : userId;
     const invoice = await this.prisma.invoice.findUnique({
       where: { id: invoiceId },
       include: { _count: { select: { attachments: true } } },
     });
     if (!invoice) throw new NotFoundException('Invoice not found');
-    if (invoice.issuerUserId !== issuerAccountUserId) throw new ForbiddenException('Not your invoice');
+
+    let allowed = false;
+    if (role === UserRole.company) {
+      const companyCtx = await this.getCompanyAccountContextOrNull(userId);
+      allowed = Boolean(
+        companyCtx &&
+          invoice.recordedOfflineByCompany &&
+          invoice.issuerUserId === companyCtx.accountOwnerId,
+      );
+      if (allowed && companyCtx && !companyCtx.isMainUser) {
+        await this.ensureProjectAssignedToSubUser(companyCtx.accountOwnerId, userId, invoice.projectId);
+      }
+    } else {
+      if (role !== UserRole.individual && role !== UserRole.vendor) {
+        throw new ForbiddenException('Only issuer can add attachments');
+      }
+      const vendorCtx = role === UserRole.vendor ? await this.getVendorAccountContext(userId) : null;
+      const issuerAccountUserId = vendorCtx ? vendorCtx.accountOwnerId : userId;
+      allowed = invoice.issuerUserId === issuerAccountUserId;
+    }
+    if (!allowed) throw new ForbiddenException('Not your invoice');
+
     if (invoice.status !== 'draft' && invoice.status !== 'sent') {
       throw new BadRequestException('Attachments can only be added to draft or sent invoices');
     }
@@ -869,15 +1097,33 @@ export class InvoicesService {
   }
 
   async addAttachment(invoiceId: string, userId: string, role: UserRole, dto: AddInvoiceAttachmentDto) {
-    if (role !== 'individual' && role !== 'vendor') throw new ForbiddenException('Only issuer can add attachments');
-    const vendorCtx = role === UserRole.vendor ? await this.getVendorAccountContext(userId) : null;
-    const issuerAccountUserId = vendorCtx ? vendorCtx.accountOwnerId : userId;
     const invoice = await this.prisma.invoice.findUnique({
       where: { id: invoiceId },
       include: { _count: { select: { attachments: true } } },
     });
     if (!invoice) throw new NotFoundException('Invoice not found');
-    if (invoice.issuerUserId !== issuerAccountUserId) throw new ForbiddenException('Not your invoice');
+
+    let allowed = false;
+    if (role === UserRole.company) {
+      const companyCtx = await this.getCompanyAccountContextOrNull(userId);
+      allowed = Boolean(
+        companyCtx &&
+          invoice.recordedOfflineByCompany &&
+          invoice.issuerUserId === companyCtx.accountOwnerId,
+      );
+      if (allowed && companyCtx && !companyCtx.isMainUser) {
+        await this.ensureProjectAssignedToSubUser(companyCtx.accountOwnerId, userId, invoice.projectId);
+      }
+    } else {
+      if (role !== UserRole.individual && role !== UserRole.vendor) {
+        throw new ForbiddenException('Only issuer can add attachments');
+      }
+      const vendorCtx = role === UserRole.vendor ? await this.getVendorAccountContext(userId) : null;
+      const issuerAccountUserId = vendorCtx ? vendorCtx.accountOwnerId : userId;
+      allowed = invoice.issuerUserId === issuerAccountUserId;
+    }
+    if (!allowed) throw new ForbiddenException('Not your invoice');
+
     if (invoice.status !== 'draft' && invoice.status !== 'sent') {
       throw new BadRequestException('Attachments can only be added to draft or sent invoices');
     }
@@ -928,10 +1174,27 @@ export class InvoicesService {
     if (attachment.invoice.status === 'paid') {
       throw new BadRequestException('Cannot delete attachments from a paid invoice');
     }
-    if (role !== 'individual' && role !== 'vendor') throw new ForbiddenException('Only issuer can delete attachments');
-    const vendorCtx = role === UserRole.vendor ? await this.getVendorAccountContext(userId) : null;
-    const issuerAccountUserId = vendorCtx ? vendorCtx.accountOwnerId : userId;
-    if (attachment.invoice.issuerUserId !== issuerAccountUserId) throw new ForbiddenException('Not your invoice');
+
+    let allowed = false;
+    if (role === UserRole.company) {
+      const companyCtx = await this.getCompanyAccountContextOrNull(userId);
+      allowed = Boolean(
+        companyCtx &&
+          attachment.invoice.recordedOfflineByCompany &&
+          attachment.invoice.issuerUserId === companyCtx.accountOwnerId,
+      );
+      if (allowed && companyCtx && !companyCtx.isMainUser) {
+        await this.ensureProjectAssignedToSubUser(companyCtx.accountOwnerId, userId, attachment.invoice.projectId);
+      }
+    } else {
+      if (role !== UserRole.individual && role !== UserRole.vendor) {
+        throw new ForbiddenException('Only issuer can delete attachments');
+      }
+      const vendorCtx = role === UserRole.vendor ? await this.getVendorAccountContext(userId) : null;
+      const issuerAccountUserId = vendorCtx ? vendorCtx.accountOwnerId : userId;
+      allowed = attachment.invoice.issuerUserId === issuerAccountUserId;
+    }
+    if (!allowed) throw new ForbiddenException('Not your invoice');
     await this.prisma.invoiceAttachment.delete({ where: { id: attachmentId } });
     if (this.storage.isConfigured()) {
       await this.storage.deleteObject(attachment.fileKey).catch(() => {});

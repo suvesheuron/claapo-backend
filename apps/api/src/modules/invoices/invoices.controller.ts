@@ -10,6 +10,8 @@ import { CreateInvoiceDto } from './dto/create-invoice.dto';
 import { UpdateInvoiceDto } from './dto/update-invoice.dto';
 import { AddInvoiceAttachmentDto } from './dto/add-invoice-attachment.dto';
 import { DeclineInvoiceDto } from './dto/decline-invoice.dto';
+import { RecordOfflineCompanyInvoiceDto } from './dto/record-offline-company-invoice.dto';
+import { SendOfflineVendorInvoiceDto } from './dto/send-offline-vendor-invoice.dto';
 
 @ApiTags('invoices')
 @Controller('invoices')
@@ -26,6 +28,22 @@ export class InvoicesController {
     return this.invoicesService.create(user.id, user.role, dto);
   }
 
+  @Post('offline/company-record')
+  @UseGuards(RolesGuard)
+  @Roles('company')
+  @ApiOperation({ summary: 'Record an offline invoice received for your project' })
+  recordOfflineCompany(@CurrentUser() user: AuthUser, @Body() dto: RecordOfflineCompanyInvoiceDto) {
+    return this.invoicesService.recordOfflineCompanyInvoice(user.id, dto);
+  }
+
+  @Post('offline/vendor-send')
+  @UseGuards(RolesGuard)
+  @Roles('individual', 'vendor')
+  @ApiOperation({ summary: 'Send offline invoice (amount + tax) to production house' })
+  sendOfflineVendor(@CurrentUser() user: AuthUser, @Body() dto: SendOfflineVendorInvoiceDto) {
+    return this.invoicesService.sendOfflineVendorInvoice(user.id, user.role, dto);
+  }
+
   @Get()
   @ApiOperation({ summary: 'List own invoices (paginated). Optional issuedOn=YYYY-MM-DD filters by invoice created date (UTC day).' })
   list(
@@ -40,7 +58,7 @@ export class InvoicesController {
 
   @Get(':id/attachments/upload-url')
   @UseGuards(RolesGuard)
-  @Roles('individual', 'vendor')
+  @Roles('individual', 'vendor', 'company')
   @ApiOperation({ summary: 'Get presigned URL to upload an attachment' })
   getAttachmentUploadUrl(
     @CurrentUser() user: AuthUser,
@@ -58,7 +76,7 @@ export class InvoicesController {
 
   @Post(':id/attachments')
   @UseGuards(RolesGuard)
-  @Roles('individual', 'vendor')
+  @Roles('individual', 'vendor', 'company')
   @ApiOperation({ summary: 'Register an attachment after upload' })
   addAttachment(
     @CurrentUser() user: AuthUser,
@@ -70,7 +88,7 @@ export class InvoicesController {
 
   @Delete('attachments/:attachmentId')
   @UseGuards(RolesGuard)
-  @Roles('individual', 'vendor')
+  @Roles('individual', 'vendor', 'company')
   @ApiOperation({ summary: 'Delete an invoice attachment' })
   deleteAttachment(@CurrentUser() user: AuthUser, @Param('attachmentId') attachmentId: string) {
     return this.invoicesService.deleteAttachment(attachmentId, user.id, user.role);

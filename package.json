@@ -10,6 +10,7 @@
     "start:prod": "node dist/main",
     "prisma:generate": "prisma generate",
     "prisma:migrate": "prisma migrate dev",
+    "prisma:fix-offline-drift": "prisma db execute --file prisma/manual-fix-offline-migration-drift.sql --schema prisma/schema.prisma",
     "prisma:migrate:deploy": "prisma migrate deploy",
     "prisma:seed": "prisma db seed",
     "prisma:wipe": "ts-node prisma/seeds/wipe-database.ts",
