@@ -423,6 +423,10 @@ model Invoice {
   taxRatePct        Int           @default(0) @map("tax_rate_pct")
   gstAmount         Int           @default(0) @map("gst_amount")
   totalAmount       Int           @map("total_amount")
+  /// Counterparty billing label when production house records an offline received invoice (issuer/recipient both company).
+  offlineBillingName String?      @map("offline_billing_name") @db.VarChar(512)
+  offlineDepartment String?       @map("offline_department") @db.VarChar(128)
+  recordedOfflineByCompany Boolean @default(false) @map("recorded_offline_by_company")
   currency          String        @default("INR")
   status            InvoiceStatus @default(draft)
   dueDate           DateTime?     @map("due_date")
