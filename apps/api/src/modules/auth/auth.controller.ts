@@ -1,5 +1,6 @@
 import { Controller, Post, Body, UseGuards, HttpCode, HttpStatus } from '@nestjs/common';
 import { ApiTags, ApiOperation } from '@nestjs/swagger';
+import { Throttle } from '@nestjs/throttler';
 import { AuthService, TokenPair } from './auth.service';
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
@@ -18,6 +19,9 @@ import {
 
 @ApiTags('auth')
 @Controller('auth')
+// Tighten the global default (200/min/IP) down to 10/min/IP for every auth
+// endpoint. Only takes effect when THROTTLER_ENABLED=true.
+@Throttle({ default: { limit: 10, ttl: 60_000 } })
 export class AuthController {
   constructor(private readonly authService: AuthService) {}
 

@@ -1,20 +1,67 @@
-import { Injectable, ForbiddenException, NotFoundException, BadRequestException } from '@nestjs/common';
+import {
+  Injectable,
+  ForbiddenException,
+  NotFoundException,
+  BadRequestException,
+  Logger,
+  type OnApplicationBootstrap,
+} from '@nestjs/common';
+import { InjectQueue } from '@nestjs/bullmq';
+import { Queue } from 'bullmq';
 import { UserRole } from '@prisma/client';
 import { PrismaService } from '../../database/prisma.service';
 
 const ONGOING_BOOKING_STATUSES = ['pending', 'accepted', 'locked', 'cancel_requested'] as const;
 import { NotificationsService } from '../notifications/notifications.service';
 import { ChatService } from '../chat/chat.service';
+import {
+  QUEUE_BOOKINGS_EXPIRE,
+  QUEUE_NOTIFICATIONS,
+  JOB_BOOKING_CREATED,
+  JOB_EXPIRE_TICK,
+} from '../../common/queue/queue.constants';
+import { isQueueEnabled } from '../../common/queue/queue.helpers';
 import { CreateBookingRequestDto } from './dto/booking-request.dto';
 import { LockBookingDto } from './dto/lock-booking.dto';
 
+const EXPIRE_TICK_EVERY_MS = 5 * 60 * 1000; // 5 minutes
+
 @Injectable()
-export class BookingsService {
+export class BookingsService implements OnApplicationBootstrap {
+  private readonly logger = new Logger('BookingsService');
+
   constructor(
     private readonly prisma: PrismaService,
     private readonly notifications: NotificationsService,
     private readonly chat: ChatService,
+    @InjectQueue(QUEUE_BOOKINGS_EXPIRE) private readonly expireQueue: Queue,
+    @InjectQueue(QUEUE_NOTIFICATIONS) private readonly notificationsQueue: Queue,
   ) {}
+
+  /**
+   * Schedule the repeatable expiry tick on startup. Same `jobId` every time so
+   * re-registering on a restart is idempotent (BullMQ replaces the existing
+   * schedule rather than spawning a duplicate). Skipped entirely when the
+   * queue feature flag is off — no schedule entry is written to Redis.
+   */
+  async onApplicationBootstrap() {
+    if (!isQueueEnabled()) return;
+    try {
+      await this.expireQueue.add(
+        JOB_EXPIRE_TICK,
+        {},
+        {
+          repeat: { every: EXPIRE_TICK_EVERY_MS },
+          jobId: 'bookings-expire-tick',
+          removeOnComplete: 100,
+          removeOnFail: 50,
+        },
+      );
+      this.logger.log(`scheduled ${QUEUE_BOOKINGS_EXPIRE} every ${EXPIRE_TICK_EVERY_MS / 1000}s`);
+    } catch (err) {
+      this.logger.error(`failed to schedule expire tick: ${(err as Error).message}`);
+    }
+  }
 
   private async sendBookingStatusChatMessage(
     senderUserId: string,
@@ -237,35 +284,68 @@ export class BookingsService {
       },
       include: { project: true, target: { select: { id: true, email: true, role: true } } },
     });
+    // Notification + chat-summary side effects.
+    // - When QUEUE_ENABLED=true, enqueue a single `booking-created` job and
+    //   return the booking immediately so the caller doesn't wait on Notification
+    //   creation + ChatService writes (which together can cost ~150 ms).
+    // - Otherwise fall back to the original inline path so behavior is
+    //   identical to pre-Phase-4.
+    if (isQueueEnabled()) {
+      try {
+        await this.notificationsQueue.add(
+          JOB_BOOKING_CREATED,
+          { bookingId: booking.id },
+          {
+            jobId: `booking-created:${booking.id}`,
+            attempts: 5,
+            backoff: { type: 'exponential', delay: 2_000 },
+            removeOnComplete: 100,
+            removeOnFail: 50,
+          },
+        );
+      } catch (err) {
+        // If enqueue fails, fall back inline so the user-visible flow stays correct.
+        this.logger.warn(`enqueue booking-created failed (${(err as Error).message}); running inline`);
+        await this.runBookingCreatedSideEffectsInline(booking, companyCtx.accountOwnerId, targetAccountUserId);
+      }
+    } else {
+      await this.runBookingCreatedSideEffectsInline(booking, companyCtx.accountOwnerId, targetAccountUserId);
+    }
+
+    return booking;
+  }
+
+  /** Legacy inline path — kept verbatim from the pre-Phase-4 implementation. */
+  private async runBookingCreatedSideEffectsInline(
+    booking: { id: string; projectId: string; rateOffered: number | null; message: string | null; shootDates: Date[]; project: { title: string } },
+    requesterUserId: string,
+    targetUserId: string,
+  ) {
     await this.notifications.createForUser(
-      targetAccountUserId,
+      targetUserId,
       'booking_request',
       'New booking request',
       `You have a new booking request for project: ${booking.project.title}`,
       { bookingId: booking.id, projectId: booking.projectId, projectTitle: booking.project.title },
     );
-
-    // Auto-create conversation and send booking request as a chat message
     try {
       const rateStr = booking.rateOffered
         ? ` · Offered rate: ₹${(booking.rateOffered / 100).toLocaleString('en-IN')}/day`
         : '';
-      const datesStr = `\n\n📅 You are being booked specifically for: ${shootDates
+      const datesStr = `\n\n📅 You are being booked specifically for: ${booking.shootDates
         .map((d) => d.toLocaleDateString('en-IN', { weekday: 'short', day: 'numeric', month: 'short', year: 'numeric' }))
-        .join(', ')}\n(Only these date${shootDates.length > 1 ? 's' : ''} will be marked unavailable on your calendar.)`;
-      const customMsg = dto.message?.trim() ? `\n\nMessage: "${dto.message.trim()}"` : '';
+        .join(', ')}\n(Only these date${booking.shootDates.length > 1 ? 's' : ''} will be marked unavailable on your calendar.)`;
+      const customMsg = booking.message?.trim() ? `\n\nMessage: "${booking.message.trim()}"` : '';
       const chatContent = `Booking Request — ${booking.project.title}${rateStr}${datesStr}${customMsg}\n\nPlease accept or decline from your Bookings page.`;
       await this.chat.sendBookingRequestMessage(
-        companyCtx.accountOwnerId,
-        targetAccountUserId,
+        requesterUserId,
+        targetUserId,
         booking.projectId,
         chatContent,
       );
     } catch {
       // Non-fatal: booking is created; chat message is best-effort
     }
-
-    return booking;
   }
 
   async listIncoming(userId: string, role: UserRole) {

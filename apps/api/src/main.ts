@@ -32,7 +32,19 @@ const quietLogger: LoggerService = {
   verbose() {},
 };
 
+function assertRequiredEnv() {
+  const required = ['JWT_SECRET', 'JWT_REFRESH_SECRET'];
+  const missing = required.filter((k) => !process.env[k]);
+  if (missing.length > 0) {
+    throw new Error(
+      `Missing required environment variables: ${missing.join(', ')}. ` +
+        `Set them in .env (see .env.example) before starting the API.`,
+    );
+  }
+}
+
 async function bootstrap() {
+  assertRequiredEnv();
   const app = await NestFactory.create(AppModule, { logger: quietLogger });
   app.useWebSocketAdapter(new IoAdapter(app));
   const config = app.get(ConfigService);

@@ -19,6 +19,12 @@ export class NotificationsController {
     return this.notificationsService.list(user.id, parseInt(page ?? '1', 10), parseInt(limit ?? '20', 10));
   }
 
+  @Get('unread-count')
+  @ApiOperation({ summary: 'Cheap unread-count for the nav badge (cached 30 s)' })
+  unreadCount(@CurrentUser() user: AuthUser) {
+    return this.notificationsService.getUnreadCount(user.id);
+  }
+
   @Patch(':id/read')
   @ApiOperation({ summary: 'Mark notification as read' })
   markRead(@CurrentUser() user: AuthUser, @Param('id') id: string) {

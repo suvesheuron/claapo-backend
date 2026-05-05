@@ -30,6 +30,34 @@ services:
       retries: 10
       start_period: 10s
 
+  redis:
+    image: redis:7-alpine
+    container_name: claapo-redis
+    restart: unless-stopped
+    # noeviction is BullMQ's hard requirement — losing a job key to LRU would
+    # silently lose work. AppCacheService.wrap() degrades to the loader on
+    # SETEX failure, so cache writes failing under OOM is benign. Bumped
+    # maxmemory to 512 MB to give cache + queues comfortable headroom.
+    command:
+      [
+        "redis-server",
+        "--appendonly", "yes",
+        "--maxmemory", "512mb",
+        "--maxmemory-policy", "noeviction"
+      ]
+    ports:
+      - "${REDIS_PORT:-6379}:6379"
+    volumes:
+      - claapo_redisdata:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 5s
+
 volumes:
   claapo_pgdata:
     name: claapo_pgdata
+  claapo_redisdata:
+    name: claapo_redisdata

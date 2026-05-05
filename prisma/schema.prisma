@@ -172,6 +172,9 @@ model CompanyProfile {
   bio            String?
   aboutUs        String?  @map("about_us")
   logoKey        String?  @map("logo_key")
+  // Banner image for the company profile page. Same upload pipeline as
+  // individual/vendor cover photos; lives at users/<userId>/cover/<ts>.<ext> in S3.
+  coverKey       String?  @map("cover_key")
   isGstVerified  Boolean  @default(false) @map("is_gst_verified")
   createdAt      DateTime @default(now()) @map("created_at")
   updatedAt      DateTime @updatedAt @map("updated_at")
@@ -394,6 +397,9 @@ model BookingRequest {
   @@index([targetUserId, status])
   @@index([requesterUserId, status])
   @@index([vendorEquipmentId])
+  // Index for the bookings.expire BullMQ cron — pending rows past their
+  // 48 h window are surfaced via (status='pending', expires_at < NOW()).
+  @@index([status, expiresAt])
   @@map("booking_requests")
 }
 
