@@ -2,7 +2,7 @@
 
 Production backend for **CrewCall / Claapo** (crewcall.in / crewcall.app) — a hiring and crew-management platform connecting production companies with verified freelance crew and equipment vendors.
 
-**Stack:** Node.js (NestJS 10) · TypeScript · PostgreSQL 16 · Prisma 5 · Redis · Socket.IO · Swagger
+**Stack:** Node.js (NestJS 10) · TypeScript · PostgreSQL 16 · Prisma 5 · Redis 7 (cache + BullMQ queues + throttler storage) · Socket.IO 4 · Swagger
 
 ---
 
@@ -14,7 +14,7 @@ Production backend for **CrewCall / Claapo** (crewcall.in / crewcall.app) — a 
 | npm | >= 10 |
 | Docker + Docker Compose | latest stable |
 
-> The local PostgreSQL database runs in Docker — you do not need Postgres installed on the host.
+> Both **PostgreSQL** and **Redis** run in Docker via the bundled `docker-compose.yml` — you do not need either installed on the host.
 
 ---
 
@@ -29,7 +29,7 @@ npm install
 cp .env.example .env
 # Edit .env if you want to change credentials, ports, JWT secrets, etc.
 
-# 3. Start the database (Docker container: claapo-db)
+# 3. Start local services in Docker (Postgres → claapo-db, Redis → claapo-redis)
 docker compose up -d
 
 # 4. Apply migrations and generate the Prisma client
@@ -105,9 +105,11 @@ curl -X POST http://localhost:3000/v1/auth/login \
 
 ---
 
-## Database (Docker)
+## Local services (Docker)
 
-The local Postgres instance is defined in **`docker-compose.yml`** at the backend root.
+`docker-compose.yml` at the backend root brings up two containers:
+
+### Postgres — `claapo-db`
 
 | Setting | Default |
 |---|---|
@@ -117,18 +119,7 @@ The local Postgres instance is defined in **`docker-compose.yml`** at the backen
 | User / Password / DB | `claapo` / `claapo_password` / `claapo` |
 | Persistent volume | `claapo_pgdata` |
 
-Override any of these via env vars (`POSTGRES_USER`, `POSTGRES_PASSWORD`, `POSTGRES_DB`, `POSTGRES_PORT`) before running compose.
-
-### Common commands
-
-```bash
-docker compose up -d           # start the database in background
-docker compose ps              # check status / health
-docker compose logs -f db      # tail database logs
-docker compose stop            # stop the container (keeps data)
-docker compose down            # stop and remove the container (keeps volume)
-docker compose down -v         # stop AND wipe the data volume (destructive)
-```
+Override via env vars (`POSTGRES_USER`, `POSTGRES_PASSWORD`, `POSTGRES_DB`, `POSTGRES_PORT`) before running compose.
 
 The matching `DATABASE_URL` for the defaults is:
 
@@ -136,7 +127,78 @@ The matching `DATABASE_URL` for the defaults is:
 postgresql://claapo:claapo_password@localhost:5432/claapo?schema=public
 ```
 
-This is already set in `.env` after step 2 of the quick start.
+### Redis — `claapo-redis`
+
+Backs three subsystems: the throttler store, the cache layer (`AppCacheService`), and BullMQ queues.
+
+| Setting | Default |
+|---|---|
+| Image | `redis:7-alpine` |
+| Container name | **`claapo-redis`** |
+| Host port | `6379` |
+| Persistence | AOF (`--appendonly yes`) |
+| Memory cap | `512 MB` |
+| Eviction policy | **`noeviction`** *(BullMQ requirement — losing a job key to LRU would silently drop work)* |
+| Persistent volume | `claapo_redisdata` |
+
+Override the host port via `REDIS_PORT`. The app reads `REDIS_HOST`, `REDIS_PORT`, `REDIS_PASSWORD`, `REDIS_DB` (and falls back to `REDIS_URL` if set).
+
+### Common commands
+
+```bash
+docker compose up -d                # start both containers in background
+docker compose ps                   # status / health
+docker compose logs -f db           # tail Postgres
+docker compose logs -f redis        # tail Redis
+docker compose exec redis redis-cli ping   # → PONG
+docker compose stop                 # stop both (data preserved)
+docker compose down                 # stop + remove containers (volumes kept)
+docker compose down -v              # stop AND wipe data volumes (destructive)
+```
+
+The compose defaults for both containers are already wired into `.env` after step 2 of the quick start.
+
+---
+
+## Caching, queueing & rate limiting
+
+Three Redis-backed subsystems are wired into the API. Each is gated by a **feature flag** so a fresh checkout boots in legacy behavior — flip them on after Redis is up.
+
+| Flag | Subsystem | What it does | Failure mode |
+|---|---|---|---|
+| `THROTTLER_ENABLED` | `@nestjs/throttler` + `nestjs-throttler-storage-redis` | Global default **200 req/min/IP**; `/auth/*` capped at **10 req/min/IP**; webhooks skipped. Counter state in Redis so it works across pods. | Off → guard short-circuits and allows every request. |
+| `CACHE_ENABLED` | `AppCacheService.wrap()` (direct ioredis, cache-aside) | Caches **user identity** (1h), **S3 signed URLs** (25m), **unread-notification count** (30s). Keys live in `apps/api/src/common/cache/cache-keys.ts`. | Off → loader runs every call. On → SETEX failure also degrades to loader. |
+| `QUEUE_ENABLED` | BullMQ producers + workers | `bookings-expire` cron flips `pending → expired` every 5 min. `notifications` queue handles `booking-created` fan-out (notification + chat summary). | Off → producers no-op, cron is not scheduled, code paths fall back to inline. |
+
+### Toggle from `.env`
+
+```env
+THROTTLER_ENABLED=true
+CACHE_ENABLED=true
+QUEUE_ENABLED=true
+```
+
+Restart the API after flipping any flag — they are read at boot.
+
+### Verifying it's working
+
+```bash
+# Throttler — 11th /auth/login in a minute should return 429
+for i in $(seq 1 11); do
+  curl -s -o /dev/null -w "%{http_code}\n" -X POST http://localhost:3000/v1/auth/login \
+    -H 'Content-Type: application/json' -d '{"email":"x","password":"x"}';
+done
+
+# Cache — first call hits DB, second call hits Redis
+docker compose exec redis redis-cli KEYS 'app:cache:*'
+
+# Queue — inspect BullMQ keys
+docker compose exec redis redis-cli KEYS 'bull:*'
+```
+
+The full design + rollout history lives in [`CACHING_QUEUEING_PLAN.md`](./CACHING_QUEUEING_PLAN.md).
+
+> **Production note:** all three flags should be **on** in production, and Redis must be a managed instance reachable from every API pod. Throttling per-IP is meaningless on a single pod that's behind a load balancer with no shared store, and BullMQ explicitly requires `noeviction` on the Redis cluster.
 
 ---
 
@@ -148,13 +210,14 @@ See `.env.example` for the full list. The most relevant groups:
 |---|---|
 | **App** | `NODE_ENV`, `PORT`, `API_BASE_URL`, `CORS_ORIGINS` |
 | **Database** | `DATABASE_URL`, `POSTGRES_USER`, `POSTGRES_PASSWORD`, `POSTGRES_DB`, `POSTGRES_PORT` |
-| **Redis** | `REDIS_URL` |
+| **Redis** | `REDIS_HOST`, `REDIS_PORT`, `REDIS_PASSWORD`, `REDIS_DB` *(component vars preferred)* · `REDIS_URL` *(fallback)* |
+| **Feature flags** | `THROTTLER_ENABLED`, `CACHE_ENABLED`, `QUEUE_ENABLED` *(see [Caching, queueing & rate limiting](#caching-queueing--rate-limiting))* |
 | **JWT** | `JWT_SECRET`, `JWT_EXPIRES_IN`, `JWT_REFRESH_SECRET`, `JWT_REFRESH_EXPIRES_IN` |
-| **AWS S3** *(optional)* | `AWS_REGION`, `AWS_S3_BUCKET`, `AWS_CLOUDFRONT_DOMAIN` |
+| **AWS S3** *(required for avatar / cover / showreel uploads)* | `AWS_REGION`, `AWS_S3_BUCKET`, `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_CLOUDFRONT_DOMAIN` *(optional)* |
 | **Razorpay** *(optional)* | `RAZORPAY_KEY_ID`, `RAZORPAY_KEY_SECRET`, `RAZORPAY_WEBHOOK_SECRET` |
 | **Rate limits** | `THROTTLE_TTL`, `THROTTLE_LIMIT`, `AI_CHAT_HOURLY_LIMIT` |
 
-`CORS_ORIGINS` is comma-separated. Use `*` to reflect any browser Origin (handy in dev / when testing from ngrok).
+`CORS_ORIGINS` is comma-separated. Use `*` to reflect any browser Origin (handy in dev / when testing from ngrok). **Do not combine `*` with credentials in production** — set it to your real frontend origin(s).
 
 ---
 
@@ -168,6 +231,10 @@ crewcall-backend/
 │   │       ├── main.ts               # Bootstrap, Swagger, CORS, global prefix /v1
 │   │       ├── app.module.ts
 │   │       ├── common/               # Guards, filters, pipes, decorators
+│   │       │   ├── cache/            # AppCacheService.wrap() + cache-keys registry
+│   │       │   ├── queue/            # BullMQ queue tokens + job names
+│   │       │   ├── redis/            # Global ioredis client (REDIS_CLIENT)
+│   │       │   └── throttler/       # ConditionalThrottlerGuard (flag-gated)
 │   │       ├── config/
 │   │       ├── database/             # Prisma module + service
 │   │       ├── gateways/             # Socket.IO chat gateway
@@ -176,11 +243,11 @@ crewcall-backend/
 │   │           ├── ai/               # AI features
 │   │           ├── auth/             # Register, OTP, login, refresh, reset
 │   │           ├── availability/     # Calendar slots
-│   │           ├── bookings/         # Crew/vendor booking requests
+│   │           ├── bookings/         # Crew/vendor booking requests + bookings-expire BullMQ processor
 │   │           ├── chat/             # Conversations + messages
 │   │           ├── equipment/        # Vendor equipment catalogue
 │   │           ├── invoices/         # Invoices, line items, Razorpay
-│   │           ├── notifications/    # In-app + FCM
+│   │           ├── notifications/    # In-app + FCM + BullMQ processor (booking-created fan-out)
 │   │           ├── profiles/         # Individual / Company / Vendor
 │   │           ├── projects/         # Projects + project roles
 │   │           ├── reviews/
@@ -197,8 +264,11 @@ crewcall-backend/
 │   ├── migrations/
 │   └── seeds/                        # seed.ts, seed-light.ts, wipe-database.ts
 ├── scripts/
-├── docker-compose.yml                # Local Postgres (container: claapo-db)
+├── docker-compose.yml                # Local Postgres (claapo-db) + Redis (claapo-redis)
 ├── docker/                           # Legacy compose file (kept for reference)
+├── CACHING_QUEUEING_PLAN.md          # Phase-by-phase design for cache/queue/throttler rollout
+├── NOTIFICATIONS_REALTIME_PLAN.md    # Forward-looking plan for FCM push + WebSocket notifications
+├── PRODUCTION_READINESS.md           # Pre-launch hardening checklist
 ├── .env.example
 ├── package.json
 └── tsconfig.json
@@ -213,7 +283,7 @@ All routes are prefixed with **`/v1`**. JWT bearer auth is required except where
 | Area | Sample routes |
 |---|---|
 | **Auth** | `POST /auth/register/individual` · `/company` · `/vendor` · `/auth/otp/send` · `/auth/otp/verify` · `/auth/login` · `/auth/refresh` · `/auth/logout` · `/auth/password/reset` |
-| **Profile** | `GET /profile/me` · `PATCH /profile/individual\|company\|vendor` · `GET /profile/:userId` · `POST /profile/avatar` (presigned) · `POST /profile/showreel` |
+| **Profile** | `GET /profile/me` · `PATCH /profile/individual\|company\|vendor` · `GET /profile/:userId` · `POST /profile/avatar` · `POST /profile/cover` *(presigned, all roles)* · `POST /profile/showreel` |
 | **Availability** | `GET /availability/me` · `PUT /availability/bulk` · `GET /availability/:userId` |
 | **Projects** | `POST /projects` · `GET /projects` · `GET /projects/:id` · `PATCH /projects/:id` · `DELETE /projects/:id` · `POST /projects/:id/roles` |
 | **Bookings** | `POST /bookings/request` · `GET /bookings/incoming\|outgoing` · `PATCH /bookings/:id/accept\|decline\|lock\|cancel` |
@@ -304,5 +374,8 @@ Other apps connect to this backend by URL — there is no folder coupling.
 - Build: `npm run build` → `node dist/main.js`
 - Run migrations on deploy with `npm run prisma:migrate:deploy` (never `prisma:migrate` in prod).
 - The Razorpay webhook needs the **raw request body** to verify HMAC — keep that route's body parser configured accordingly.
-- Set strong values for `JWT_SECRET` and `JWT_REFRESH_SECRET`.
-- For AWS S3 uploads to work, set `AWS_REGION`, `AWS_S3_BUCKET`, and either AWS env credentials or an instance role.
+- Set strong values for `JWT_SECRET` and `JWT_REFRESH_SECRET` (rotate the defaults from `.env.example` — they are placeholder strings).
+- For AWS S3 uploads to work, set `AWS_REGION`, `AWS_S3_BUCKET`, and either env credentials (`AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY`) or an instance role. The bucket's CORS allowlist must include your production frontend origin — local-only origins in CORS will cause browser PUTs to fail in prod.
+- Enable `THROTTLER_ENABLED`, `CACHE_ENABLED`, `QUEUE_ENABLED` in production. Point them at a **managed Redis** (Upstash / ElastiCache / Railway / etc.) reachable from every pod, with `maxmemory-policy noeviction` (BullMQ requirement).
+- Set `CORS_ORIGINS` to explicit frontend origins — do **not** include `*` in production (combined with `credentials: true` it lets any site read authenticated responses).
+- See [`PRODUCTION_READINESS.md`](./PRODUCTION_READINESS.md) for the full pre-launch checklist.
