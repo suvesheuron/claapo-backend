@@ -90,7 +90,7 @@ export class ProfilesController {
   @Post('avatar')
   @ApiOperation({ summary: 'Get presigned URL to upload avatar (or logo for company/vendor)' })
   getAvatarUploadUrl(@CurrentUser() user: AuthUser, @Body() dto: PresignedUploadDto) {
-    return this.profilesService.getPresignedAvatarUrl(user.id);
+    return this.profilesService.getPresignedAvatarUrl(user.id, dto.contentType);
   }
 
   @Post('avatar/confirm')
@@ -101,15 +101,15 @@ export class ProfilesController {
 
   @Post('cover')
   @UseGuards(RolesGuard)
-  @Roles('individual', 'vendor')
-  @ApiOperation({ summary: 'Get presigned URL to upload cover photo (individual/vendor)' })
+  @Roles('individual', 'vendor', 'company')
+  @ApiOperation({ summary: 'Get presigned URL to upload cover photo (individual/vendor/company)' })
   getCoverUploadUrl(@CurrentUser() user: AuthUser, @Body() dto: PresignedUploadDto) {
     return this.profilesService.getPresignedCoverUrl(user.id, user.role, dto.contentType);
   }
 
   @Post('cover/confirm')
   @UseGuards(RolesGuard)
-  @Roles('individual', 'vendor')
+  @Roles('individual', 'vendor', 'company')
   @ApiOperation({ summary: 'Confirm cover photo upload and set key on profile' })
   confirmCover(@CurrentUser() user: AuthUser, @Body() body: ConfirmUploadDto) {
     return this.profilesService.setCoverKey(user.id, user.role, body.key);

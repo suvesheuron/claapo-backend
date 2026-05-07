@@ -2,14 +2,19 @@ import { Injectable, ForbiddenException, NotFoundException, BadRequestException 
 import { MessageType, UserRole } from '@prisma/client';
 import { PrismaService } from '../../database/prisma.service';
 import { StorageService } from '../storage/storage.service';
+import { AppCacheService } from '../../common/cache/app-cache.service';
+import { cacheKeys } from '../../common/cache/cache-keys';
 import { CreateConversationDto } from './dto/create-conversation.dto';
 import { CreateMessageDto } from './dto/create-message.dto';
+
+type UserIdentity = { mainUserId: string | null; role: UserRole } | null;
 
 @Injectable()
 export class ChatService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly storage: StorageService,
+    private readonly cache: AppCacheService,
   ) {}
 
   /** Ensure participant ordering for unique constraint: participantA < participantB */
@@ -17,11 +22,30 @@ export class ChatService {
     return userId < otherUserId ? [userId, otherUserId] : [otherUserId, userId];
   }
 
+  /**
+   * Cached lookup of `{ mainUserId, role }` for a user. These two fields are
+   * effectively immutable for the lifetime of an account, so a 1-hour TTL is
+   * safe and avoids the 8 redundant findUnique calls this service used to make
+   * per chat request. Invalidate via cache.del(cacheKeys.userIdentity(id)) if
+   * either field is ever mutated (admin role flip, sub-user reparenting).
+   */
+  private async getUserIdentity(userId: string): Promise<UserIdentity> {
+    return this.cache.wrap(
+      cacheKeys.userIdentity(userId),
+      3600,
+      () =>
+        this.prisma.user.findUnique({
+          where: { id: userId },
+          select: { mainUserId: true, role: true },
+        }),
+    );
+  }
+
   /** Create or get existing conversation (1-to-1, project-scoped) */
   async createOrGetConversation(userId: string, role: UserRole, dto: CreateConversationDto) {
     // For sub-users, use the main user's ID as the conversation participant so they share
     // conversations with the main account.
-    const user = await this.prisma.user.findUnique({ where: { id: userId }, select: { mainUserId: true, role: true } });
+    const user = await this.getUserIdentity(userId);
     const participantUserId = user?.mainUserId ?? userId;
 
     const [participantA, participantB] = this.orderParticipants(participantUserId, dto.otherUserId);
@@ -159,10 +183,7 @@ export class ChatService {
   /** Build a WHERE clause for conversations that a user (or their sub-users) can access */
   private async conversationWhereForUser(userId: string) {
     // Check if user is a sub-user
-    const user = await this.prisma.user.findUnique({
-      where: { id: userId },
-      select: { mainUserId: true, role: true },
-    });
+    const user = await this.getUserIdentity(userId);
     if (user?.mainUserId) {
       if (user.role === UserRole.vendor) {
         return {
@@ -220,7 +241,7 @@ export class ChatService {
       : baseWhere;
 
     // Fetch mainUserId for sub-user context
-    const userData = await this.prisma.user.findUnique({ where: { id: userId }, select: { mainUserId: true } });
+    const userData = await this.getUserIdentity(userId);
     const mainUserId = userData?.mainUserId ?? null;
 
     const [items, total] = await Promise.all([
@@ -269,10 +290,7 @@ export class ChatService {
 
   /** Check if a user can access a conversation (direct participant or sub-user on assigned project) */
   private async canAccessConversation(userId: string, conv: { projectId: string; participantA: string; participantB: string }): Promise<boolean> {
-    const user = await this.prisma.user.findUnique({
-      where: { id: userId },
-      select: { mainUserId: true, role: true },
-    });
+    const user = await this.getUserIdentity(userId);
 
     // Vendor sub-user: main account conversation visibility (no assignment gating).
     if (user?.mainUserId && user.role === UserRole.vendor) {
@@ -356,7 +374,7 @@ export class ChatService {
     }
 
     // Fetch mainUserId for account-aware formatting
-    const userData = await this.prisma.user.findUnique({ where: { id: userId }, select: { mainUserId: true } });
+    const userData = await this.getUserIdentity(userId);
     const mainUserId = userData?.mainUserId ?? null;
 
     const messages = await this.prisma.message.findMany({
@@ -407,7 +425,7 @@ export class ChatService {
       throw new BadRequestException('mediaKey required for image/file messages');
     }
 
-    const userData = await this.prisma.user.findUnique({ where: { id: userId }, select: { mainUserId: true } });
+    const userData = await this.getUserIdentity(userId);
     const mainUserId = userData?.mainUserId ?? null;
 
     const [message] = await this.prisma.$transaction([
@@ -511,7 +529,7 @@ export class ChatService {
     }
 
     // Fetch mainUserId for account-aware formatting
-    const userData = await this.prisma.user.findUnique({ where: { id: userId }, select: { mainUserId: true } });
+    const userData = await this.getUserIdentity(userId);
     const mainUserId = userData?.mainUserId ?? null;
 
     const messages = await this.prisma.message.findMany({
@@ -558,10 +576,7 @@ export class ChatService {
 
   /** Resolve the latest conversation with a user in current account scope, enforcing access rules. */
   private async findMostRecentAccessibleConversationWithUser(userId: string, otherUserId: string) {
-    const user = await this.prisma.user.findUnique({
-      where: { id: userId },
-      select: { mainUserId: true },
-    });
+    const user = await this.getUserIdentity(userId);
     const accountIds = user?.mainUserId ? [userId, user.mainUserId] : [userId];
 
     const candidates = await this.prisma.conversation.findMany({

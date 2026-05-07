@@ -1,10 +1,14 @@
 import { Controller, Post, Req, Headers, BadRequestException } from '@nestjs/common';
 import { ApiTags, ApiOperation, ApiExcludeEndpoint } from '@nestjs/swagger';
+import { SkipThrottle } from '@nestjs/throttler';
 import { Request } from 'express';
 import { InvoicesService } from '../invoices/invoices.service';
 
 @ApiTags('webhooks')
 @Controller('webhooks')
+// Razorpay (and any future payment provider) needs unmetered access; their retry
+// behavior on throttled responses can spam us and create idempotency churn.
+@SkipThrottle()
 export class WebhooksController {
   constructor(private readonly invoicesService: InvoicesService) {}
 

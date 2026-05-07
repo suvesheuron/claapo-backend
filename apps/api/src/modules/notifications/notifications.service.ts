@@ -1,11 +1,20 @@
 import { Injectable, ForbiddenException, NotFoundException } from '@nestjs/common';
 import { Prisma, UserRole } from '@prisma/client';
 import { PrismaService } from '../../database/prisma.service';
+import { AppCacheService } from '../../common/cache/app-cache.service';
+import { cacheKeys } from '../../common/cache/cache-keys';
 import { NotificationPreferencesDto } from './dto/preferences.dto';
+
+// Short — the badge poll runs every 20 s on the frontend, so 30 s is enough
+// to absorb spikes without making the badge feel stale.
+const UNREAD_COUNT_TTL = 30;
 
 @Injectable()
 export class NotificationsService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly cache: AppCacheService,
+  ) {}
 
   private async getNotificationAccountContext(userId: string) {
     const user = await this.prisma.user.findUnique({
@@ -130,6 +139,30 @@ export class NotificationsService {
     };
   }
 
+  /**
+   * Cheap unread count for the nav badge. Account-aware (sub-users in shared
+   * accounts see the parent's unread count). Cached briefly so repeated polls
+   * don't hammer Postgres.
+   */
+  async getUnreadCount(userId: string): Promise<{ count: number }> {
+    const ctx = await this.getNotificationAccountContext(userId);
+    const ownerNotificationUserId = ctx.sharesAccountNotifications ? ctx.accountUserId : userId;
+    const count = await this.cache.wrap(
+      cacheKeys.unreadNotificationCount(ownerNotificationUserId),
+      UNREAD_COUNT_TTL,
+      () =>
+        this.prisma.notification.count({
+          where: { userId: ownerNotificationUserId, readAt: null },
+        }),
+    );
+    return { count };
+  }
+
+  /** Drop the cached unread-count for a notification owner. */
+  private invalidateUnreadCount(ownerUserId: string) {
+    return this.cache.del(cacheKeys.unreadNotificationCount(ownerUserId));
+  }
+
   async markRead(notificationId: string, userId: string) {
     const ctx = await this.getNotificationAccountContext(userId);
     const n = await this.prisma.notification.findUnique({ where: { id: notificationId } });
@@ -137,10 +170,12 @@ export class NotificationsService {
     const canReadOwn = n.userId === userId;
     const canReadAccount = ctx.sharesAccountNotifications && n.userId === ctx.accountUserId;
     if (!canReadOwn && !canReadAccount) throw new ForbiddenException('Not your notification');
-    return this.prisma.notification.update({
+    const updated = await this.prisma.notification.update({
       where: { id: notificationId },
       data: { readAt: new Date() },
     });
+    await this.invalidateUnreadCount(n.userId);
+    return updated;
   }
 
   async markAllRead(userId: string) {
@@ -150,6 +185,7 @@ export class NotificationsService {
       where: { userId: ownerNotificationUserId, readAt: null },
       data: { readAt: new Date() },
     });
+    await this.invalidateUnreadCount(ownerNotificationUserId);
     return { message: 'All notifications marked as read' };
   }
 
@@ -189,7 +225,7 @@ export class NotificationsService {
 
   /** Call from other services to create a notification (e.g. on booking request, invoice sent). */
   async createForUser(userId: string, type: string, title: string, body?: string, data?: Record<string, unknown>) {
-    return this.prisma.notification.create({
+    const created = await this.prisma.notification.create({
       data: {
         userId,
         type,
@@ -198,5 +234,7 @@ export class NotificationsService {
         data: (data ?? undefined) as Prisma.InputJsonValue | undefined,
       },
     });
+    await this.invalidateUnreadCount(userId);
+    return created;
   }
 }

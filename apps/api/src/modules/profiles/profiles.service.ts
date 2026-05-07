@@ -11,7 +11,9 @@ import { CreateSubUserDto } from './dto/create-sub-user.dto';
 @Injectable()
 export class ProfilesService {
   private static readonly SUB_USER_PASSWORD_ROUNDS = 12;
-  private static readonly ALLOWED_COVER_CONTENT_TYPES = ['image/jpeg', 'image/png', 'image/webp'] as const;
+  private static readonly ALLOWED_IMAGE_CONTENT_TYPES = ['image/jpeg', 'image/png', 'image/webp'] as const;
+  // Backwards-compat alias for any legacy reference inside this file.
+  private static readonly ALLOWED_COVER_CONTENT_TYPES = ProfilesService.ALLOWED_IMAGE_CONTENT_TYPES;
 
   constructor(
     private readonly prisma: PrismaService,
@@ -310,9 +312,15 @@ export class ProfilesService {
     };
   }
 
-  private resolveCoverContentType(contentType?: string): { contentType: string; extension: string } {
+  /**
+   * Normalize an incoming MIME type to one we'll actually accept, plus the
+   * file extension we'll write into the S3 key. Falls back to JPEG if the
+   * client sent something we don't allow (so the upload still succeeds rather
+   * than failing closed). Used for both avatar/logo and cover.
+   */
+  private resolveImageContentType(contentType?: string): { contentType: string; extension: string } {
     const normalized = (contentType ?? 'image/jpeg').toLowerCase();
-    if (!ProfilesService.ALLOWED_COVER_CONTENT_TYPES.includes(normalized as typeof ProfilesService.ALLOWED_COVER_CONTENT_TYPES[number])) {
+    if (!ProfilesService.ALLOWED_IMAGE_CONTENT_TYPES.includes(normalized as typeof ProfilesService.ALLOWED_IMAGE_CONTENT_TYPES[number])) {
       return { contentType: 'image/jpeg', extension: 'jpg' };
     }
     if (normalized === 'image/png') return { contentType: normalized, extension: 'png' };
@@ -320,12 +328,20 @@ export class ProfilesService {
     return { contentType: normalized, extension: 'jpg' };
   }
 
-  async getPresignedAvatarUrl(userId: string): Promise<{ uploadUrl: string; key: string }> {
+  async getPresignedAvatarUrl(
+    userId: string,
+    contentType?: string,
+  ): Promise<{ uploadUrl: string; key: string }> {
     if (!this.storage.isConfigured() && !this.storage.isSupabaseConfigured()) {
       throw new Error('Storage is not configured. Set AWS_S3_BUCKET or SUPABASE_* env vars.');
     }
-    const key = `avatars/${userId}/${Date.now()}`;
-    return this.storage.getPresignedPutUrl(key, 'image/jpeg');
+    // Critical: the contentType passed here MUST match what the client sends
+    // on the PUT. AWS S3 includes Content-Type in the canonical request, so a
+    // mismatch returns SignatureDoesNotMatch. Previous version hardcoded
+    // image/jpeg here but the client sent file.type — every PNG upload failed.
+    const resolved = this.resolveImageContentType(contentType);
+    const key = `users/${userId}/avatar/${Date.now()}.${resolved.extension}`;
+    return this.storage.getPresignedPutUrl(key, resolved.contentType);
   }
 
   async setAvatarKey(userId: string, key: string) {
@@ -358,33 +374,41 @@ export class ProfilesService {
     role: UserRole,
     contentType?: string,
   ): Promise<{ uploadUrl: string; key: string }> {
-    if (role !== UserRole.individual && role !== UserRole.vendor) {
-      throw new ForbiddenException('Cover photo is only available for individual/vendor profiles');
+    // All three profile roles now support a cover/banner image. Sub-users
+    // (whose role still equals their parent's role) are also fine here — the
+    // controller's JwtAuthGuard already gates the endpoint on a valid session.
+    if (role !== UserRole.individual && role !== UserRole.vendor && role !== UserRole.company) {
+      throw new ForbiddenException('Cover photo is not available for this role');
     }
     if (!this.storage.isConfigured() && !this.storage.isSupabaseConfigured()) {
       throw new Error('Storage is not configured. Set AWS_S3_BUCKET or SUPABASE_* env vars.');
     }
-    const resolved = this.resolveCoverContentType(contentType);
-    const key = `covers/${userId}/${Date.now()}.${resolved.extension}`;
+    const resolved = this.resolveImageContentType(contentType);
+    const key = `users/${userId}/cover/${Date.now()}.${resolved.extension}`;
     return this.storage.getPresignedPutUrl(key, resolved.contentType);
   }
 
   async setCoverKey(userId: string, role: UserRole, key: string) {
-    if (role !== UserRole.individual && role !== UserRole.vendor) {
-      throw new ForbiddenException('Cover photo is only available for individual/vendor profiles');
-    }
     if (role === UserRole.individual) {
       await this.prisma.individualProfile.upsert({
         where: { userId },
         create: { userId, displayName: 'Unknown', coverKey: key },
         update: { coverKey: key },
       });
-    } else {
+    } else if (role === UserRole.vendor) {
       await this.prisma.vendorProfile.upsert({
         where: { userId },
         create: { userId, companyName: 'Unknown', vendorType: VendorType.equipment, coverKey: key },
         update: { coverKey: key },
       });
+    } else if (role === UserRole.company) {
+      await this.prisma.companyProfile.upsert({
+        where: { userId },
+        create: { userId, companyName: 'Unknown', coverKey: key },
+        update: { coverKey: key },
+      });
+    } else {
+      throw new ForbiddenException('Cover photo is not available for this role');
     }
     return { key };
   }
@@ -394,7 +418,7 @@ export class ProfilesService {
     if (!this.storage.isConfigured() && !this.storage.isSupabaseConfigured()) {
       throw new Error('Storage is not configured. Set AWS_S3_BUCKET or SUPABASE_* env vars.');
     }
-    const key = `showreels/${userId}/${Date.now()}.mp4`;
+    const key = `users/${userId}/showreel/${Date.now()}.mp4`;
     return this.storage.getPresignedPutUrl(key, 'video/mp4');
   }
 

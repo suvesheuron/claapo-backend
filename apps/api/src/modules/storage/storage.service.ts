@@ -8,9 +8,15 @@ import {
 } from '@aws-sdk/client-s3';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 import { createClient, SupabaseClient } from '@supabase/supabase-js';
+import { AppCacheService } from '../../common/cache/app-cache.service';
+import { cacheKeys } from '../../common/cache/cache-keys';
 
 const PRESIGNED_PUT_EXPIRY = 3600; // 1 hour
 const PRESIGNED_GET_EXPIRY = 3600;
+// Cache signed GET URLs for less than half their validity so callers always
+// receive a URL that has plenty of time left before the underlying signature
+// expires. (3600 → cache 1500 = 25 min.)
+const SIGNED_URL_CACHE_TTL = 1500;
 
 @Injectable()
 export class StorageService {
@@ -23,7 +29,10 @@ export class StorageService {
   private readonly supabaseBucket: string;
   private readonly apiBaseUrl: string;
 
-  constructor(private readonly config: ConfigService) {
+  constructor(
+    private readonly config: ConfigService,
+    private readonly cache: AppCacheService,
+  ) {
     this.bucket = this.config.get<string>('aws.s3Bucket') ?? '';
     this.region = this.config.get<string>('aws.region') ?? 'ap-south-1';
     this.cloudFrontDomain = this.config.get<string>('aws.cloudFrontDomain');
@@ -118,15 +127,21 @@ export class StorageService {
   async getSignedUrl(key: string | null): Promise<string | null> {
     if (!key) return null;
     if (key.startsWith('http://') || key.startsWith('https://')) return key;
-    if (this.isSupabaseConfigured() && this.supabase) {
-      const { data, error } = await this.supabase.storage
-        .from(this.supabaseBucket)
-        .createSignedUrl(key, PRESIGNED_GET_EXPIRY);
-      if (error) return null;
-      return data?.signedUrl ?? null;
-    }
-    if (!this.s3) return `${this.apiBaseUrl}/v1/storage/files/${key}`;
-    return this.getPresignedGetUrl(key);
+    // Cache by storage key so repeated profile fetches don't re-hit the storage
+    // provider. When a key is replaced (avatars/covers always upload to a new
+    // path that includes Date.now()), the old entry just TTL-expires — there's
+    // nothing to invalidate explicitly because nothing reads the old key.
+    return this.cache.wrap(cacheKeys.signedUrl(key), SIGNED_URL_CACHE_TTL, async () => {
+      if (this.isSupabaseConfigured() && this.supabase) {
+        const { data, error } = await this.supabase.storage
+          .from(this.supabaseBucket)
+          .createSignedUrl(key, PRESIGNED_GET_EXPIRY);
+        if (error) return null;
+        return data?.signedUrl ?? null;
+      }
+      if (!this.s3) return `${this.apiBaseUrl}/v1/storage/files/${key}`;
+      return this.getPresignedGetUrl(key);
+    });
   }
 
   async deleteObject(key: string): Promise<void> {
