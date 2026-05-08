@@ -53,7 +53,7 @@ export class StorageController {
   }
 
   @Get('files/*')
-  @ApiOperation({ summary: 'Serve a file from local storage or redirect to Supabase signed URL' })
+  @ApiOperation({ summary: 'Serve a file from local storage or redirect to a Supabase / S3 signed URL' })
   async serve(@Req() req: Request, @Res() res: Response) {
     const prefix = '/v1/storage/files/';
     let key = req.path;
@@ -64,10 +64,16 @@ export class StorageController {
       key = idx >= 0 ? key.slice(idx + 7) : key;
     }
 
-    if (this.storage.isSupabaseConfigured()) {
+    // Remote storage (Supabase or S3): mint a signed URL and redirect.
+    // Without the S3 branch, files uploaded straight to S3 via the presigned PUT
+    // path were unreachable through this endpoint and 404'd as "File not found".
+    if (this.storage.isSupabaseConfigured() || this.storage.isConfigured()) {
       const signedUrl = await this.storage.getSignedUrl(key);
-      if (signedUrl) return res.redirect(302, signedUrl);
-      return res.status(404).json({ message: 'File not found' });
+      if (signedUrl && !signedUrl.includes('/v1/storage/files/')) {
+        return res.redirect(302, signedUrl);
+      }
+      // Fall through to local lookup if the signed-url helper has nothing useful
+      // (e.g. dev with stale config) — keeps the local upload path working.
     }
 
     const filePath = path.join(UPLOADS_DIR, key);
