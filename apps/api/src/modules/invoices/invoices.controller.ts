@@ -118,8 +118,8 @@ export class InvoicesController {
 
   @Patch(':id/cancel')
   @UseGuards(RolesGuard)
-  @Roles('individual', 'vendor')
-  @ApiOperation({ summary: 'Cancel draft or sent invoice' })
+  @Roles('individual', 'vendor', 'company')
+  @ApiOperation({ summary: 'Cancel/delete a draft or sent invoice (issuer-side)' })
   cancel(@CurrentUser() user: AuthUser, @Param('id') id: string) {
     return this.invoicesService.cancel(id, user.id, user.role);
   }
