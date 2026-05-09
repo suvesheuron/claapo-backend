@@ -1031,8 +1031,16 @@ export class InvoicesService {
   }
 
   async cancel(invoiceId: string, userId: string, role: UserRole) {
+    // Resolve the issuer-side account owner so sub-users (vendor or company)
+    // can cancel invoices that were created against the parent account, and
+    // companies can delete their own offline-recorded invoices.
     const vendorCtx = role === UserRole.vendor ? await this.getVendorAccountContextOrNull(userId) : null;
-    const issuerAccountUserId = vendorCtx ? vendorCtx.accountOwnerId : userId;
+    const companyCtx = role === UserRole.company ? await this.getCompanyAccountContextOrNull(userId) : null;
+    const issuerAccountUserId = vendorCtx
+      ? vendorCtx.accountOwnerId
+      : companyCtx
+        ? companyCtx.accountOwnerId
+        : userId;
     const invoice = await this.prisma.invoice.findUnique({ where: { id: invoiceId } });
     if (!invoice) throw new NotFoundException('Invoice not found');
     if (invoice.issuerUserId !== issuerAccountUserId) throw new ForbiddenException('Only issuer can cancel');
