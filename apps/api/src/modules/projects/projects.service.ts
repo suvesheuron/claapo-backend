@@ -320,6 +320,7 @@ export class ProjectsService {
               amount: true,
               gstAmount: true,
               totalAmount: true,
+              paidAmount: true,
             },
             _count: {
               _all: true,
@@ -349,15 +350,19 @@ export class ProjectsService {
       const sumAmount = row._sum.amount ?? 0;
       const sumTax = row._sum.gstAmount ?? 0;
       const sumTotal = row._sum.totalAmount ?? 0;
+      const sumPaid = row._sum.paidAmount ?? 0;
 
       if (row.status !== 'cancelled') {
         current.closureAmount += sumAmount;
         current.gstOrIgstAmount += sumTax;
-      }
-      if (row.status === 'paid') {
-        current.paidAmount += sumTotal;
-      } else if (row.status === 'sent' || row.status === 'overdue' || row.status === 'draft') {
-        current.unpaidAmount += sumTotal;
+        // paidAmount accumulates partial + full payments alike (cancelled
+        // invoices are excluded because they never contribute to budget).
+        current.paidAmount += sumPaid;
+        if (row.status === 'sent' || row.status === 'overdue' || row.status === 'draft') {
+          // Partial payments live in `sent`. The remaining balance after
+          // applying paidAmount is what's still owed.
+          current.unpaidAmount += Math.max(0, sumTotal - sumPaid);
+        }
       }
       amountStatsByProject.set(row.projectId, current);
     }

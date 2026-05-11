@@ -10,6 +10,7 @@ import { CreateInvoiceDto } from './dto/create-invoice.dto';
 import { UpdateInvoiceDto } from './dto/update-invoice.dto';
 import { AddInvoiceAttachmentDto } from './dto/add-invoice-attachment.dto';
 import { DeclineInvoiceDto } from './dto/decline-invoice.dto';
+import { RecordPaymentDto } from './dto/record-payment.dto';
 import { RecordOfflineCompanyInvoiceDto } from './dto/record-offline-company-invoice.dto';
 import { SendOfflineVendorInvoiceDto } from './dto/send-offline-vendor-invoice.dto';
 
@@ -144,6 +145,21 @@ export class InvoicesController {
   @ApiOperation({ summary: 'Mark invoice as paid (recipient / manual confirmation)' })
   markPaid(@CurrentUser() user: AuthUser, @Param('id') id: string) {
     return this.invoicesService.markAsPaid(id, user.id);
+  }
+
+  @Patch(':id/record-payment')
+  @UseGuards(RolesGuard)
+  @Roles('company')
+  @ApiOperation({ summary: 'Record full or partial payment against an invoice' })
+  recordPayment(
+    @CurrentUser() user: AuthUser,
+    @Param('id') id: string,
+    @Body() dto: RecordPaymentDto,
+  ) {
+    return this.invoicesService.recordPayment(id, user.id, {
+      mode: dto.mode,
+      amountPaise: dto.amountPaise,
+    });
   }
 
   @Patch(':id/decline')

@@ -574,16 +574,45 @@ export class InvoicesService {
   }
 
   async markAsPaid(invoiceId: string, userId: string) {
+    return this.recordPayment(invoiceId, userId, { mode: 'full' });
+  }
+
+  async recordPayment(
+    invoiceId: string,
+    userId: string,
+    input: { mode: 'full' | 'partial'; amountPaise?: number },
+  ) {
     const companyCtx = await this.getCompanyAccountContextOrNull(userId);
-    if (!companyCtx) throw new ForbiddenException('Only company users can mark invoices as paid');
+    if (!companyCtx) throw new ForbiddenException('Only company users can record invoice payments');
     const invoice = await this.prisma.invoice.findUnique({ where: { id: invoiceId } });
     if (!invoice) throw new NotFoundException('Invoice not found');
     if (invoice.recipientUserId !== companyCtx.accountOwnerId) throw new ForbiddenException('Not your invoice');
-    if (invoice.status !== 'sent') throw new BadRequestException('Invoice must be sent before marking as paid');
+    if (invoice.status !== 'sent') throw new BadRequestException('Invoice must be sent before recording a payment');
+
+    const total = invoice.totalAmount;
+    const alreadyPaid = invoice.paidAmount ?? 0;
+    const remaining = total - alreadyPaid;
+    if (remaining <= 0) throw new BadRequestException('This invoice is already fully paid');
+
+    let increment: number;
+    if (input.mode === 'full') {
+      increment = remaining;
+    } else {
+      const amt = input.amountPaise ?? 0;
+      if (!Number.isFinite(amt) || amt < 1) throw new BadRequestException('Enter a valid amount');
+      if (amt > remaining) throw new BadRequestException('Amount exceeds the unpaid balance');
+      increment = amt;
+    }
+
+    const newPaid = alreadyPaid + increment;
+    const fullySettled = newPaid >= total;
     return this.prisma.invoice.update({
       where: { id: invoiceId },
-      data: { status: 'paid', paidAt: new Date() },
-      select: { id: true, status: true, paidAt: true },
+      data: {
+        paidAmount: newPaid,
+        ...(fullySettled ? { status: 'paid' as const, paidAt: new Date() } : {}),
+      },
+      select: { id: true, status: true, paidAt: true, paidAmount: true, totalAmount: true },
     });
   }
 
@@ -650,6 +679,7 @@ export class InvoicesService {
     taxRatePct: number;
     gstAmount: number;
     totalAmount: number;
+    paidAmount: number;
     issuerUserId: string;
     recipientUserId: string;
     projectId: string;
@@ -929,6 +959,7 @@ export class InvoicesService {
       taxRatePct,
       taxAmountPaise: invoice.gstAmount,
       totalPaise: invoice.totalAmount,
+      paidPaise: invoice.paidAmount ?? 0,
       notes: null,
       issuerId: invoice.issuerUserId,
       recipientId: invoice.recipientUserId,
