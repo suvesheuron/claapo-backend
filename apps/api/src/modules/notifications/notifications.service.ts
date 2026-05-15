@@ -1,9 +1,10 @@
-import { Injectable, ForbiddenException, NotFoundException } from '@nestjs/common';
+import { Inject, Injectable, ForbiddenException, NotFoundException, forwardRef } from '@nestjs/common';
 import { Prisma, UserRole } from '@prisma/client';
 import { PrismaService } from '../../database/prisma.service';
 import { AppCacheService } from '../../common/cache/app-cache.service';
 import { cacheKeys } from '../../common/cache/cache-keys';
 import { NotificationPreferencesDto } from './dto/preferences.dto';
+import { ChatGateway } from '../chat/chat.gateway';
 
 // Short — the badge poll runs every 20 s on the frontend, so 30 s is enough
 // to absorb spikes without making the badge feel stale.
@@ -14,6 +15,11 @@ export class NotificationsService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly cache: AppCacheService,
+    // forwardRef matches the ChatModule ↔ NotificationsModule cycle declared
+    // in notifications.module.ts. ChatGateway is used to push notification_created
+    // to the recipient's socket in real time.
+    @Inject(forwardRef(() => ChatGateway))
+    private readonly chatGateway: ChatGateway,
   ) {}
 
   private async getNotificationAccountContext(userId: string) {
@@ -235,6 +241,23 @@ export class NotificationsService {
       },
     });
     await this.invalidateUnreadCount(userId);
+    // Real-time push to every socket the user has open. Cross-pod fan-out
+    // works via the Redis adapter wired in main.ts. The client listens on
+    // 'notification_created' and updates the bell badge + dropdown without
+    // waiting for the 20s polling cycle. Wrapped defensively: a Socket.IO
+    // emit failure must never break the REST request that triggered it.
+    try {
+      this.chatGateway.emitToUser(userId, 'notification_created', {
+        id: created.id,
+        type: created.type,
+        title: created.title,
+        body: created.body,
+        data: created.data,
+        createdAt: created.createdAt,
+      });
+    } catch {
+      // ignore — REST response stays successful even if the push fails
+    }
     return created;
   }
 }
