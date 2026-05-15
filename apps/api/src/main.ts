@@ -2,9 +2,9 @@ import { NestFactory } from '@nestjs/core';
 import { ValidationPipe, type LoggerService } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { SwaggerModule, DocumentBuilder } from '@nestjs/swagger';
-import { IoAdapter } from '@nestjs/platform-socket.io';
 import { AppModule } from './app.module';
 import { AllExceptionsFilter } from './common/filters/http-exception.filter';
+import { RedisIoAdapter } from './common/websocket/redis-io.adapter';
 
 // Nest internals that flood startup with per-route / per-module lines.
 const NOISY_CONTEXTS = new Set([
@@ -46,7 +46,13 @@ function assertRequiredEnv() {
 async function bootstrap() {
   assertRequiredEnv();
   const app = await NestFactory.create(AppModule, { logger: quietLogger });
-  app.useWebSocketAdapter(new IoAdapter(app));
+
+  // Wire Socket.IO through Redis pub/sub so multi-instance deployments
+  // broadcast room events (new_message, typing, read_ack, notification_created)
+  // across all API pods. Required to scale past a single pod (~1-3k sockets).
+  const redisIoAdapter = new RedisIoAdapter(app);
+  await redisIoAdapter.connectToRedis();
+  app.useWebSocketAdapter(redisIoAdapter);
   const config = app.get(ConfigService);
   const corsOriginsRaw = config.get<string[]>('corsOrigins') ?? ['http://localhost:3000'];
   const allowWildcard = corsOriginsRaw.some((o) => o.trim() === '*');

@@ -19,6 +19,8 @@ import { StorageModule } from '../storage/storage.module';
   ],
   controllers: [ChatController],
   providers: [ChatService, ChatGateway],
-  exports: [ChatService],
+  // ChatGateway is exported so NotificationsService can call
+  // gateway.emitToUser(...) to push notification_created in real time.
+  exports: [ChatService, ChatGateway],
 })
 export class ChatModule {}

@@ -173,4 +173,14 @@ export class ChatGateway implements OnGatewayInit, OnGatewayConnection, OnGatewa
   emitToConversation(conversationId: string, event: string, data: unknown) {
     this.server.to(CONV_ROOM(conversationId)).emit(event, data);
   }
+
+  /**
+   * Emit to a single user's private room (e.g. notification_created).
+   * Every authenticated socket joins USER_ROOM(userId) on connect, so this
+   * reaches every device/tab the user has open. Cross-pod fan-out works via
+   * the Redis adapter once it's wired in main.ts.
+   */
+  emitToUser(userId: string, event: string, data: unknown) {
+    this.server.to(USER_ROOM(userId)).emit(event, data);
+  }
 }
