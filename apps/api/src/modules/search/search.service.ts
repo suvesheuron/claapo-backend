@@ -1,6 +1,7 @@
 import { Injectable, ForbiddenException, BadRequestException } from '@nestjs/common';
 import { UserRole } from '@prisma/client';
 import { PrismaService } from '../../database/prisma.service';
+import { StorageService } from '../storage/storage.service';
 import type { SearchCrewQueryDto, SearchVendorsQueryDto } from './dto/search-query.dto';
 
 @Injectable()
@@ -8,7 +9,10 @@ export class SearchService {
   /** Days after shoot end where temporary location still applies. */
   private readonly TEMP_LOCATION_BUFFER_DAYS = 2;
 
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly storage: StorageService,
+  ) {}
 
   private projectLocationMatchesCity(
     project: { locationCity: string | null; shootLocations: string[] },
@@ -134,6 +138,7 @@ export class SearchService {
         dailyBudget: true,
         profileScore: true,
         isAvailable: true,
+        avatarKey: true,
       },
       orderBy: { profileScore: 'desc' },
       ...(hasSkillFilter || genreFilter ? {} : { skip, take: takeSize }),
@@ -255,8 +260,15 @@ export class SearchService {
       : [];
     const emailByUserId = new Map(users.map((u) => [u.id, u.email]));
 
+    // Resolve all avatar URLs for the page in parallel. Each call short-circuits
+    // when there's no key, and signed URLs are Redis-cached (see StorageService),
+    // so a hot page returns in microseconds.
+    const avatarUrls = await Promise.all(
+      items.map((p) => this.storage.resolveAvatarUrl(p.avatarKey)),
+    );
+
     return {
-      items: items.map((p) => ({
+      items: items.map((p, idx) => ({
         userId: p.userId,
         displayName: p.displayName,
         bio: p.bio,
@@ -267,6 +279,7 @@ export class SearchService {
         profileScore: p.profileScore,
         isAvailable: p.isAvailable,
         email: emailByUserId.get(p.userId) ?? '',
+        avatarUrl: avatarUrls[idx],
       })),
       meta: { total, page, limit, pages: Math.ceil(total / limit), hasMore },
     };
@@ -504,14 +517,24 @@ export class SearchService {
           locationCity,
           equipment: matchedEquipment,
           _equipmentCount: matchedEquipment.length,
+          _logoKey: p.logoKey ?? null,
         } as const;
       })
       .filter((item) => !hasEquipmentAvailabilityFilter || item._equipmentCount > 0);
     const total = filteredItems.length;
     const items = filteredItems.slice(skip, skip + limit);
 
+    // Vendor "avatar" = company logo. Resolved per-page in parallel; signed
+    // URLs are Redis-cached so this is effectively free on a warm cache.
+    const avatarUrls = await Promise.all(
+      items.map((p) => this.storage.resolveAvatarUrl(p._logoKey)),
+    );
+
     return {
-      items: items.map(({ _equipmentCount, ...rest }) => rest),
+      items: items.map(({ _equipmentCount, _logoKey, ...rest }, idx) => ({
+        ...rest,
+        avatarUrl: avatarUrls[idx],
+      })),
       meta: { total, page, limit, pages: Math.ceil(total / limit) },
     };
   }

@@ -123,6 +123,22 @@ export class StorageService {
     return `https://${this.cloudFrontDomain}/${key}`;
   }
 
+  /**
+   * Resolve an avatar/logo/cover storage key to a browser-loadable URL.
+   * Prefers a (cached) signed URL and falls back to the public URL when the
+   * backend isn't configured for signing. Returns `null` when there's no key
+   * so callers can fall back to initials-based placeholders.
+   *
+   * Centralizing this here keeps every endpoint that returns profile-image
+   * URLs (profiles, search, conversations, …) using the same resolution rules
+   * and the same Redis cache (see `getSignedUrl` below).
+   */
+  async resolveAvatarUrl(key: string | null | undefined): Promise<string | null> {
+    if (!key) return null;
+    const signed = await this.getSignedUrl(key);
+    return signed ?? this.getPublicUrl(key);
+  }
+
   /** Presigned GET URL for private assets; local fallback if neither Supabase nor S3 configured. */
   async getSignedUrl(key: string | null): Promise<string | null> {
     if (!key) return null;

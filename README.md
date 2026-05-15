@@ -156,6 +156,57 @@ docker compose down                 # stop + remove containers (volumes kept)
 docker compose down -v              # stop AND wipe data volumes (destructive)
 ```
 
+### Start only one service
+
+```bash
+docker compose up -d db             # start only Postgres (claapo-db)
+docker compose up -d redis          # start only Redis  (claapo-redis)
+
+docker compose stop db              # stop only Postgres
+docker compose stop redis           # stop only Redis
+
+docker compose restart db           # restart Postgres
+docker compose restart redis        # restart Redis
+```
+
+### Standalone `docker run` (no compose)
+
+Use these if you don't want to use docker compose — they reproduce the exact compose config (container names, ports, volumes, Redis flags). Defaults match `.env.example`; override creds/ports as needed.
+
+```bash
+# Postgres — claapo-db
+docker run -d \
+  --name claapo-db \
+  --restart unless-stopped \
+  -e POSTGRES_USER=claapo \
+  -e POSTGRES_PASSWORD=claapo_password \
+  -e POSTGRES_DB=claapo \
+  -p 5432:5432 \
+  -v claapo_pgdata:/var/lib/postgresql/data \
+  postgres:16-alpine
+
+# Redis — claapo-redis (BullMQ-safe: AOF + noeviction)
+docker run -d \
+  --name claapo-redis \
+  --restart unless-stopped \
+  -p 6379:6379 \
+  -v claapo_redisdata:/data \
+  redis:7-alpine \
+  redis-server --appendonly yes --maxmemory 512mb --maxmemory-policy noeviction
+
+# Verify
+docker ps
+docker exec claapo-db pg_isready -U claapo -d claapo
+docker exec claapo-redis redis-cli ping     # → PONG
+
+# Stop / remove (data persists in named volumes)
+docker stop claapo-db claapo-redis
+docker rm   claapo-db claapo-redis
+
+# Wipe data volumes (destructive)
+docker volume rm claapo_pgdata claapo_redisdata
+```
+
 The compose defaults for both containers are already wired into `.env` after step 2 of the quick start.
 
 ---
