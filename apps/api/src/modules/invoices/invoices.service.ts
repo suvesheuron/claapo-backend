@@ -82,11 +82,17 @@ export class InvoicesService {
   }
 
   async create(issuerUserId: string, role: UserRole, dto: CreateInvoiceDto) {
-    if (role !== 'individual' && role !== 'vendor') {
-      throw new ForbiddenException('Only individuals and vendors can create invoices');
+    // Companies can issue when they are themselves booked by another company
+    // (spec 8). The "is the issuer a confirmed target on this project" check
+    // below remains the real authorization gate — role is just a router.
+    if (role !== UserRole.individual && role !== UserRole.vendor && role !== UserRole.company) {
+      throw new ForbiddenException('This role cannot issue invoices');
     }
     const vendorCtx = role === UserRole.vendor ? await this.getVendorAccountContext(issuerUserId) : null;
-    const issuerAccountUserId = vendorCtx ? vendorCtx.accountOwnerId : issuerUserId;
+    const companyCtx = role === UserRole.company ? await this.getCompanyAccountContext(issuerUserId) : null;
+    const issuerAccountUserId = vendorCtx?.accountOwnerId
+      ?? companyCtx?.accountOwnerId
+      ?? issuerUserId;
     const project = await this.prisma.project.findUnique({
       where: { id: dto.projectId },
     });
@@ -968,9 +974,14 @@ export class InvoicesService {
   }
 
   async update(invoiceId: string, userId: string, role: UserRole, dto: UpdateInvoiceDto) {
-    if (role !== 'individual' && role !== 'vendor') throw new ForbiddenException('Only issuer can update');
+    if (role !== UserRole.individual && role !== UserRole.vendor && role !== UserRole.company) {
+      throw new ForbiddenException('Only issuer can update');
+    }
     const vendorCtx = role === UserRole.vendor ? await this.getVendorAccountContext(userId) : null;
-    const issuerAccountUserId = vendorCtx ? vendorCtx.accountOwnerId : userId;
+    const companyCtx = role === UserRole.company ? await this.getCompanyAccountContext(userId) : null;
+    const issuerAccountUserId = vendorCtx?.accountOwnerId
+      ?? companyCtx?.accountOwnerId
+      ?? userId;
     const invoice = await this.prisma.invoice.findUnique({ where: { id: invoiceId } });
     if (!invoice) throw new NotFoundException('Invoice not found');
     if (invoice.issuerUserId !== issuerAccountUserId) throw new ForbiddenException('Not your invoice');
@@ -1021,9 +1032,14 @@ export class InvoicesService {
   }
 
   async send(invoiceId: string, userId: string, role: UserRole) {
-    if (role !== 'individual' && role !== 'vendor') throw new ForbiddenException('Only issuer can send');
+    if (role !== UserRole.individual && role !== UserRole.vendor && role !== UserRole.company) {
+      throw new ForbiddenException('Only issuer can send');
+    }
     const vendorCtx = role === UserRole.vendor ? await this.getVendorAccountContext(userId) : null;
-    const issuerAccountUserId = vendorCtx ? vendorCtx.accountOwnerId : userId;
+    const companyCtx = role === UserRole.company ? await this.getCompanyAccountContext(userId) : null;
+    const issuerAccountUserId = vendorCtx?.accountOwnerId
+      ?? companyCtx?.accountOwnerId
+      ?? userId;
     const invoice = await this.prisma.invoice.findUnique({
       where: { id: invoiceId },
       include: {
@@ -1104,12 +1120,13 @@ export class InvoicesService {
 
     let allowed = false;
     if (role === UserRole.company) {
+      // Company is the issuer when either (a) they recorded an offline invoice
+      // they received, or (b) spec 8: they were booked on another company's
+      // project and are the actual online issuer. Either way, the
+      // authorization check is the same — match issuer to the company's main
+      // account, and require sub-user project assignment for subusers.
       const companyCtx = await this.getCompanyAccountContextOrNull(userId);
-      allowed = Boolean(
-        companyCtx &&
-          invoice.recordedOfflineByCompany &&
-          invoice.issuerUserId === companyCtx.accountOwnerId,
-      );
+      allowed = Boolean(companyCtx && invoice.issuerUserId === companyCtx.accountOwnerId);
       if (allowed && companyCtx && !companyCtx.isMainUser) {
         await this.ensureProjectAssignedToSubUser(companyCtx.accountOwnerId, userId, invoice.projectId);
       }
@@ -1144,12 +1161,13 @@ export class InvoicesService {
 
     let allowed = false;
     if (role === UserRole.company) {
+      // Company is the issuer when either (a) they recorded an offline invoice
+      // they received, or (b) spec 8: they were booked on another company's
+      // project and are the actual online issuer. Either way, the
+      // authorization check is the same — match issuer to the company's main
+      // account, and require sub-user project assignment for subusers.
       const companyCtx = await this.getCompanyAccountContextOrNull(userId);
-      allowed = Boolean(
-        companyCtx &&
-          invoice.recordedOfflineByCompany &&
-          invoice.issuerUserId === companyCtx.accountOwnerId,
-      );
+      allowed = Boolean(companyCtx && invoice.issuerUserId === companyCtx.accountOwnerId);
       if (allowed && companyCtx && !companyCtx.isMainUser) {
         await this.ensureProjectAssignedToSubUser(companyCtx.accountOwnerId, userId, invoice.projectId);
       }
@@ -1216,12 +1234,11 @@ export class InvoicesService {
 
     let allowed = false;
     if (role === UserRole.company) {
+      // Matches getAttachmentUploadUrl / registerAttachment: companies issuing
+      // online (spec 8) or offline both authorize against issuerUserId on the
+      // invoice. Sub-users still need the project assignment.
       const companyCtx = await this.getCompanyAccountContextOrNull(userId);
-      allowed = Boolean(
-        companyCtx &&
-          attachment.invoice.recordedOfflineByCompany &&
-          attachment.invoice.issuerUserId === companyCtx.accountOwnerId,
-      );
+      allowed = Boolean(companyCtx && attachment.invoice.issuerUserId === companyCtx.accountOwnerId);
       if (allowed && companyCtx && !companyCtx.isMainUser) {
         await this.ensureProjectAssignedToSubUser(companyCtx.accountOwnerId, userId, attachment.invoice.projectId);
       }

@@ -317,7 +317,10 @@ model Project {
   shootLocations  String[]      @default([]) @map("shoot_locations")
   locationCity    String?       @map("location_city")
   budget          Int?          @map("budget")
-  status          ProjectStatus @default(draft)
+  // Projects skip the old draft → active "Activate Project" step. They go
+  // straight to `active` (Ongoing) on create, then to `completed` when the
+  // company hits "Mark Complete". `draft` stays in the enum for legacy rows.
+  status          ProjectStatus @default(active)
   createdAt       DateTime      @default(now()) @map("created_at")
   updatedAt       DateTime      @updatedAt @map("updated_at")
 
@@ -389,6 +392,10 @@ model BookingRequest {
   counterRate          Int?          @map("counter_rate")
   counterMessage       String?       @map("counter_message")
   counterAt            DateTime?     @map("counter_at")
+  // Per-user "Mark as Complete" timestamp. Set by the target (crew/vendor) when
+  // they close out their end of the booking; sweeps the related AvailabilitySlot
+  // rows to status=past_work. Independent of the company-side project completion.
+  completedByTargetAt  DateTime?     @map("completed_by_target_at")
 
   project      Project     @relation(fields: [projectId], references: [id])
   requester    User        @relation("RequesterBookings", fields: [requesterUserId], references: [id])

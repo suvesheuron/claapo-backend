@@ -2,7 +2,11 @@ import { Injectable, ForbiddenException, BadRequestException } from '@nestjs/com
 import { UserRole } from '@prisma/client';
 import { PrismaService } from '../../database/prisma.service';
 import { StorageService } from '../storage/storage.service';
-import type { SearchCrewQueryDto, SearchVendorsQueryDto } from './dto/search-query.dto';
+import type {
+  SearchCrewQueryDto,
+  SearchVendorsQueryDto,
+  SearchPeopleQueryDto,
+} from './dto/search-query.dto';
 
 @Injectable()
 export class SearchService {
@@ -535,6 +539,159 @@ export class SearchService {
         ...rest,
         avatarUrl: avatarUrls[idx],
       })),
+      meta: { total, page, limit, pages: Math.ceil(total / limit) },
+    };
+  }
+
+  /**
+   * Simple name-only search across crew (individual), vendor, and company profiles.
+   *
+   * Returns the minimal public-card data each platform shows in the directory:
+   * id, role, display name, city/state, avatar/logo. No filters, no calendar/rate joins.
+   *
+   * Subusers (`mainUserId != null`) are excluded — they are not standalone identities
+   * on the platform and should not appear in directory results.
+   *
+   * Open to every authenticated role — per the spec, any user can discover any user.
+   */
+  async searchPeople(_viewerId: string, _viewerRole: UserRole, query: SearchPeopleQueryDto) {
+    const page = query.page ?? 1;
+    const limit = Math.min(query.limit ?? 20, 50);
+    const skip = (page - 1) * limit;
+    const q = query.q?.trim() ?? '';
+    const category = query.category;
+
+    type DirectoryItem = {
+      userId: string;
+      role: 'individual' | 'vendor' | 'company';
+      name: string;
+      locationCity: string | null;
+      locationState: string | null;
+      avatarUrl: string | null;
+      avatarKey: string | null;
+      profileScore?: number | null;
+    };
+
+    const buckets: DirectoryItem[][] = [];
+
+    // Subusers are scoped under their company/vendor account — they are not
+    // standalone identities and should be hidden from the directory.
+    const baseUserWhere = { deletedAt: null, isActive: true, mainUserId: null };
+
+    if (!category || category === 'crew') {
+      const where: any = { user: baseUserWhere };
+      if (q) {
+        where.displayName = { contains: q, mode: 'insensitive' };
+      }
+      const rows = await this.prisma.individualProfile.findMany({
+        where,
+        select: {
+          userId: true,
+          displayName: true,
+          locationCity: true,
+          locationState: true,
+          avatarKey: true,
+          profileScore: true,
+        },
+        orderBy: q ? { displayName: 'asc' } : { profileScore: 'desc' },
+        take: limit * 3,
+      });
+      buckets.push(
+        rows.map((r) => ({
+          userId: r.userId,
+          role: 'individual' as const,
+          name: r.displayName ?? '',
+          locationCity: r.locationCity ?? null,
+          locationState: r.locationState ?? null,
+          avatarUrl: null,
+          avatarKey: r.avatarKey ?? null,
+          profileScore: r.profileScore ?? null,
+        })),
+      );
+    }
+
+    if (!category || category === 'vendor') {
+      const where: any = { user: baseUserWhere };
+      if (q) {
+        where.companyName = { contains: q, mode: 'insensitive' };
+      }
+      const rows = await this.prisma.vendorProfile.findMany({
+        where,
+        select: {
+          userId: true,
+          companyName: true,
+          locationCity: true,
+          locationState: true,
+          logoKey: true,
+        },
+        orderBy: { companyName: 'asc' },
+        take: limit * 3,
+      });
+      buckets.push(
+        rows.map((r) => ({
+          userId: r.userId,
+          role: 'vendor' as const,
+          name: r.companyName ?? '',
+          locationCity: r.locationCity ?? null,
+          locationState: r.locationState ?? null,
+          avatarUrl: null,
+          avatarKey: r.logoKey ?? null,
+        })),
+      );
+    }
+
+    if (!category || category === 'company') {
+      const where: any = { user: baseUserWhere };
+      if (q) {
+        where.companyName = { contains: q, mode: 'insensitive' };
+      }
+      const rows = await this.prisma.companyProfile.findMany({
+        where,
+        select: {
+          userId: true,
+          companyName: true,
+          locationCity: true,
+          locationState: true,
+          logoKey: true,
+        },
+        orderBy: { companyName: 'asc' },
+        take: limit * 3,
+      });
+      buckets.push(
+        rows.map((r) => ({
+          userId: r.userId,
+          role: 'company' as const,
+          name: r.companyName ?? '',
+          locationCity: r.locationCity ?? null,
+          locationState: r.locationState ?? null,
+          avatarUrl: null,
+          avatarKey: r.logoKey ?? null,
+        })),
+      );
+    }
+
+    const merged = buckets.flat();
+    // When searching across all categories, interleave by simple alphabetical sort
+    // so a stranger searching "raj" sees vendors and crew mixed by relevance to name
+    // rather than always-crew-first. Profile-score ranking only applies when crew-only.
+    if (!category) {
+      merged.sort((a, b) => a.name.localeCompare(b.name));
+    }
+
+    const total = merged.length;
+    const paged = merged.slice(skip, skip + limit);
+
+    // Reuse the shared avatar resolver — handles signing, public-URL fallback,
+    // and the Redis cache for signed URLs. Resolved per-page so storage calls
+    // stay bounded even with large result sets.
+    await Promise.all(
+      paged.map(async (item) => {
+        item.avatarUrl = await this.storage.resolveAvatarUrl(item.avatarKey);
+      }),
+    );
+
+    return {
+      items: paged.map(({ avatarKey: _avatarKey, profileScore: _profileScore, ...rest }) => rest),
       meta: { total, page, limit, pages: Math.ceil(total / limit) },
     };
   }

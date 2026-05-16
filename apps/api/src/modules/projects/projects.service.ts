@@ -29,7 +29,9 @@ export class ProjectsService {
         shootLocations: dto.shootLocations?.map((s) => s.trim()).filter(Boolean) ?? [],
         locationCity: dto.locationCity,
         budget: dto.budget,
-        status: 'draft',
+        // status omitted — schema default is `active` (Ongoing). The previous
+        // draft → Activate Project step has been removed; projects go straight
+        // to Ongoing on create.
       },
       include: { roles: true },
     });

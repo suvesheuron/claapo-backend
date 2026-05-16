@@ -1,7 +1,39 @@
 import { ApiPropertyOptional } from '@nestjs/swagger';
-import { IsOptional, IsString, IsInt, Min, IsDateString, IsEnum } from 'class-validator';
+import { IsOptional, IsString, IsInt, Min, IsDateString, IsEnum, IsIn } from 'class-validator';
 import { Type } from 'class-transformer';
 import { VendorType } from '@prisma/client';
+
+export const SEARCH_PEOPLE_CATEGORIES = ['crew', 'vendor', 'company'] as const;
+export type SearchPeopleCategory = (typeof SEARCH_PEOPLE_CATEGORIES)[number];
+
+export class SearchPeopleQueryDto {
+  @ApiPropertyOptional({ description: 'Name query (partial match, case-insensitive)' })
+  @IsOptional()
+  @IsString()
+  q?: string;
+
+  @ApiPropertyOptional({
+    description: 'Restrict results to a single category. Omit to search across all three.',
+    enum: SEARCH_PEOPLE_CATEGORIES,
+  })
+  @IsOptional()
+  @IsIn(SEARCH_PEOPLE_CATEGORIES as unknown as string[])
+  category?: SearchPeopleCategory;
+
+  @ApiPropertyOptional({ default: 1 })
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  page?: number = 1;
+
+  @ApiPropertyOptional({ default: 20 })
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  limit?: number = 20;
+}
 
 export class SearchCrewQueryDto {
   @ApiPropertyOptional({ description: 'Skill or role, e.g. DOP or comma-separated' })

@@ -92,6 +92,12 @@ export class AvailabilityService {
             roleName: true,
           },
         },
+        // Vendor bookings store the specific equipment item being hired.
+        // Surfaced here so the calendar date detail can label the kit (e.g.
+        // "Sony FX6") in addition to the vendor company name.
+        vendorEquipment: {
+          select: { id: true, name: true },
+        },
       },
     });
 
@@ -165,6 +171,8 @@ export class AvailabilityService {
       targetUserId: targetUser.id,
       targetDisplayName,
       roleName: matchingBooking.projectRole?.roleName,
+      equipmentName: matchingBooking.vendorEquipment?.name ?? null,
+      vendorEquipmentId: matchingBooking.vendorEquipmentId ?? null,
       rateOffered: matchingBooking.rateOffered,
       status: matchingBooking.status,
       shootDates: matchingBooking.shootDates.map((d: Date) => this.toUtcDateKey(new Date(d))),
@@ -174,6 +182,9 @@ export class AvailabilityService {
       invoiceId: invoice?.id,
       invoiceStatus: invoice?.status,
       conversationId: conversation?.id,
+      // New flow: target self-marks complete from the calendar/bookings UI.
+      // Surfaced so the frontend can hide "Mark Complete" once it's set.
+      completedByTargetAt: (matchingBooking as any).completedByTargetAt ?? null,
     };
   }
 
