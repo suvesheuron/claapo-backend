@@ -6,7 +6,7 @@ import { RolesGuard } from '../../common/guards/roles.guard';
 import { Roles } from '../../common/decorators/roles.decorator';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { AuthUser } from '../auth/auth.service';
-import { SearchCrewQueryDto, SearchVendorsQueryDto } from './dto/search-query.dto';
+import { SearchCrewQueryDto, SearchVendorsQueryDto, SearchPeopleQueryDto } from './dto/search-query.dto';
 
 @ApiTags('search')
 @Controller('search')
@@ -29,5 +29,14 @@ export class SearchController {
   @ApiOperation({ summary: 'Search vendors by type' })
   searchVendors(@CurrentUser() user: AuthUser, @Query() query: SearchVendorsQueryDto) {
     return this.searchService.searchVendors(user.id, user.role, query);
+  }
+
+  @Get('people')
+  @ApiOperation({
+    summary:
+      'Directory search (name-only, all roles). Returns crew + vendors + companies in one result set.',
+  })
+  searchPeople(@CurrentUser() user: AuthUser, @Query() query: SearchPeopleQueryDto) {
+    return this.searchService.searchPeople(user.id, user.role, query);
   }
 }

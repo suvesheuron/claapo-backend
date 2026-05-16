@@ -7,7 +7,6 @@ import { Roles } from '../../common/decorators/roles.decorator';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { AuthUser } from '../auth/auth.service';
 import { CreateBookingRequestDto } from './dto/booking-request.dto';
-import { LockBookingDto } from './dto/lock-booking.dto';
 import { CancelBookingDto } from './dto/cancel-booking.dto';
 
 @ApiTags('bookings')
@@ -103,24 +102,20 @@ export class BookingsController {
     return this.bookingsService.decline(id, user.id, user.role);
   }
 
-  @Patch(':id/lock')
-  @UseGuards(RolesGuard)
-  @Roles('company')
-  @ApiOperation({ summary: 'Lock confirmed booking; optional shootDates/shootLocations' })
-  lock(@CurrentUser() user: AuthUser, @Param('id') id: string, @Body() body?: LockBookingDto) {
-    return this.bookingsService.lock(id, user.id, body);
-  }
+  // Lock endpoints removed — the project flow no longer has a "Lock" step.
+  // Service-level methods (`lock`, `lockAllProjectBookings`) are kept so that
+  // legacy rows already in BookingStatus 'locked' continue to read correctly,
+  // but they are not reachable from the API any more.
 
-  @Post('project/:projectId/lock-all')
+  @Patch(':id/complete')
   @UseGuards(RolesGuard)
-  @Roles('company')
-  @ApiOperation({ summary: 'Lock all accepted bookings for a project at once' })
-  lockAllProjectBookings(
-    @CurrentUser() user: AuthUser,
-    @Param('projectId') projectId: string,
-    @Body() body?: LockBookingDto,
-  ) {
-    return this.bookingsService.lockAllProjectBookings(projectId, user.id, body);
+  @Roles('individual', 'vendor')
+  @ApiOperation({
+    summary:
+      'Mark this booking complete from the crew/vendor side. Sweeps their AvailabilitySlot rows to past_work.',
+  })
+  markComplete(@CurrentUser() user: AuthUser, @Param('id') id: string) {
+    return this.bookingsService.markBookingComplete(id, user.id, user.role);
   }
 
   @Patch(':id/cancel')

@@ -23,7 +23,10 @@ export class InvoicesController {
 
   @Post()
   @UseGuards(RolesGuard)
-  @Roles('individual', 'vendor')
+  // 'company' added so booked companies (company-on-company per spec 8) can
+  // issue invoices to the production house that hired them. Service enforces
+  // that the issuer must be a confirmed target on the project.
+  @Roles('individual', 'vendor', 'company')
   @ApiOperation({ summary: 'Create invoice for project' })
   create(@CurrentUser() user: AuthUser, @Body() dto: CreateInvoiceDto) {
     return this.invoicesService.create(user.id, user.role, dto);
@@ -103,7 +106,7 @@ export class InvoicesController {
 
   @Patch(':id')
   @UseGuards(RolesGuard)
-  @Roles('individual', 'vendor')
+  @Roles('individual', 'vendor', 'company')
   @ApiOperation({ summary: 'Update draft invoice' })
   update(@CurrentUser() user: AuthUser, @Param('id') id: string, @Body() dto: UpdateInvoiceDto) {
     return this.invoicesService.update(id, user.id, user.role, dto);
@@ -111,7 +114,7 @@ export class InvoicesController {
 
   @Post(':id/send')
   @UseGuards(RolesGuard)
-  @Roles('individual', 'vendor')
+  @Roles('individual', 'vendor', 'company')
   @ApiOperation({ summary: 'Send invoice to company' })
   send(@CurrentUser() user: AuthUser, @Param('id') id: string) {
     return this.invoicesService.send(id, user.id, user.role);

@@ -358,6 +358,10 @@ export class BookingsService implements OnApplicationBootstrap {
       where: {
         targetUserId: targetUid,
         status: { in: [...ONGOING_BOOKING_STATUSES, 'cancelled'] },
+        // NOTE: we intentionally do NOT filter out self-completed rows here.
+        // The Project Requests page tabs (All / Pending / Accepted / Completed
+        // / Cancelled) need the full set to split client-side. Project Details
+        // hides completed rows in its own filter.
       },
       include: {
         project: {
@@ -465,7 +469,16 @@ export class BookingsService implements OnApplicationBootstrap {
     });
   }
 
-  /** Past projects: bookings where user was crew/vendor and project is completed */
+  /**
+   * Past projects: bookings where the user was crew/vendor and the booking
+   * has finished from their perspective. That's either:
+   *   - the company marked the project completed, OR
+   *   - the target self-marked their end complete (completedByTargetAt set).
+   *
+   * The OR is critical: it lets a vendor close their work even if the
+   * production house hasn't wrapped the project, so the booking still moves
+   * into Past Projects on the vendor's side.
+   */
   async listPastBookings(userId: string, role: UserRole) {
     if (role !== 'individual' && role !== 'vendor') {
       throw new ForbiddenException('Only individuals and vendors have past bookings');
@@ -476,9 +489,10 @@ export class BookingsService implements OnApplicationBootstrap {
       where: {
         targetUserId,
         status: { in: ['accepted', 'locked'] },
-        project: {
-          status: 'completed',
-        },
+        OR: [
+          { project: { status: 'completed' } },
+          { completedByTargetAt: { not: null } } as any,
+        ],
       },
       include: {
         project: { select: { id: true, title: true, startDate: true, endDate: true, status: true, locationCity: true, shootDates: true, shootLocations: true } },
@@ -540,6 +554,9 @@ export class BookingsService implements OnApplicationBootstrap {
         project: true,
         target: { select: { id: true, email: true, role: true, individualProfile: true, vendorProfile: true } },
         projectRole: true,
+        // Vendor bookings carry a specific equipment item — the company UI
+        // needs to label which kit it hired, not just the vendor company.
+        vendorEquipment: { select: { id: true, name: true } },
       },
       orderBy: { createdAt: 'desc' },
     });
@@ -800,6 +817,94 @@ export class BookingsService implements OnApplicationBootstrap {
       );
     } catch {
       // Best effort notification.
+    }
+
+    return updated;
+  }
+
+  /**
+   * Crew/vendor marks their end of an accepted booking as complete.
+   *
+   * Per the new flow (Lock removed): once a vendor or crew member finishes
+   * their shoot dates, they can self-mark complete from the bookings screen.
+   * That:
+   *   1. Stamps `completedByTargetAt` on the BookingRequest (purely additive —
+   *      we don't touch BookingStatus so existing filters keep working).
+   *   2. Sweeps the matching `AvailabilitySlot` rows from `booked` → `past_work`
+   *      so the user's calendar reflects the closeout immediately.
+   *   3. Best-effort notifies the company.
+   *
+   * Independent of the company-side project-completion flow — both sides can
+   * close their respective ends without depending on the other.
+   */
+  async markBookingComplete(bookingId: string, userId: string, role: UserRole) {
+    if (role !== UserRole.individual && role !== UserRole.vendor) {
+      throw new ForbiddenException('Only crew/vendor can mark their booking complete');
+    }
+    const booking = await this.prisma.bookingRequest.findUnique({
+      where: { id: bookingId },
+      include: { project: true },
+    });
+    if (!booking) throw new NotFoundException('Booking not found');
+
+    // Resolve the booking-target identity. Vendor subusers act on behalf of
+    // the vendor account owner — same pattern as accept()/decline().
+    const vendorCtx =
+      role === UserRole.vendor ? await this.getVendorAccountContext(userId) : null;
+    const expectedTargetId = vendorCtx ? vendorCtx.accountOwnerId : userId;
+    if (booking.targetUserId !== expectedTargetId) {
+      throw new ForbiddenException('Not your booking');
+    }
+
+    // Only confirmed bookings carry calendar work to mark past. Pending /
+    // declined / cancelled rows have no shoot dates that matter.
+    if (booking.status !== 'accepted' && booking.status !== 'locked') {
+      throw new BadRequestException(
+        'Only accepted or locked bookings can be marked complete',
+      );
+    }
+    if ((booking as any).completedByTargetAt) {
+      throw new BadRequestException('Booking is already marked complete');
+    }
+
+    const datesToSweep = this.resolveBookingDates(booking as any);
+
+    const updated = await this.prisma.$transaction(async (tx) => {
+      const row = await tx.bookingRequest.update({
+        where: { id: bookingId },
+        data: { completedByTargetAt: new Date() } as any,
+        include: { project: true },
+      });
+      if (datesToSweep.length > 0) {
+        // Sweep this user's booked slots for the shoot dates to past_work.
+        // updateMany keeps it cheap; we scope by status='booked' so already-
+        // past slots and user-blocked slots are left alone.
+        await tx.availabilitySlot.updateMany({
+          where: {
+            userId: expectedTargetId,
+            date: { in: datesToSweep },
+            status: 'booked',
+          },
+          data: { status: 'past_work' },
+        });
+      }
+      return row;
+    });
+
+    try {
+      await this.notifications.createForUser(
+        booking.requesterUserId,
+        'booking_completed',
+        'Booking marked complete',
+        `${role === 'vendor' ? 'A vendor' : 'A crew member'} marked their booking for "${updated.project.title}" as complete.`,
+        {
+          bookingId: updated.id,
+          projectId: updated.projectId,
+          projectTitle: updated.project.title,
+        },
+      );
+    } catch {
+      // Best-effort: notification failure must not block the completion.
     }
 
     return updated;
