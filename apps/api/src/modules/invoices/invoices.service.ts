@@ -398,7 +398,15 @@ export class InvoicesService {
       issuedOnFilter = { createdAt: { gte: start, lt: end } };
     }
     
-    let baseWhere: any = companyCtx
+    // For company users, the invoice list mixes two flows:
+    //   1. Invoices RECEIVED on the company's own projects (crew/vendor billing
+    //      the production house) — original behavior; drafts hidden.
+    //   2. Invoices ISSUED when the company itself was booked on another
+    //      company's project (spec 8 company→company). Drafts kept here so the
+    //      issuer can re-edit before sending, same as crew/vendor flow.
+    // Sub-user scope still applies on the OWN-projects path only — booked-on
+    // projects live outside SubUserProjectAssignment by design.
+    const companyReceivedClause = companyCtx
       ? {
           recipientUserId: companyCtx.accountOwnerId,
           status: { not: 'draft' as const },
@@ -412,6 +420,12 @@ export class InvoicesService {
                 },
               }),
         }
+      : null;
+    const companyIssuedClause = companyCtx
+      ? { issuerUserId: companyCtx.accountOwnerId }
+      : null;
+    let baseWhere: any = companyCtx
+      ? { OR: [companyReceivedClause, companyIssuedClause].filter(Boolean) }
       : vendorCtx
         ? {
             issuerUserId: vendorCtx.accountOwnerId,
@@ -1310,11 +1324,23 @@ export class InvoicesService {
     userId: string,
   ) {
     const companyCtx = await this.getCompanyAccountContextOrNull(userId);
-    if (companyCtx && recipientUserId === companyCtx.accountOwnerId) {
-      if (!companyCtx.isMainUser) {
-        await this.ensureProjectAssignedToSubUser(companyCtx.accountOwnerId, userId, projectId);
+    if (companyCtx) {
+      // Two valid company viewer paths:
+      //   1. Company is the RECIPIENT (invoices crew/vendor/other-company sent
+      //      to them on their own project). Sub-user assignment still applies.
+      //   2. Company is the ISSUER — spec 8 company→company: they were booked
+      //      on another company's project and issued this invoice themselves.
+      //      Sub-user assignment is OWNER-side only, so we don't enforce it on
+      //      booked-on projects — any sub-user of the issuing account can view.
+      if (recipientUserId === companyCtx.accountOwnerId) {
+        if (!companyCtx.isMainUser) {
+          await this.ensureProjectAssignedToSubUser(companyCtx.accountOwnerId, userId, projectId);
+        }
+        return;
       }
-      return;
+      if (issuerUserId === companyCtx.accountOwnerId) {
+        return;
+      }
     }
     const vendorCtx = await this.getVendorAccountContextOrNull(userId);
     if (vendorCtx && issuerUserId === vendorCtx.accountOwnerId) {

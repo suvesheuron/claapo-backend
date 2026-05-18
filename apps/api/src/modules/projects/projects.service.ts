@@ -236,15 +236,29 @@ export class ProjectsService {
     let whereClause: any = {};
     
     if (role === UserRole.company) {
-      // Company: projects they own
+      // Company: projects they own PLUS projects where they are a booking
+      // target (company→company collaborations). Without the OR, the
+      // receiving company would never see those projects in any page that
+      // calls this endpoint (e.g. /conversations), so the conversation
+      // would be unreachable on their side.
+      //
+      // Sub-users still scope down to assigned projects on the owner side
+      // only — the booked-on path is shared by the whole account because
+      // the assignment model maps sub-users to OWN projects, not to
+      // bookings the account holds elsewhere.
+      const ownedProjectsClause = isSubUser
+        ? { companyUserId: mainUserId, subUserAssignments: { some: { subUserId: userId } } }
+        : { companyUserId: mainUserId };
+      const bookedOnProjectsClause = {
+        bookings: {
+          some: {
+            targetUserId: mainUserId,
+            status: { notIn: ['declined', 'expired', 'cancelled'] },
+          },
+        },
+      };
       whereClause = {
-        companyUserId: mainUserId,
-        // For sub-users, only show assigned projects
-        ...(isSubUser ? {
-          OR: [
-            { subUserAssignments: { some: { subUserId: userId } } },
-          ]
-        } : {}),
+        OR: [ownedProjectsClause, bookedOnProjectsClause],
       };
     } else if (role === UserRole.vendor) {
       // Vendor: projects where they have bookings
@@ -301,9 +315,15 @@ export class ProjectsService {
     const projectIds = items.map((project) => project.id);
     const invoiceWhere: Record<string, unknown> = { projectId: { in: projectIds } };
     if (role === UserRole.company) {
-      // Company invoices page is "received invoices", so count/aggregate by recipient.
-      invoiceWhere.recipientUserId = mainUserId;
-      invoiceWhere.status = { not: 'draft' as const };
+      // Company invoices for OWN projects are "received" (recipient=mainUserId),
+      // but a company can also be a booked target on someone else's project
+      // (company→company), where they're the ISSUER. Use an OR so both sides
+      // show up in the project stats. Drafts are excluded only on the received
+      // side to match the legacy "received invoices" page behavior.
+      invoiceWhere.OR = [
+        { recipientUserId: mainUserId, status: { not: 'draft' as const } },
+        { issuerUserId: mainUserId },
+      ];
     } else if (role === UserRole.vendor) {
       // Vendor should see only invoices sent by their own account.
       invoiceWhere.issuerUserId = mainUserId;
