@@ -165,8 +165,17 @@ export class BookingsService implements OnApplicationBootstrap {
     }
     const target = await this.prisma.user.findFirst({ where: { id: dto.targetUserId, deletedAt: null } });
     if (!target) throw new NotFoundException('Target user not found');
-    if (target.role !== 'individual' && target.role !== 'vendor') {
-      throw new BadRequestException('Target must be individual or vendor');
+    // Allowed target roles: crew (individual), vendor, and another company
+    // (company→company collaboration bookings). Admin / unknown roles are
+    // still rejected. Equipment-specific behavior only kicks in when target
+    // is a vendor — see vendorEquipmentId branch below.
+    if (target.role !== 'individual' && target.role !== 'vendor' && target.role !== 'company') {
+      throw new BadRequestException('Target must be individual, vendor, or company');
+    }
+    // Self-booking is nonsense — short-circuit before doing any DB work so the
+    // company doesn't end up requester+target on their own booking.
+    if (target.role === 'company' && (target.mainUserId ?? target.id) === companyCtx.accountOwnerId) {
+      throw new BadRequestException('You cannot book your own company');
     }
     const targetAccountUserId = target.mainUserId ?? target.id;
     const existingWhere: Record<string, unknown> = {
@@ -349,11 +358,19 @@ export class BookingsService implements OnApplicationBootstrap {
   }
 
   async listIncoming(userId: string, role: UserRole) {
-    if (role !== 'individual' && role !== 'vendor') {
-      throw new ForbiddenException('Only individuals and vendors have incoming requests');
+    if (role !== 'individual' && role !== 'vendor' && role !== 'company') {
+      throw new ForbiddenException('Only crew, vendors, or companies have incoming requests');
     }
-    const incomingCtx = role === UserRole.vendor ? await this.getVendorAccountContext(userId) : null;
-    const targetUid = incomingCtx ? incomingCtx.accountOwnerId : userId;
+    // Resolve target account owner: vendor + company sub-users see the main
+    // account's bookings. Individuals never have sub-users.
+    let targetUid: string;
+    if (role === UserRole.vendor) {
+      targetUid = (await this.getVendorAccountContext(userId)).accountOwnerId;
+    } else if (role === UserRole.company) {
+      targetUid = (await this.getCompanyAccountContext(userId)).accountOwnerId;
+    } else {
+      targetUid = userId;
+    }
     const raw = await this.prisma.bookingRequest.findMany({
       where: {
         targetUserId: targetUid,
@@ -480,11 +497,19 @@ export class BookingsService implements OnApplicationBootstrap {
    * into Past Projects on the vendor's side.
    */
   async listPastBookings(userId: string, role: UserRole) {
-    if (role !== 'individual' && role !== 'vendor') {
-      throw new ForbiddenException('Only individuals and vendors have past bookings');
+    if (role !== 'individual' && role !== 'vendor' && role !== 'company') {
+      throw new ForbiddenException('Only crew, vendors, or companies have past bookings');
     }
-    const vendorCtx = role === UserRole.vendor ? await this.getVendorAccountContext(userId) : null;
-    const targetUserId = vendorCtx ? vendorCtx.accountOwnerId : userId;
+    // Resolve target account owner: vendor + company sub-users see the main
+    // account's past bookings. Individuals never have sub-users.
+    let targetUserId: string;
+    if (role === UserRole.vendor) {
+      targetUserId = (await this.getVendorAccountContext(userId)).accountOwnerId;
+    } else if (role === UserRole.company) {
+      targetUserId = (await this.getCompanyAccountContext(userId)).accountOwnerId;
+    } else {
+      targetUserId = userId;
+    }
     const items = await this.prisma.bookingRequest.findMany({
       where: {
         targetUserId,
@@ -607,10 +632,19 @@ export class BookingsService implements OnApplicationBootstrap {
       include: { project: true },
     });
     if (!booking) throw new NotFoundException('Booking not found');
-    if (role !== 'individual' && role !== 'vendor') throw new ForbiddenException('Only crew/vendor can accept');
+    // Three target roles can accept a booking:
+    //   - individual: direct user-id match
+    //   - vendor: resolve to account owner (sub-users act for main account)
+    //   - company: resolve to account owner (company→company bookings)
+    if (role !== 'individual' && role !== 'vendor' && role !== 'company') {
+      throw new ForbiddenException('Only crew, vendors, or companies can accept');
+    }
     if (role === UserRole.vendor) {
       const vendorCtx = await this.getVendorAccountContext(userId);
       if (booking.targetUserId !== vendorCtx.accountOwnerId) throw new ForbiddenException('Not your booking');
+    } else if (role === UserRole.company) {
+      const companyCtx = await this.getCompanyAccountContext(userId);
+      if (booking.targetUserId !== companyCtx.accountOwnerId) throw new ForbiddenException('Not your booking');
     } else if (booking.targetUserId !== userId) {
       throw new ForbiddenException('Not your booking');
     }
@@ -737,10 +771,18 @@ export class BookingsService implements OnApplicationBootstrap {
       include: { project: true },
     });
     if (!booking) throw new NotFoundException('Booking not found');
-    if (role !== 'individual' && role !== 'vendor') throw new ForbiddenException('Only crew/vendor can decline');
+    // Mirrors accept(): individual / vendor / company targets all decline via
+    // the same handler, with vendor + company resolving to their account owner
+    // so sub-users can act on behalf of the main account.
+    if (role !== 'individual' && role !== 'vendor' && role !== 'company') {
+      throw new ForbiddenException('Only crew, vendors, or companies can decline');
+    }
     if (role === UserRole.vendor) {
       const vendorCtx = await this.getVendorAccountContext(userId);
       if (booking.targetUserId !== vendorCtx.accountOwnerId) throw new ForbiddenException('Not your booking');
+    } else if (role === UserRole.company) {
+      const companyCtx = await this.getCompanyAccountContext(userId);
+      if (booking.targetUserId !== companyCtx.accountOwnerId) throw new ForbiddenException('Not your booking');
     } else if (booking.targetUserId !== userId) {
       throw new ForbiddenException('Not your booking');
     }
@@ -823,23 +865,28 @@ export class BookingsService implements OnApplicationBootstrap {
   }
 
   /**
-   * Crew/vendor marks their end of an accepted booking as complete.
+   * Either side of a booking marks their end complete.
    *
-   * Per the new flow (Lock removed): once a vendor or crew member finishes
-   * their shoot dates, they can self-mark complete from the bookings screen.
-   * That:
-   *   1. Stamps `completedByTargetAt` on the BookingRequest (purely additive —
-   *      we don't touch BookingStatus so existing filters keep working).
-   *   2. Sweeps the matching `AvailabilitySlot` rows from `booked` → `past_work`
-   *      so the user's calendar reflects the closeout immediately.
-   *   3. Best-effort notifies the company.
+   * Target-side (crew, vendor, or company-as-target):
+   *   - Stamps `completedByTargetAt` on the BookingRequest.
+   *   - Sweeps the target user's matching `AvailabilitySlot` rows from
+   *     `booked` → `past_work` so the calendar reflects the closeout.
    *
-   * Independent of the company-side project-completion flow — both sides can
-   * close their respective ends without depending on the other.
+   * Requester-side (the production company that sent the request — added
+   * for the company→company hiring flow so the hiring company can wrap a
+   * single engagement without completing the whole project):
+   *   - Stamps `completedByRequesterAt` only.
+   *   - Does NOT touch the target's AvailabilitySlot rows — that calendar
+   *     belongs to the target.
+   *
+   * Neither path mutates `BookingStatus`, so existing filters
+   * (status in 'accepted','locked') keep working. The two timestamps are
+   * independent — both sides can close their end without waiting on the
+   * other. A best-effort notification fires to the opposite side.
    */
   async markBookingComplete(bookingId: string, userId: string, role: UserRole) {
-    if (role !== UserRole.individual && role !== UserRole.vendor) {
-      throw new ForbiddenException('Only crew/vendor can mark their booking complete');
+    if (role !== UserRole.individual && role !== UserRole.vendor && role !== UserRole.company) {
+      throw new ForbiddenException('Only crew, vendors, or companies can mark their booking complete');
     }
     const booking = await this.prisma.bookingRequest.findUnique({
       where: { id: bookingId },
@@ -847,41 +894,64 @@ export class BookingsService implements OnApplicationBootstrap {
     });
     if (!booking) throw new NotFoundException('Booking not found');
 
-    // Resolve the booking-target identity. Vendor subusers act on behalf of
-    // the vendor account owner — same pattern as accept()/decline().
-    const vendorCtx =
-      role === UserRole.vendor ? await this.getVendorAccountContext(userId) : null;
-    const expectedTargetId = vendorCtx ? vendorCtx.accountOwnerId : userId;
-    if (booking.targetUserId !== expectedTargetId) {
-      throw new ForbiddenException('Not your booking');
-    }
-
-    // Only confirmed bookings carry calendar work to mark past. Pending /
-    // declined / cancelled rows have no shoot dates that matter.
     if (booking.status !== 'accepted' && booking.status !== 'locked') {
       throw new BadRequestException(
         'Only accepted or locked bookings can be marked complete',
       );
     }
-    if ((booking as any).completedByTargetAt) {
+
+    // Resolve the acting account owner. Vendor + company sub-users act on
+    // behalf of the main account — same pattern as accept()/decline().
+    let actorAccountId: string;
+    if (role === UserRole.vendor) {
+      actorAccountId = (await this.getVendorAccountContext(userId)).accountOwnerId;
+    } else if (role === UserRole.company) {
+      actorAccountId = (await this.getCompanyAccountContext(userId)).accountOwnerId;
+    } else {
+      actorAccountId = userId;
+    }
+
+    const isTarget    = booking.targetUserId    === actorAccountId;
+    const isRequester = booking.requesterUserId === actorAccountId;
+
+    // Crew/vendor can only ever be the target side. Companies can act on
+    // either side (requester for outgoing hires, target for company→company
+    // bookings where they were hired).
+    if (role === UserRole.individual || role === UserRole.vendor) {
+      if (!isTarget) throw new ForbiddenException('Not your booking');
+    } else if (!isTarget && !isRequester) {
+      throw new ForbiddenException('Not your booking');
+    }
+
+    // If the actor happens to be both sides (degenerate case — shouldn't
+    // happen in practice since createRequest disallows requester==target),
+    // prefer the target-side action so the calendar still gets swept.
+    const actingAsTarget = isTarget;
+
+    if (actingAsTarget && (booking as any).completedByTargetAt) {
+      throw new BadRequestException('Booking is already marked complete');
+    }
+    if (!actingAsTarget && (booking as any).completedByRequesterAt) {
       throw new BadRequestException('Booking is already marked complete');
     }
 
-    const datesToSweep = this.resolveBookingDates(booking as any);
+    const datesToSweep = actingAsTarget ? this.resolveBookingDates(booking as any) : [];
 
     const updated = await this.prisma.$transaction(async (tx) => {
       const row = await tx.bookingRequest.update({
         where: { id: bookingId },
-        data: { completedByTargetAt: new Date() } as any,
+        data: (actingAsTarget
+          ? { completedByTargetAt: new Date() }
+          : { completedByRequesterAt: new Date() }) as any,
         include: { project: true },
       });
-      if (datesToSweep.length > 0) {
+      if (actingAsTarget && datesToSweep.length > 0) {
         // Sweep this user's booked slots for the shoot dates to past_work.
-        // updateMany keeps it cheap; we scope by status='booked' so already-
-        // past slots and user-blocked slots are left alone.
+        // Scoped to status='booked' so already-past slots and user-blocked
+        // slots are left alone.
         await tx.availabilitySlot.updateMany({
           where: {
-            userId: expectedTargetId,
+            userId: actorAccountId,
             date: { in: datesToSweep },
             status: 'booked',
           },
@@ -892,11 +962,15 @@ export class BookingsService implements OnApplicationBootstrap {
     });
 
     try {
+      const notifyUserId = actingAsTarget ? booking.requesterUserId : booking.targetUserId;
+      const actorLabel = actingAsTarget
+        ? (role === UserRole.vendor ? 'A vendor' : role === UserRole.company ? 'A production company' : 'A crew member')
+        : 'The production company';
       await this.notifications.createForUser(
-        booking.requesterUserId,
+        notifyUserId,
         'booking_completed',
         'Booking marked complete',
-        `${role === 'vendor' ? 'A vendor' : 'A crew member'} marked their booking for "${updated.project.title}" as complete.`,
+        `${actorLabel} marked their booking for "${updated.project.title}" as complete.`,
         {
           bookingId: updated.id,
           projectId: updated.projectId,
@@ -928,9 +1002,9 @@ export class BookingsService implements OnApplicationBootstrap {
     if (isRequester && role !== UserRole.company) {
       throw new ForbiddenException('Only company can request cancellation from this side');
     }
-    if (isTarget && role === UserRole.company) {
-      throw new ForbiddenException('Company cannot act as booking target');
-    }
+    // Note: company targets ARE allowed (company→company bookings). The old
+    // "Company cannot act as booking target" guard has been removed — sub-user
+    // assignment checks below only apply on the requester side anyway.
     if (companyCtx && !companyCtx.isMainUser && isRequester) {
       const assigned = await this.prisma.subUserProjectAssignment.findFirst({
         where: { accountUserId: companyCtx.accountOwnerId, subUserId: userId, projectId: booking.projectId },
@@ -966,17 +1040,22 @@ export class BookingsService implements OnApplicationBootstrap {
         },
       );
     } else {
+      // Target side requested cancellation. For crew/vendor targets the copy
+      // says "crew/vendor"; for a company target (company→company bookings)
+      // it says "another company" so the requester knows which side asked.
+      const actorLabel = role === UserRole.company ? 'The booked company' : 'A crew member/vendor';
+      const requestedBy = role === UserRole.company ? 'company_target' : 'crew_or_vendor';
       await this.notifications.createForUser(
         booking.requesterUserId,
         'cancel_requested',
         'Cancellation Request',
-        `A crew member/vendor has requested to cancel their booking for project "${booking.project.title}".${reason ? ` Reason: ${reason}` : ''}`,
+        `${actorLabel} has requested to cancel their booking for project "${booking.project.title}".${reason ? ` Reason: ${reason}` : ''}`,
         {
           bookingId: booking.id,
           projectId: booking.projectId,
           projectTitle: booking.project.title,
           cancelRequestReason: reason ?? null,
-          requestedBy: 'crew_or_vendor',
+          requestedBy,
         },
       );
     }
@@ -1052,10 +1131,10 @@ export class BookingsService implements OnApplicationBootstrap {
     }
   }
 
-  /** Crew/vendor accepts or denies a company-initiated cancellation request */
+  /** Target side (crew / vendor / company) accepts or denies a company-initiated cancellation request */
   async respondToCompanyCancellation(bookingId: string, userId: string, role: UserRole, accept: boolean) {
-    if (role !== UserRole.individual && role !== UserRole.vendor) {
-      throw new ForbiddenException('Only crew/vendor can respond to company cancellation requests');
+    if (role !== UserRole.individual && role !== UserRole.vendor && role !== UserRole.company) {
+      throw new ForbiddenException('Only crew, vendors, or companies can respond to company cancellation requests');
     }
     const booking = await this.prisma.bookingRequest.findUnique({
       where: { id: bookingId },
@@ -1065,8 +1144,18 @@ export class BookingsService implements OnApplicationBootstrap {
     if ((booking.status as string) !== 'cancel_requested') {
       throw new BadRequestException('Booking is not in cancel_requested state');
     }
-    const vendorCtx = role === UserRole.vendor ? await this.getVendorAccountContextOrNull(userId) : null;
-    const targetActorId = vendorCtx?.accountOwnerId ?? userId;
+    // Resolve the booking target's account owner so vendor + company sub-users
+    // can respond on behalf of their main account.
+    let targetActorId: string;
+    if (role === UserRole.vendor) {
+      const vendorCtx = await this.getVendorAccountContextOrNull(userId);
+      targetActorId = vendorCtx?.accountOwnerId ?? userId;
+    } else if (role === UserRole.company) {
+      const companyCtx = await this.getCompanyAccountContextOrNull(userId);
+      targetActorId = companyCtx?.accountOwnerId ?? userId;
+    } else {
+      targetActorId = userId;
+    }
     const actorName = await this.getActorDisplayName(targetActorId);
     const isTarget = booking.targetUserId === targetActorId || booking.targetUserId === userId;
     if (!isTarget) throw new ForbiddenException('Not your booking');

@@ -79,8 +79,19 @@ export class ChatService {
       hasAccess = true;
     }
     if (!hasAccess) {
-      const vendorCtx = role === UserRole.vendor ? await this.getVendorAccountContextOrNull(userId) : null;
-      const bookingActorId = vendorCtx ? vendorCtx.accountOwnerId : userId;
+      // Resolve the booking-actor identity. Vendor + company sub-users act on
+      // behalf of their account owner — so a company sub-user whose main
+      // account is the booking target on another company's project still
+      // qualifies for chat access via that booking.
+      let bookingActorId: string;
+      if (role === UserRole.vendor) {
+        const vendorCtx = await this.getVendorAccountContextOrNull(userId);
+        bookingActorId = vendorCtx?.accountOwnerId ?? userId;
+      } else if (role === UserRole.company) {
+        bookingActorId = companyCtx?.accountOwnerId ?? userId;
+      } else {
+        bookingActorId = userId;
+      }
       const hasBooking = project.bookings.some(
         (b) =>
           (b.requesterUserId === bookingActorId || b.targetUserId === bookingActorId)
@@ -804,12 +815,36 @@ export class ChatService {
     const project = await this.prisma.project.findUnique({ where: { id: projectId } });
     if (!project) throw new NotFoundException('Project not found');
 
-    // Access: company owner (or sub-user assigned to the project)
+    // Access:
+    //   1. Company owner (or sub-user assigned to the project) — the original path.
+    //   2. Company-as-target on this project (company→company bookings). Without
+    //      this branch the receiver company can't read the date-grouped panel
+    //      on their dashboard ("Could not load project chats for this date").
     const companyCtx = await this.getCompanyAccountContextOrNull(userId);
-    if (!companyCtx || project.companyUserId !== companyCtx.accountOwnerId) {
+    if (!companyCtx) {
       throw new ForbiddenException('No access to this project');
     }
-    if (!companyCtx.isMainUser) {
+    const isOwner = project.companyUserId === companyCtx.accountOwnerId;
+    let isBookedTarget = false;
+    if (!isOwner) {
+      const booking = await this.prisma.bookingRequest.findFirst({
+        where: {
+          projectId,
+          targetUserId: companyCtx.accountOwnerId,
+          status: { notIn: ['declined', 'expired', 'cancelled'] },
+        },
+        select: { id: true },
+      });
+      isBookedTarget = !!booking;
+    }
+    if (!isOwner && !isBookedTarget) {
+      throw new ForbiddenException('No access to this project');
+    }
+    // Sub-user project assignment is an OWNER-side concept (it controls which
+    // company-internal users see which OWNED projects). Booked-on projects are
+    // visible to the whole receiving-company account, so we only enforce the
+    // assignment check on the owner branch.
+    if (isOwner && !companyCtx.isMainUser) {
       await this.ensureProjectAssignedToSubUser(companyCtx.accountOwnerId, userId, projectId);
     }
 

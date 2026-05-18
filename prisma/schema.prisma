@@ -392,10 +392,20 @@ model BookingRequest {
   counterRate          Int?          @map("counter_rate")
   counterMessage       String?       @map("counter_message")
   counterAt            DateTime?     @map("counter_at")
-  // Per-user "Mark as Complete" timestamp. Set by the target (crew/vendor) when
-  // they close out their end of the booking; sweeps the related AvailabilitySlot
-  // rows to status=past_work. Independent of the company-side project completion.
-  completedByTargetAt  DateTime?     @map("completed_by_target_at")
+  // Per-user "Mark as Complete" timestamp. Set by the target (crew/vendor/
+  // company-as-target) when they close out their end of the booking; sweeps
+  // the related AvailabilitySlot rows to status=past_work. Independent of the
+  // company-side project completion.
+  completedByTargetAt    DateTime?   @map("completed_by_target_at")
+  // Set when the requester (the production company that sent the request)
+  // closes out a *specific* booking from their side. Used today by the
+  // company→company hiring flow so the hiring company can wrap one
+  // engagement without marking the whole project complete. Like
+  // completedByTargetAt it never mutates BookingStatus, so existing filters
+  // (status in 'accepted','locked') keep working. We do NOT sweep the
+  // target's AvailabilitySlot rows from this side — the target's calendar
+  // is theirs to close.
+  completedByRequesterAt DateTime?   @map("completed_by_requester_at")
 
   project      Project     @relation(fields: [projectId], references: [id])
   requester    User        @relation("RequesterBookings", fields: [requesterUserId], references: [id])

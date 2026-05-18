@@ -185,6 +185,10 @@ export class AvailabilityService {
       // New flow: target self-marks complete from the calendar/bookings UI.
       // Surfaced so the frontend can hide "Mark Complete" once it's set.
       completedByTargetAt: (matchingBooking as any).completedByTargetAt ?? null,
+      // Mirror for the requester side (company→company hires): hides the
+      // Mark Complete button on the company-readonly modal once the hiring
+      // company has closed the engagement.
+      completedByRequesterAt: (matchingBooking as any).completedByRequesterAt ?? null,
     };
   }
 

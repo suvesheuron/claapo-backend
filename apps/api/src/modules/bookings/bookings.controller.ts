@@ -43,15 +43,15 @@ export class BookingsController {
 
   @Get('incoming')
   @UseGuards(RolesGuard)
-  @Roles('individual', 'vendor')
-  @ApiOperation({ summary: 'List incoming requests' })
+  @Roles('individual', 'vendor', 'company')
+  @ApiOperation({ summary: 'List incoming requests (crew, vendor, or company target)' })
   listIncoming(@CurrentUser() user: AuthUser) {
     return this.bookingsService.listIncoming(user.id, user.role);
   }
 
   @Get('past')
   @UseGuards(RolesGuard)
-  @Roles('individual', 'vendor')
+  @Roles('individual', 'vendor', 'company')
   @ApiOperation({ summary: 'List past (completed) project bookings' })
   listPast(@CurrentUser() user: AuthUser) {
     return this.bookingsService.listPastBookings(user.id, user.role);
@@ -88,16 +88,16 @@ export class BookingsController {
 
   @Patch(':id/accept')
   @UseGuards(RolesGuard)
-  @Roles('individual', 'vendor')
-  @ApiOperation({ summary: 'Accept booking request' })
+  @Roles('individual', 'vendor', 'company')
+  @ApiOperation({ summary: 'Accept booking request (crew, vendor, or company target)' })
   accept(@CurrentUser() user: AuthUser, @Param('id') id: string) {
     return this.bookingsService.accept(id, user.id, user.role);
   }
 
   @Patch(':id/decline')
   @UseGuards(RolesGuard)
-  @Roles('individual', 'vendor')
-  @ApiOperation({ summary: 'Decline booking request' })
+  @Roles('individual', 'vendor', 'company')
+  @ApiOperation({ summary: 'Decline booking request (crew, vendor, or company target)' })
   decline(@CurrentUser() user: AuthUser, @Param('id') id: string) {
     return this.bookingsService.decline(id, user.id, user.role);
   }
@@ -109,10 +109,10 @@ export class BookingsController {
 
   @Patch(':id/complete')
   @UseGuards(RolesGuard)
-  @Roles('individual', 'vendor')
+  @Roles('individual', 'vendor', 'company')
   @ApiOperation({
     summary:
-      'Mark this booking complete from the crew/vendor side. Sweeps their AvailabilitySlot rows to past_work.',
+      'Mark this booking complete. Target side (crew/vendor/company-as-target) stamps completedByTargetAt and sweeps their AvailabilitySlot rows to past_work. Requester side (production company that sent the request) stamps completedByRequesterAt only — added for the company→company hiring flow.',
   })
   markComplete(@CurrentUser() user: AuthUser, @Param('id') id: string) {
     return this.bookingsService.markBookingComplete(id, user.id, user.role);
@@ -150,16 +150,16 @@ export class BookingsController {
 
   @Patch(':id/accept-company-cancel')
   @UseGuards(RolesGuard)
-  @Roles('individual', 'vendor')
-  @ApiOperation({ summary: 'Crew/vendor accepts company-initiated cancellation request' })
+  @Roles('individual', 'vendor', 'company')
+  @ApiOperation({ summary: 'Target (crew/vendor/company) accepts company-initiated cancellation request' })
   acceptCompanyCancellation(@CurrentUser() user: AuthUser, @Param('id') id: string) {
     return this.bookingsService.respondToCompanyCancellation(id, user.id, user.role, true);
   }
 
   @Patch(':id/deny-company-cancel')
   @UseGuards(RolesGuard)
-  @Roles('individual', 'vendor')
-  @ApiOperation({ summary: 'Crew/vendor denies company-initiated cancellation request' })
+  @Roles('individual', 'vendor', 'company')
+  @ApiOperation({ summary: 'Target (crew/vendor/company) denies company-initiated cancellation request' })
   denyCompanyCancellation(@CurrentUser() user: AuthUser, @Param('id') id: string) {
     return this.bookingsService.respondToCompanyCancellation(id, user.id, user.role, false);
   }
