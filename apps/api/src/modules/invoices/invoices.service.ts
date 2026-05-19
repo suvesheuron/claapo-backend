@@ -52,15 +52,28 @@ export class InvoicesService {
   }
 
   private async shouldApplyGstForIssuer(issuerUserId: string): Promise<boolean> {
+    // Three role-profiles can carry a GSTIN. Originally only individuals and
+    // vendors issued invoices, so companyProfile wasn't checked. Once the
+    // company→company hiring flow let companies be the booked party (spec 8),
+    // their main-account companyProfile.gstNumber became a valid issuer GST
+    // too — must look here, otherwise c2c invoices get a spurious "missing
+    // GST" rejection even when the company's GSTIN is on file and verified.
+    // Caller already resolves `issuerUserId` to the account owner (sub-users
+    // act for the main account), so this read sees the right row.
     const issuer = await this.prisma.user.findUnique({
       where: { id: issuerUserId },
       select: {
         individualProfile: { select: { gstNumber: true } },
         vendorProfile: { select: { gstNumber: true } },
+        companyProfile: { select: { gstNumber: true } },
       },
     });
     if (!issuer) return false;
-    const gstNumber = issuer.individualProfile?.gstNumber ?? issuer.vendorProfile?.gstNumber ?? null;
+    const gstNumber =
+      issuer.individualProfile?.gstNumber
+      ?? issuer.vendorProfile?.gstNumber
+      ?? issuer.companyProfile?.gstNumber
+      ?? null;
     return this.isValidGstNumber(gstNumber);
   }
 
