@@ -183,4 +183,14 @@ export class ChatGateway implements OnGatewayInit, OnGatewayConnection, OnGatewa
   emitToUser(userId: string, event: string, data: unknown) {
     this.server.to(USER_ROOM(userId)).emit(event, data);
   }
+
+  /** Push badge count updates to a user (replaces polling) */
+  emitBadgeUpdated(userId: string, incomingPending: number) {
+    this.emitToUser(userId, 'badge_updated', { incomingPending });
+  }
+
+  /** Push unread count updates to a user (replaces polling) */
+  emitUnreadUpdated(userId: string, totalUnread: number) {
+    this.emitToUser(userId, 'unread_updated', { totalUnread });
+  }
 }

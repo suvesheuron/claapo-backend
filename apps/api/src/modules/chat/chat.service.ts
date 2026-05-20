@@ -1,4 +1,4 @@
-import { Injectable, ForbiddenException, NotFoundException, BadRequestException } from '@nestjs/common';
+import { Injectable, ForbiddenException, NotFoundException, BadRequestException, Inject, forwardRef } from '@nestjs/common';
 import { MessageType, UserRole } from '@prisma/client';
 import { PrismaService } from '../../database/prisma.service';
 import { StorageService } from '../storage/storage.service';
@@ -6,6 +6,7 @@ import { AppCacheService } from '../../common/cache/app-cache.service';
 import { cacheKeys } from '../../common/cache/cache-keys';
 import { CreateConversationDto } from './dto/create-conversation.dto';
 import { CreateMessageDto } from './dto/create-message.dto';
+import { ChatGateway } from './chat.gateway';
 
 type UserIdentity = { mainUserId: string | null; role: UserRole } | null;
 
@@ -15,6 +16,8 @@ export class ChatService {
     private readonly prisma: PrismaService,
     private readonly storage: StorageService,
     private readonly cache: AppCacheService,
+    @Inject(forwardRef(() => ChatGateway))
+    private readonly chatGateway: ChatGateway,
   ) {}
 
   /** Ensure participant ordering for unique constraint: participantA < participantB */
@@ -112,6 +115,27 @@ export class ChatService {
       // Individual users can create conversations for any project they're invited to chat about
       // The access is validated by the fact that both participants must be valid users
       hasAccess = true;
+    }
+    // Company→company hiring flow: when the OTHER company owns the project and
+    // has already opened a conversation with us (inquiry message or booking
+    // auto-message before acceptance), the receiving company isn't the project
+    // owner and doesn't yet hold a booking — so without this branch they get a
+    // 403 from Chat.tsx's upsert call and the inquiry/booking message never
+    // surfaces. Mirrors the individual blanket-allow but is narrower: we only
+    // grant access if the project owner has already started the conversation,
+    // never to arbitrary companies probing projects they aren't party to.
+    if (!hasAccess && role === UserRole.company) {
+      const existingConv = await this.prisma.conversation.findUnique({
+        where: {
+          projectId_participantA_participantB: {
+            projectId: dto.projectId,
+            participantA,
+            participantB,
+          },
+        },
+        select: { id: true },
+      });
+      if (existingConv) hasAccess = true;
     }
     if (!hasAccess) throw new ForbiddenException('No access to this project');
 
@@ -470,6 +494,12 @@ export class ChatService {
       }),
     ]);
 
+    // Push unread update to the other participant (not the sender)
+    const otherParticipantId = conv.participantA === mainUserId ? conv.participantB : conv.participantA;
+    if (otherParticipantId && otherParticipantId !== (mainUserId ?? userId)) {
+      this.pushUnreadForUser(otherParticipantId).catch(() => {});
+    }
+
     return this.formatMessage(message, userId, mainUserId);
   }
 
@@ -491,7 +521,49 @@ export class ChatService {
       },
       data: { isRead: true, readAt: new Date() },
     });
+
+    // Push updated unread count for the reader
+    this.pushUnreadForUser(userId).catch(() => {});
+
     return { message: 'Messages marked as read' };
+  }
+
+  /**
+   * Compute total unread messages across all conversations for a user and
+   * push the result over WebSocket. Non-blocking — callers wrap in .catch().
+   *
+   * For sub-users, conversations are resolved to the main user's ID, so we
+   * always compute unread for the account owner (mainUserId ?? userId).
+   */
+  private async pushUnreadForUser(userId: string) {
+    try {
+      const userData = await this.getUserIdentity(userId);
+      const accountUserId = userData?.mainUserId ?? userId;
+
+      const conversations = await this.prisma.conversation.findMany({
+        where: {
+          OR: [
+            { participantA: accountUserId },
+            { participantB: accountUserId },
+          ],
+        },
+        include: {
+          messages: {
+            where: { senderId: { not: accountUserId }, isRead: false },
+            select: { id: true },
+          },
+        },
+      });
+
+      const totalUnread = conversations.reduce(
+        (sum, c) => sum + c.messages.length,
+        0,
+      );
+
+      this.chatGateway.emitUnreadUpdated(accountUserId, totalUnread);
+    } catch {
+      // Best-effort: unread push should never block the primary operation.
+    }
   }
 
   /**

@@ -14,6 +14,7 @@ import { PrismaService } from '../../database/prisma.service';
 const ONGOING_BOOKING_STATUSES = ['pending', 'accepted', 'locked', 'cancel_requested'] as const;
 import { NotificationsService } from '../notifications/notifications.service';
 import { ChatService } from '../chat/chat.service';
+import { ChatGateway } from '../chat/chat.gateway';
 import {
   QUEUE_BOOKINGS_EXPIRE,
   QUEUE_NOTIFICATIONS,
@@ -34,6 +35,7 @@ export class BookingsService implements OnApplicationBootstrap {
     private readonly prisma: PrismaService,
     private readonly notifications: NotificationsService,
     private readonly chat: ChatService,
+    private readonly chatGateway: ChatGateway,
     @InjectQueue(QUEUE_BOOKINGS_EXPIRE) private readonly expireQueue: Queue,
     @InjectQueue(QUEUE_NOTIFICATIONS) private readonly notificationsQueue: Queue,
   ) {}
@@ -321,6 +323,9 @@ export class BookingsService implements OnApplicationBootstrap {
       await this.runBookingCreatedSideEffectsInline(booking, companyCtx.accountOwnerId, targetAccountUserId);
     }
 
+    // Push badge update to target (new pending request)
+    this.pushBadgeForUser(targetAccountUserId).catch(() => {});
+
     return booking;
   }
 
@@ -577,7 +582,19 @@ export class BookingsService implements OnApplicationBootstrap {
       },
       include: {
         project: true,
-        target: { select: { id: true, email: true, role: true, individualProfile: true, vendorProfile: true } },
+        target: {
+          select: {
+            id: true,
+            email: true,
+            role: true,
+            individualProfile: true,
+            vendorProfile: true,
+            // Company→company bookings: without companyProfile here the
+            // receiver row falls back to the company's email on the project
+            // detail page. The frontend needs the company name to render.
+            companyProfile: { select: { companyName: true } },
+          },
+        },
         projectRole: true,
         // Vendor bookings carry a specific equipment item — the company UI
         // needs to label which kit it hired, not just the vendor company.
@@ -762,6 +779,8 @@ export class BookingsService implements OnApplicationBootstrap {
       booking.projectId,
       `Booking request has been accepted`,
     );
+    // Push badge update to requester (pending → accepted)
+    this.pushBadgeForUser(booking.requesterUserId).catch(() => {});
     return updated;
   }
 
@@ -804,6 +823,8 @@ export class BookingsService implements OnApplicationBootstrap {
       booking.projectId,
       `Booking request has been declined`,
     );
+    // Push badge update to requester (pending → declined)
+    this.pushBadgeForUser(booking.requesterUserId).catch(() => {});
     return updated;
   }
 
@@ -1059,6 +1080,9 @@ export class BookingsService implements OnApplicationBootstrap {
         },
       );
     }
+    // Push badge updates to both sides (status changed to cancel_requested)
+    this.pushBadgeForUser(booking.requesterUserId).catch(() => {});
+    this.pushBadgeForUser(booking.targetUserId).catch(() => {});
     return updated;
   }
 
@@ -1104,6 +1128,9 @@ export class BookingsService implements OnApplicationBootstrap {
         booking.projectId,
         `Cancellation request has been accepted by ${actorName}`,
       );
+      // Push badge updates (cancel_requested → cancelled)
+      this.pushBadgeForUser(booking.requesterUserId).catch(() => {});
+      this.pushBadgeForUser(booking.targetUserId).catch(() => {});
       return updated;
     } else {
       const updated = await this.prisma.bookingRequest.update({
@@ -1127,6 +1154,8 @@ export class BookingsService implements OnApplicationBootstrap {
         booking.projectId,
         `Cancellation request has been declined by ${actorName}`,
       );
+      // Push badge update (cancel_requested → accepted/locked, badge decreases)
+      this.pushBadgeForUser(booking.targetUserId).catch(() => {});
       return updated;
     }
   }
@@ -1187,6 +1216,9 @@ export class BookingsService implements OnApplicationBootstrap {
         booking.projectId,
         `Cancellation request has been accepted by ${actorName}`,
       );
+      // Push badge updates (cancel_requested → cancelled)
+      this.pushBadgeForUser(booking.requesterUserId).catch(() => {});
+      this.pushBadgeForUser(booking.targetUserId).catch(() => {});
       return updated;
     }
     const updated = await this.prisma.bookingRequest.update({
@@ -1210,6 +1242,8 @@ export class BookingsService implements OnApplicationBootstrap {
       booking.projectId,
       `Cancellation request has been declined by ${actorName}`,
     );
+    // Push badge update (cancel_requested → accepted/locked)
+    this.pushBadgeForUser(booking.requesterUserId).catch(() => {});
     return updated;
   }
 
@@ -1268,6 +1302,9 @@ export class BookingsService implements OnApplicationBootstrap {
       booking.projectId,
       `Booking update: request for "${booking.project.title}" was cancelled${reason?.trim() ? ` (${reason.trim()})` : ''}.`,
     );
+    // Push badge updates to both sides (pending → cancelled)
+    this.pushBadgeForUser(booking.requesterUserId).catch(() => {});
+    this.pushBadgeForUser(booking.targetUserId).catch(() => {});
     return updated;
   }
 
@@ -1369,6 +1406,28 @@ export class BookingsService implements OnApplicationBootstrap {
       lockedCount: updatedBookings.length,
       bookings: updatedBookings,
     };
+  }
+
+  /**
+   * Compute incoming pending booking count for a user and push over WebSocket.
+   * Non-blocking — callers should not await.
+   *
+   * Counts bookings where the user (or their account) is the target and status
+   * is 'pending' or 'cancel_requested' — exactly what the mobile badge poller
+   * used to compute.
+   */
+  private async pushBadgeForUser(targetUserId: string) {
+    try {
+      const count = await this.prisma.bookingRequest.count({
+        where: {
+          targetUserId,
+          status: { in: ['pending', 'cancel_requested'] as any },
+        },
+      });
+      this.chatGateway.emitBadgeUpdated(targetUserId, count);
+    } catch {
+      // Best-effort: badge push should never block the primary operation.
+    }
   }
 
   private async getCompanyAccountContext(userId: string) {

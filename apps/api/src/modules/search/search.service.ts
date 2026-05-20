@@ -565,6 +565,11 @@ export class SearchService {
       userId: string;
       role: 'individual' | 'vendor' | 'company';
       name: string;
+      // For crew this is the first skill ("DOP", "Director"), for vendors the
+      // vendorType, for companies the companyType. The UI surfaces this as a
+      // subtitle on directory cards so users see the craft/business type
+      // instead of the generic role word.
+      categoryLabel: string | null;
       locationCity: string | null;
       locationState: string | null;
       avatarUrl: string | null;
@@ -588,6 +593,7 @@ export class SearchService {
         select: {
           userId: true,
           displayName: true,
+          skills: true,
           locationCity: true,
           locationState: true,
           avatarKey: true,
@@ -601,6 +607,7 @@ export class SearchService {
           userId: r.userId,
           role: 'individual' as const,
           name: r.displayName ?? '',
+          categoryLabel: (r.skills ?? []).find((s) => s && s.trim()) ?? null,
           locationCity: r.locationCity ?? null,
           locationState: r.locationState ?? null,
           avatarUrl: null,
@@ -620,6 +627,7 @@ export class SearchService {
         select: {
           userId: true,
           companyName: true,
+          vendorType: true,
           locationCity: true,
           locationState: true,
           logoKey: true,
@@ -632,6 +640,7 @@ export class SearchService {
           userId: r.userId,
           role: 'vendor' as const,
           name: r.companyName ?? '',
+          categoryLabel: r.vendorType ?? null,
           locationCity: r.locationCity ?? null,
           locationState: r.locationState ?? null,
           avatarUrl: null,
@@ -650,6 +659,7 @@ export class SearchService {
         select: {
           userId: true,
           companyName: true,
+          companyType: true,
           locationCity: true,
           locationState: true,
           logoKey: true,
@@ -662,6 +672,7 @@ export class SearchService {
           userId: r.userId,
           role: 'company' as const,
           name: r.companyName ?? '',
+          categoryLabel: r.companyType ?? 'Production House',
           locationCity: r.locationCity ?? null,
           locationState: r.locationState ?? null,
           avatarUrl: null,

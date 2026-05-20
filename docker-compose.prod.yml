@@ -1,0 +1,150 @@
+# CrewCall Backend — Production (multi-pod behind nginx LB)
+# Usage:
+#   docker compose -f docker-compose.prod.yml up -d
+#
+# Runs 3 API instances behind nginx (round-robin load balancing).
+# All pods share the same PostgreSQL + Redis.
+
+services:
+  db:
+    image: postgres:16-alpine
+    container_name: claapo-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-claapo}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-claapo_password}
+      POSTGRES_DB: ${POSTGRES_DB:-claapo}
+    ports:
+      - "5432:5432"
+    volumes:
+      - claapo_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-claapo} -d ${POSTGRES_DB:-claapo}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+
+  redis:
+    image: redis:7-alpine
+    container_name: claapo-redis
+    restart: unless-stopped
+    command:
+      [
+        "redis-server",
+        "--appendonly", "yes",
+        "--maxmemory", "2gb",
+        "--maxmemory-policy", "allkeys-lru"
+      ]
+    ports:
+      - "6379:6379"
+    volumes:
+      - claapo_redisdata:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 5s
+
+  # ── API Pods (3 instances) ──────────────────────────────────────────────
+  # Each pod runs on an internal port (3001/3002/3003). Nginx load-balances
+  # across them. The Redis Socket.IO adapter ensures WebSocket messages fan
+  # out across all pods — a client connected to pod-2 still receives events
+  # emitted by pod-1.
+
+  api-1:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    environment:
+      - NODE_ENV=production
+      - PORT=3000
+      - DATABASE_URL=postgresql://${POSTGRES_USER:-claapo}:${POSTGRES_PASSWORD:-claapo_password}@db:5432/${POSTGRES_DB:-claapo}
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - JWT_SECRET=${JWT_SECRET}
+      - JWT_REFRESH_SECRET=${JWT_REFRESH_SECRET}
+      - THROTTLER_ENABLED=true
+      - CACHE_ENABLED=true
+      - QUEUE_ENABLED=true
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - claapo-net
+
+  api-2:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    environment:
+      - NODE_ENV=production
+      - PORT=3000
+      - DATABASE_URL=postgresql://${POSTGRES_USER:-claapo}:${POSTGRES_PASSWORD:-claapo_password}@db:5432/${POSTGRES_DB:-claapo}
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - JWT_SECRET=${JWT_SECRET}
+      - JWT_REFRESH_SECRET=${JWT_REFRESH_SECRET}
+      - THROTTLER_ENABLED=true
+      - CACHE_ENABLED=true
+      - QUEUE_ENABLED=true
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - claapo-net
+
+  api-3:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    environment:
+      - NODE_ENV=production
+      - PORT=3000
+      - DATABASE_URL=postgresql://${POSTGRES_USER:-claapo}:${POSTGRES_PASSWORD:-claapo_password}@db:5432/${POSTGRES_DB:-claapo}
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - JWT_SECRET=${JWT_SECRET}
+      - JWT_REFRESH_SECRET=${JWT_REFRESH_SECRET}
+      - THROTTLER_ENABLED=true
+      - CACHE_ENABLED=true
+      - QUEUE_ENABLED=true
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - claapo-net
+
+  # ── Nginx Load Balancer ─────────────────────────────────────────────────
+  nginx:
+    image: nginx:alpine
+    container_name: claapo-lb
+    restart: unless-stopped
+    ports:
+      - "3000:80"
+    volumes:
+      - ./nginx.conf:/etc/nginx/nginx.conf:ro
+    depends_on:
+      - api-1
+      - api-2
+      - api-3
+    networks:
+      - claapo-net
+
+volumes:
+  claapo_pgdata:
+  claapo_redisdata:
+
+networks:
+  claapo-net:
+    driver: bridge

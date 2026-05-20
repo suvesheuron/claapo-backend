@@ -257,8 +257,23 @@ export class ProjectsService {
           },
         },
       };
+      // Company→company inquiry flow: the receiving company can be in a
+      // conversation on the owner's project BEFORE any booking exists (the
+      // owner used the "Send Inquiry" flow). Without this clause the project
+      // is invisible to the receiver in the /conversations project picker, so
+      // the inquiry message has no entry point on their dashboard.
+      const conversationOnProjectsClause = {
+        conversations: {
+          some: {
+            OR: [
+              { participantA: mainUserId },
+              { participantB: mainUserId },
+            ],
+          },
+        },
+      };
       whereClause = {
-        OR: [ownedProjectsClause, bookedOnProjectsClause],
+        OR: [ownedProjectsClause, bookedOnProjectsClause, conversationOnProjectsClause],
       };
     } else if (role === UserRole.vendor) {
       // Vendor: projects where they have bookings
