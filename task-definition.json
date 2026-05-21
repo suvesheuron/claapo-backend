@@ -1,0 +1,54 @@
+{
+  "family": "claapo-api",
+  "networkMode": "awsvpc",
+  "requiresCompatibilities": ["FARGATE"],
+  "cpu": "1024",
+  "memory": "2048",
+  "executionRoleArn": "arn:aws:iam::539898340820:role/ecsTaskExecutionRole",
+  "taskRoleArn": "arn:aws:iam::539898340820:role/ecsTaskRole",
+  "runtimePlatform": { "cpuArchitecture": "X86_64", "operatingSystemFamily": "LINUX" },
+  "containerDefinitions": [
+    {
+      "name": "api",
+      "image": "539898340820.dkr.ecr.ap-south-1.amazonaws.com/claapo/api:latest",
+      "essential": true,
+      "portMappings": [{ "containerPort": 3000, "protocol": "tcp" }],
+      "environment": [
+        { "name": "NODE_ENV", "value": "production" },
+        { "name": "PORT", "value": "3000" },
+        { "name": "API_BASE_URL", "value": "https://api.claapo.com" },
+        { "name": "CORS_ORIGINS", "value": "*" },
+        { "name": "REDIS_HOST", "value": "master.claapo-prod-redis.upks90.aps1.cache.amazonaws.com" },
+        { "name": "REDIS_PORT", "value": "6379" },
+        { "name": "REDIS_DB", "value": "0" },
+        { "name": "REDIS_TLS", "value": "true" },
+        { "name": "THROTTLER_ENABLED", "value": "true" },
+        { "name": "CACHE_ENABLED", "value": "true" },
+        { "name": "QUEUE_ENABLED", "value": "true" },
+        { "name": "AWS_REGION", "value": "ap-south-1" },
+        { "name": "AWS_S3_BUCKET", "value": "claapo-prod-uploads" }
+      ],
+      "secrets": [
+        { "name": "DATABASE_URL",        "valueFrom": "arn:aws:secretsmanager:ap-south-1:539898340820:secret:claapo/prod/db-url-AIfb8a" },
+        { "name": "JWT_SECRET",          "valueFrom": "arn:aws:secretsmanager:ap-south-1:539898340820:secret:claapo/prod/jwt-secret-H3fE1w" },
+        { "name": "JWT_REFRESH_SECRET",  "valueFrom": "arn:aws:secretsmanager:ap-south-1:539898340820:secret:claapo/prod/jwt-refresh-secret-hQdoZo" },
+        { "name": "REDIS_PASSWORD",      "valueFrom": "arn:aws:secretsmanager:ap-south-1:539898340820:secret:claapo/prod/redis-auth-heAPU2" }
+      ],
+      "logConfiguration": {
+        "logDriver": "awslogs",
+        "options": {
+          "awslogs-group": "/ecs/claapo-api",
+          "awslogs-region": "ap-south-1",
+          "awslogs-stream-prefix": "api"
+        }
+      },
+      "healthCheck": {
+        "command": ["CMD-SHELL", "wget -qO- http://localhost:3000/v1/health || exit 1"],
+        "interval": 30,
+        "timeout": 5,
+        "retries": 3,
+        "startPeriod": 30
+      }
+    }
+  ]
+}

@@ -139,10 +139,46 @@ export class ChatService {
     }
     if (!hasAccess) throw new ForbiddenException('No access to this project');
 
-    // Use transaction to prevent race conditions when creating conversations
-    let conv = await this.prisma.$transaction(async (tx) => {
-      // Check if conversation already exists
-      let existing = await tx.conversation.findUnique({
+    // First try to find existing conversation outside transaction (heavy include, no timeout risk)
+    const existingConv = await this.prisma.conversation.findUnique({
+      where: {
+        projectId_participantA_participantB: {
+          projectId: dto.projectId,
+          participantA,
+          participantB,
+        },
+      },
+      include: {
+        project: { select: { id: true, title: true, shootDates: true } },
+        participantAUser: {
+          select: {
+            id: true,
+            email: true,
+            individualProfile: { select: { displayName: true } },
+            companyProfile: { select: { companyName: true } },
+            vendorProfile: { select: { companyName: true } },
+          },
+        },
+        participantBUser: {
+          select: {
+            id: true,
+            email: true,
+            individualProfile: { select: { displayName: true } },
+            companyProfile: { select: { companyName: true } },
+            vendorProfile: { select: { companyName: true } },
+          },
+        },
+      },
+    });
+
+    if (existingConv) {
+      return this.formatConversation(existingConv, userId);
+    }
+
+    // Only create inside a short transaction — just the insert, no heavy reads
+    const conv = await this.prisma.$transaction(async (tx) => {
+      // Double-check inside transaction to prevent race condition
+      const doubleCheck = await tx.conversation.findUnique({
         where: {
           projectId_participantA_participantB: {
             projectId: dto.projectId,
@@ -150,69 +186,51 @@ export class ChatService {
             participantB,
           },
         },
-        include: {
-          project: { select: { id: true, title: true, shootDates: true } },
-          participantAUser: {
-            select: {
-              id: true,
-              email: true,
-              individualProfile: { select: { displayName: true } },
-              companyProfile: { select: { companyName: true } },
-              vendorProfile: { select: { companyName: true } },
-            },
-          },
-          participantBUser: {
-            select: {
-              id: true,
-              email: true,
-              individualProfile: { select: { displayName: true } },
-              companyProfile: { select: { companyName: true } },
-              vendorProfile: { select: { companyName: true } },
-            },
-          },
-        },
+        select: { id: true },
       });
+      if (doubleCheck) return doubleCheck;
 
-      // Create if it doesn't exist
-      if (!existing) {
-        existing = await tx.conversation.create({
-          data: {
-            projectId: dto.projectId,
-            participantA,
-            participantB,
-          },
-          include: {
-            project: { select: { id: true, title: true, shootDates: true } },
-            participantAUser: {
-              select: {
-                id: true,
-                email: true,
-                individualProfile: { select: { displayName: true } },
-                companyProfile: { select: { companyName: true } },
-                vendorProfile: { select: { companyName: true } },
-              },
-            },
-            participantBUser: {
-              select: {
-                id: true,
-                email: true,
-                individualProfile: { select: { displayName: true } },
-                companyProfile: { select: { companyName: true } },
-                vendorProfile: { select: { companyName: true } },
-              },
-            },
-          },
-        });
-      }
-
-      return existing;
+      return tx.conversation.create({
+        data: {
+          projectId: dto.projectId,
+          participantA,
+          participantB,
+        },
+        select: { id: true },
+      });
     });
 
-    if (!conv) {
+    // Fetch full conversation with includes after creation (outside transaction)
+    const fullConv = await this.prisma.conversation.findUnique({
+      where: { id: conv.id },
+      include: {
+        project: { select: { id: true, title: true, shootDates: true } },
+        participantAUser: {
+          select: {
+            id: true,
+            email: true,
+            individualProfile: { select: { displayName: true } },
+            companyProfile: { select: { companyName: true } },
+            vendorProfile: { select: { companyName: true } },
+          },
+        },
+        participantBUser: {
+          select: {
+            id: true,
+            email: true,
+            individualProfile: { select: { displayName: true } },
+            companyProfile: { select: { companyName: true } },
+            vendorProfile: { select: { companyName: true } },
+          },
+        },
+      },
+    });
+
+    if (!fullConv) {
       throw new NotFoundException('Conversation not found');
     }
 
-    return this.formatConversation(conv, userId);
+    return this.formatConversation(fullConv, userId);
   }
 
   /** Build a WHERE clause for conversations that a user (or their sub-users) can access */

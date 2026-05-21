@@ -364,6 +364,25 @@ export class ProjectsService {
             },
           });
 
+    // Latest-message timestamp per project — drives the "latest project on
+    // top" sort in the /conversations project picker. Pull MAX(lastMessageAt)
+    // from conversations (already maintained per send) instead of joining
+    // through messages, so this is a single grouped index scan.
+    const conversationAggregates =
+      projectIds.length === 0
+        ? []
+        : await this.prisma.conversation.groupBy({
+            by: ['projectId'],
+            where: { projectId: { in: projectIds } },
+            _max: { lastMessageAt: true },
+          });
+    const lastMessageAtByProject = new Map<string, Date | null>();
+    for (const row of conversationAggregates) {
+      if (row.projectId) {
+        lastMessageAtByProject.set(row.projectId, row._max.lastMessageAt ?? null);
+      }
+    }
+
     const amountStatsByProject = new Map<
       string,
       {
@@ -420,6 +439,10 @@ export class ProjectsService {
         endDate: project.endDate,
         approvedBudget: project.budget ?? 0,
         createdAt: project.createdAt,
+        // Latest chat activity on the project — null when no conversation
+        // has any messages yet. Frontend uses it to sort projects so the
+        // freshest chat bubbles up.
+        lastMessageAt: lastMessageAtByProject.get(project.id) ?? null,
         conversationCount: project._count.conversations,
         invoiceCount: (amountStatsByProject.get(project.id)?.invoiceCount ?? 0),
         bookingCount: project._count.bookings,
