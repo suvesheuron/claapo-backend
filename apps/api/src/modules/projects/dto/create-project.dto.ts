@@ -1,5 +1,5 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
-import { IsString, IsOptional, IsInt, Min, IsDateString, IsArray } from 'class-validator';
+import { IsString, IsOptional, IsInt, IsUUID, Min, IsDateString, IsArray } from 'class-validator';
 
 export class CreateProjectDto {
   @ApiProperty({ example: 'Midnight Chronicles' })
@@ -51,4 +51,19 @@ export class CreateProjectDto {
   @IsInt()
   @Min(0)
   budget?: number;
+
+  /**
+   * Casting Director flow only. When set, invoices for bookings under this
+   * project route to this company instead of the project owner. Must be the
+   * userId of a company that has hired the casting director (an accepted or
+   * locked booking with this user as target). Set null/undefined for normal
+   * projects.
+   */
+  @ApiPropertyOptional({
+    description:
+      'UUID of the company that should ultimately be billed for invoices in this project (Casting Director flow).',
+  })
+  @IsOptional()
+  @IsUUID()
+  billedToCompanyUserId?: string;
 }

@@ -3,7 +3,7 @@ import { IsOptional, IsString, IsInt, Min, IsDateString, IsEnum, IsIn } from 'cl
 import { Type } from 'class-transformer';
 import { VendorType } from '@prisma/client';
 
-export const SEARCH_PEOPLE_CATEGORIES = ['crew', 'vendor', 'company'] as const;
+export const SEARCH_PEOPLE_CATEGORIES = ['crew', 'vendor', 'company', 'cast'] as const;
 export type SearchPeopleCategory = (typeof SEARCH_PEOPLE_CATEGORIES)[number];
 
 export class SearchPeopleQueryDto {
@@ -89,6 +89,71 @@ export class SearchCrewQueryDto {
   @IsOptional()
   @Type(() => Boolean)
   availableOnly?: boolean;
+
+  @ApiPropertyOptional({ default: 1 })
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  page?: number = 1;
+
+  @ApiPropertyOptional({ default: 20 })
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  limit?: number = 20;
+}
+
+export class SearchCastQueryDto {
+  @ApiPropertyOptional({ description: 'Partial match on display name' })
+  @IsOptional()
+  @IsString()
+  name?: string;
+
+  @ApiPropertyOptional({ description: 'Role type — actor or model' })
+  @IsOptional()
+  @IsIn(['actor', 'model'])
+  roleType?: 'actor' | 'model';
+
+  @ApiPropertyOptional({ description: 'Language filter (comma-separated)' })
+  @IsOptional()
+  @IsString()
+  language?: string;
+
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsString()
+  lookType?: string;
+
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsString()
+  bodyType?: string;
+
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsString()
+  gender?: string;
+
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsString()
+  city?: string;
+
+  @ApiPropertyOptional({ description: 'Daily rate min in paise' })
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(0)
+  rateMin?: number;
+
+  @ApiPropertyOptional({ description: 'Daily rate max in paise' })
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(0)
+  rateMax?: number;
 
   @ApiPropertyOptional({ default: 1 })
   @IsOptional()

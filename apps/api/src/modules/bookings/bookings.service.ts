@@ -167,12 +167,17 @@ export class BookingsService implements OnApplicationBootstrap {
     }
     const target = await this.prisma.user.findFirst({ where: { id: dto.targetUserId, deletedAt: null } });
     if (!target) throw new NotFoundException('Target user not found');
-    // Allowed target roles: crew (individual), vendor, and another company
-    // (company→company collaboration bookings). Admin / unknown roles are
-    // still rejected. Equipment-specific behavior only kicks in when target
-    // is a vendor — see vendorEquipmentId branch below.
-    if (target.role !== 'individual' && target.role !== 'vendor' && target.role !== 'company') {
-      throw new BadRequestException('Target must be individual, vendor, or company');
+    // Allowed target roles: crew (individual), vendor, another company
+    // (company→company collaboration bookings), and cast (actor/model). Admin
+    // / unknown roles are still rejected. Equipment-specific behavior only
+    // kicks in when target is a vendor — see vendorEquipmentId branch below.
+    if (
+      target.role !== 'individual' &&
+      target.role !== 'vendor' &&
+      target.role !== 'company' &&
+      target.role !== 'cast'
+    ) {
+      throw new BadRequestException('Target must be individual, vendor, company, or cast');
     }
     // Self-booking is nonsense — short-circuit before doing any DB work so the
     // company doesn't end up requester+target on their own booking.
@@ -363,11 +368,11 @@ export class BookingsService implements OnApplicationBootstrap {
   }
 
   async listIncoming(userId: string, role: UserRole) {
-    if (role !== 'individual' && role !== 'vendor' && role !== 'company') {
-      throw new ForbiddenException('Only crew, vendors, or companies have incoming requests');
+    if (role !== 'individual' && role !== 'vendor' && role !== 'company' && role !== 'cast') {
+      throw new ForbiddenException('Only crew, vendors, companies, or cast have incoming requests');
     }
     // Resolve target account owner: vendor + company sub-users see the main
-    // account's bookings. Individuals never have sub-users.
+    // account's bookings. Individuals and cast never have sub-users.
     let targetUid: string;
     if (role === UserRole.vendor) {
       targetUid = (await this.getVendorAccountContext(userId)).accountOwnerId;
@@ -502,11 +507,11 @@ export class BookingsService implements OnApplicationBootstrap {
    * into Past Projects on the vendor's side.
    */
   async listPastBookings(userId: string, role: UserRole) {
-    if (role !== 'individual' && role !== 'vendor' && role !== 'company') {
-      throw new ForbiddenException('Only crew, vendors, or companies have past bookings');
+    if (role !== 'individual' && role !== 'vendor' && role !== 'company' && role !== 'cast') {
+      throw new ForbiddenException('Only crew, vendors, companies, or cast have past bookings');
     }
     // Resolve target account owner: vendor + company sub-users see the main
-    // account's past bookings. Individuals never have sub-users.
+    // account's past bookings. Individuals and cast never have sub-users.
     let targetUserId: string;
     if (role === UserRole.vendor) {
       targetUserId = (await this.getVendorAccountContext(userId)).accountOwnerId;
@@ -593,6 +598,10 @@ export class BookingsService implements OnApplicationBootstrap {
             // receiver row falls back to the company's email on the project
             // detail page. The frontend needs the company name to render.
             companyProfile: { select: { companyName: true } },
+            // Cast bookings: surface the cast member's display name + role
+            // type (actor/model) so the company-side Project Detail card can
+            // render them without a follow-up profile fetch.
+            castProfile: { select: { displayName: true, roleType: true } },
           },
         },
         projectRole: true,
@@ -649,12 +658,13 @@ export class BookingsService implements OnApplicationBootstrap {
       include: { project: true },
     });
     if (!booking) throw new NotFoundException('Booking not found');
-    // Three target roles can accept a booking:
+    // Four target roles can accept a booking:
     //   - individual: direct user-id match
+    //   - cast: direct user-id match (no sub-users)
     //   - vendor: resolve to account owner (sub-users act for main account)
     //   - company: resolve to account owner (company→company bookings)
-    if (role !== 'individual' && role !== 'vendor' && role !== 'company') {
-      throw new ForbiddenException('Only crew, vendors, or companies can accept');
+    if (role !== 'individual' && role !== 'vendor' && role !== 'company' && role !== 'cast') {
+      throw new ForbiddenException('Only crew, vendors, companies, or cast can accept');
     }
     if (role === UserRole.vendor) {
       const vendorCtx = await this.getVendorAccountContext(userId);
@@ -790,11 +800,11 @@ export class BookingsService implements OnApplicationBootstrap {
       include: { project: true },
     });
     if (!booking) throw new NotFoundException('Booking not found');
-    // Mirrors accept(): individual / vendor / company targets all decline via
-    // the same handler, with vendor + company resolving to their account owner
-    // so sub-users can act on behalf of the main account.
-    if (role !== 'individual' && role !== 'vendor' && role !== 'company') {
-      throw new ForbiddenException('Only crew, vendors, or companies can decline');
+    // Mirrors accept(): individual / vendor / company / cast targets all decline
+    // via the same handler, with vendor + company resolving to their account
+    // owner so sub-users can act on behalf of the main account.
+    if (role !== 'individual' && role !== 'vendor' && role !== 'company' && role !== 'cast') {
+      throw new ForbiddenException('Only crew, vendors, companies, or cast can decline');
     }
     if (role === UserRole.vendor) {
       const vendorCtx = await this.getVendorAccountContext(userId);
@@ -906,8 +916,13 @@ export class BookingsService implements OnApplicationBootstrap {
    * other. A best-effort notification fires to the opposite side.
    */
   async markBookingComplete(bookingId: string, userId: string, role: UserRole) {
-    if (role !== UserRole.individual && role !== UserRole.vendor && role !== UserRole.company) {
-      throw new ForbiddenException('Only crew, vendors, or companies can mark their booking complete');
+    if (
+      role !== UserRole.individual &&
+      role !== UserRole.vendor &&
+      role !== UserRole.company &&
+      role !== UserRole.cast
+    ) {
+      throw new ForbiddenException('Only crew, vendors, companies, or cast can mark their booking complete');
     }
     const booking = await this.prisma.bookingRequest.findUnique({
       where: { id: bookingId },
@@ -935,10 +950,10 @@ export class BookingsService implements OnApplicationBootstrap {
     const isTarget    = booking.targetUserId    === actorAccountId;
     const isRequester = booking.requesterUserId === actorAccountId;
 
-    // Crew/vendor can only ever be the target side. Companies can act on
+    // Crew/vendor/cast can only ever be the target side. Companies can act on
     // either side (requester for outgoing hires, target for company→company
     // bookings where they were hired).
-    if (role === UserRole.individual || role === UserRole.vendor) {
+    if (role === UserRole.individual || role === UserRole.vendor || role === UserRole.cast) {
       if (!isTarget) throw new ForbiddenException('Not your booking');
     } else if (!isTarget && !isRequester) {
       throw new ForbiddenException('Not your booking');
@@ -985,7 +1000,13 @@ export class BookingsService implements OnApplicationBootstrap {
     try {
       const notifyUserId = actingAsTarget ? booking.requesterUserId : booking.targetUserId;
       const actorLabel = actingAsTarget
-        ? (role === UserRole.vendor ? 'A vendor' : role === UserRole.company ? 'A production company' : 'A crew member')
+        ? (role === UserRole.vendor
+            ? 'A vendor'
+            : role === UserRole.company
+              ? 'A production company'
+              : role === UserRole.cast
+                ? 'A cast member'
+                : 'A crew member')
         : 'The production company';
       await this.notifications.createForUser(
         notifyUserId,
@@ -1160,10 +1181,15 @@ export class BookingsService implements OnApplicationBootstrap {
     }
   }
 
-  /** Target side (crew / vendor / company) accepts or denies a company-initiated cancellation request */
+  /** Target side (crew / vendor / company / cast) accepts or denies a company-initiated cancellation request */
   async respondToCompanyCancellation(bookingId: string, userId: string, role: UserRole, accept: boolean) {
-    if (role !== UserRole.individual && role !== UserRole.vendor && role !== UserRole.company) {
-      throw new ForbiddenException('Only crew, vendors, or companies can respond to company cancellation requests');
+    if (
+      role !== UserRole.individual &&
+      role !== UserRole.vendor &&
+      role !== UserRole.company &&
+      role !== UserRole.cast
+    ) {
+      throw new ForbiddenException('Only crew, vendors, companies, or cast can respond to company cancellation requests');
     }
     const booking = await this.prisma.bookingRequest.findUnique({
       where: { id: bookingId },

@@ -25,6 +25,17 @@ export class ProjectsController {
     return this.projectsService.create(user.id, dto);
   }
 
+  @Get('billing-options')
+  @UseGuards(RolesGuard)
+  @Roles('company')
+  @ApiOperation({
+    summary:
+      'List companies that have hired me (casting director only). Used to populate the "Bill invoices to" dropdown on project create. Returns empty list for non-casting-directors.',
+  })
+  billingOptions(@CurrentUser() user: AuthUser) {
+    return this.projectsService.listBillingOptions(user.id);
+  }
+
   @Get()
   @UseGuards(RolesGuard)
   @Roles('company')

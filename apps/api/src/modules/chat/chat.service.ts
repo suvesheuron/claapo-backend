@@ -109,11 +109,11 @@ export class ChatService {
     if (!hasAccess && role === UserRole.vendor && !user?.mainUserId) {
       hasAccess = true;
     }
-    // Allow individual/crew users access if they are one of the conversation participants
-    // This enables crew members to chat with company/vendor users on projects
-    if (!hasAccess && role === UserRole.individual) {
-      // Individual users can create conversations for any project they're invited to chat about
-      // The access is validated by the fact that both participants must be valid users
+    // Allow individual/crew and cast users access if they are one of the conversation participants.
+    // This enables crew/cast members to chat with company/vendor users on projects.
+    if (!hasAccess && (role === UserRole.individual || role === UserRole.cast)) {
+      // Individual/cast users can create conversations for any project they're invited to chat about.
+      // The access is validated by the fact that both participants must be valid users.
       hasAccess = true;
     }
     // Company→company hiring flow: when the OTHER company owns the project and
@@ -139,10 +139,48 @@ export class ChatService {
     }
     if (!hasAccess) throw new ForbiddenException('No access to this project');
 
-    // Use transaction to prevent race conditions when creating conversations
-    let conv = await this.prisma.$transaction(async (tx) => {
-      // Check if conversation already exists
-      let existing = await tx.conversation.findUnique({
+    // First try to find existing conversation outside transaction (heavy include, no timeout risk)
+    const existingConv = await this.prisma.conversation.findUnique({
+      where: {
+        projectId_participantA_participantB: {
+          projectId: dto.projectId,
+          participantA,
+          participantB,
+        },
+      },
+      include: {
+        project: { select: { id: true, title: true, shootDates: true } },
+        participantAUser: {
+          select: {
+            id: true,
+            email: true,
+            individualProfile: { select: { displayName: true } },
+            companyProfile: { select: { companyName: true } },
+            vendorProfile: { select: { companyName: true } },
+            castProfile: { select: { displayName: true } },
+          },
+        },
+        participantBUser: {
+          select: {
+            id: true,
+            email: true,
+            individualProfile: { select: { displayName: true } },
+            companyProfile: { select: { companyName: true } },
+            vendorProfile: { select: { companyName: true } },
+            castProfile: { select: { displayName: true } },
+          },
+        },
+      },
+    });
+
+    if (existingConv) {
+      return this.formatConversation(existingConv, userId);
+    }
+
+    // Only create inside a short transaction — just the insert, no heavy reads
+    const conv = await this.prisma.$transaction(async (tx) => {
+      // Double-check inside transaction to prevent race condition
+      const doubleCheck = await tx.conversation.findUnique({
         where: {
           projectId_participantA_participantB: {
             projectId: dto.projectId,
@@ -150,69 +188,53 @@ export class ChatService {
             participantB,
           },
         },
-        include: {
-          project: { select: { id: true, title: true, shootDates: true } },
-          participantAUser: {
-            select: {
-              id: true,
-              email: true,
-              individualProfile: { select: { displayName: true } },
-              companyProfile: { select: { companyName: true } },
-              vendorProfile: { select: { companyName: true } },
-            },
-          },
-          participantBUser: {
-            select: {
-              id: true,
-              email: true,
-              individualProfile: { select: { displayName: true } },
-              companyProfile: { select: { companyName: true } },
-              vendorProfile: { select: { companyName: true } },
-            },
-          },
-        },
+        select: { id: true },
       });
+      if (doubleCheck) return doubleCheck;
 
-      // Create if it doesn't exist
-      if (!existing) {
-        existing = await tx.conversation.create({
-          data: {
-            projectId: dto.projectId,
-            participantA,
-            participantB,
-          },
-          include: {
-            project: { select: { id: true, title: true, shootDates: true } },
-            participantAUser: {
-              select: {
-                id: true,
-                email: true,
-                individualProfile: { select: { displayName: true } },
-                companyProfile: { select: { companyName: true } },
-                vendorProfile: { select: { companyName: true } },
-              },
-            },
-            participantBUser: {
-              select: {
-                id: true,
-                email: true,
-                individualProfile: { select: { displayName: true } },
-                companyProfile: { select: { companyName: true } },
-                vendorProfile: { select: { companyName: true } },
-              },
-            },
-          },
-        });
-      }
-
-      return existing;
+      return tx.conversation.create({
+        data: {
+          projectId: dto.projectId,
+          participantA,
+          participantB,
+        },
+        select: { id: true },
+      });
     });
 
-    if (!conv) {
+    // Fetch full conversation with includes after creation (outside transaction)
+    const fullConv = await this.prisma.conversation.findUnique({
+      where: { id: conv.id },
+      include: {
+        project: { select: { id: true, title: true, shootDates: true } },
+        participantAUser: {
+          select: {
+            id: true,
+            email: true,
+            individualProfile: { select: { displayName: true } },
+            companyProfile: { select: { companyName: true } },
+            vendorProfile: { select: { companyName: true } },
+            castProfile: { select: { displayName: true } },
+          },
+        },
+        participantBUser: {
+          select: {
+            id: true,
+            email: true,
+            individualProfile: { select: { displayName: true } },
+            companyProfile: { select: { companyName: true } },
+            vendorProfile: { select: { companyName: true } },
+            castProfile: { select: { displayName: true } },
+          },
+        },
+      },
+    });
+
+    if (!fullConv) {
       throw new NotFoundException('Conversation not found');
     }
 
-    return this.formatConversation(conv, userId);
+    return this.formatConversation(fullConv, userId);
   }
 
   /** Build a WHERE clause for conversations that a user (or their sub-users) can access */
@@ -291,6 +313,7 @@ export class ChatService {
               individualProfile: { select: { displayName: true } },
               companyProfile: { select: { companyName: true } },
               vendorProfile: { select: { companyName: true } },
+              castProfile: { select: { displayName: true } },
             },
           },
           participantBUser: {
@@ -300,6 +323,7 @@ export class ChatService {
               individualProfile: { select: { displayName: true } },
               companyProfile: { select: { companyName: true } },
               vendorProfile: { select: { companyName: true } },
+              castProfile: { select: { displayName: true } },
             },
           },
           messages: {
@@ -374,6 +398,7 @@ export class ChatService {
       ?? m.sender?.individualProfile?.displayName
       ?? m.sender?.companyProfile?.companyName
       ?? m.sender?.vendorProfile?.companyName
+      ?? (m.sender as { castProfile?: { displayName?: string } | null } | undefined)?.castProfile?.displayName
       ?? m.sender?.email
       ?? 'User';
 
@@ -424,6 +449,7 @@ export class ChatService {
             individualProfile: { select: { displayName: true } },
             companyProfile: { select: { companyName: true } },
             vendorProfile: { select: { companyName: true } },
+            castProfile: { select: { displayName: true } },
           },
         },
       },
@@ -483,6 +509,7 @@ export class ChatService {
               individualProfile: { select: { displayName: true } },
               companyProfile: { select: { companyName: true } },
               vendorProfile: { select: { companyName: true } },
+              castProfile: { select: { displayName: true } },
             },
           },
           replyTo: { select: { id: true, content: true, senderId: true } },
@@ -627,6 +654,7 @@ export class ChatService {
             individualProfile: { select: { displayName: true } },
             companyProfile: { select: { companyName: true } },
             vendorProfile: { select: { companyName: true } },
+            castProfile: { select: { displayName: true } },
           },
         },
         replyTo: { select: { id: true, content: true, senderId: true } },
@@ -770,6 +798,7 @@ export class ChatService {
               individualProfile: { select: { displayName: true } },
               companyProfile: { select: { companyName: true } },
               vendorProfile: { select: { companyName: true } },
+              castProfile: { select: { displayName: true } },
             },
           },
         },
@@ -797,6 +826,7 @@ export class ChatService {
           forwardedMessage.sender.individualProfile?.displayName ??
           forwardedMessage.sender.companyProfile?.companyName ??
           forwardedMessage.sender.vendorProfile?.companyName ??
+          (forwardedMessage.sender as { castProfile?: { displayName?: string } | null }).castProfile?.displayName ??
           '—',
       },
     };
@@ -831,6 +861,7 @@ export class ChatService {
             individualProfile: { select: { displayName: true } },
             companyProfile: { select: { companyName: true } },
             vendorProfile: { select: { companyName: true } },
+            castProfile: { select: { displayName: true } },
           },
         },
         conversation: {
@@ -859,6 +890,7 @@ export class ChatService {
             m.sender.individualProfile?.displayName ??
             m.sender.companyProfile?.companyName ??
             m.sender.vendorProfile?.companyName ??
+            (m.sender as { castProfile?: { displayName?: string } | null }).castProfile?.displayName ??
             m.sender.email,
         },
       })),
@@ -940,6 +972,7 @@ export class ChatService {
               individualProfile: { select: { displayName: true } },
               companyProfile: { select: { companyName: true } },
               vendorProfile: { select: { companyName: true } },
+              castProfile: { select: { displayName: true } },
             },
           },
           conversation: {
@@ -980,12 +1013,14 @@ export class ChatService {
           individualProfile: { select: { displayName: true } },
           companyProfile: { select: { companyName: true } },
           vendorProfile: { select: { companyName: true } },
+          castProfile: { select: { displayName: true } },
         },
       });
       for (const p of participants) {
         const name = p.individualProfile?.displayName ??
                      p.companyProfile?.companyName ??
                      p.vendorProfile?.companyName ??
+                     (p as { castProfile?: { displayName?: string } | null }).castProfile?.displayName ??
                      p.email;
         participantNames.set(p.id, name);
       }
@@ -1021,6 +1056,7 @@ export class ChatService {
               m.sender.individualProfile?.displayName ??
               m.sender.companyProfile?.companyName ??
               m.sender.vendorProfile?.companyName ??
+              (m.sender as { castProfile?: { displayName?: string } | null }).castProfile?.displayName ??
               m.sender.email,
           },
           isSameAccount,
@@ -1088,13 +1124,13 @@ export class ChatService {
     participantA: string;
     participantB: string;
     lastMessageAt: Date | null;
-    participantAUser: { id: string; email: string; individualProfile?: { displayName: string } | null; companyProfile?: { companyName: string } | null; vendorProfile?: { companyName: string } | null };
-    participantBUser: { id: string; email: string; individualProfile?: { displayName: string } | null; companyProfile?: { companyName: string } | null; vendorProfile?: { companyName: string } | null };
+    participantAUser: { id: string; email: string; individualProfile?: { displayName: string } | null; companyProfile?: { companyName: string } | null; vendorProfile?: { companyName: string } | null; castProfile?: { displayName: string } | null };
+    participantBUser: { id: string; email: string; individualProfile?: { displayName: string } | null; companyProfile?: { companyName: string } | null; vendorProfile?: { companyName: string } | null; castProfile?: { displayName: string } | null };
     project: { id: string; title: string; shootDates?: Date[] } | null;
     messages?: { id: string; content: string | null; senderId: string; createdAt: Date; isRead: boolean }[];
   }, currentUserId: string, mainUserId: string | null = null) {
     // Determine the "other" participant
-    let other: { id: string; email: string; individualProfile?: { displayName: string } | null; companyProfile?: { companyName: string } | null; vendorProfile?: { companyName: string } | null };
+    let other: { id: string; email: string; individualProfile?: { displayName: string } | null; companyProfile?: { companyName: string } | null; vendorProfile?: { companyName: string } | null; castProfile?: { displayName: string } | null };
 
     if (conv.participantA === currentUserId) {
       other = conv.participantBUser;
@@ -1116,7 +1152,11 @@ export class ChatService {
     }
 
     const displayName =
-      other.individualProfile?.displayName ?? other.companyProfile?.companyName ?? other.vendorProfile?.companyName ?? other.email;
+      other.individualProfile?.displayName
+      ?? other.companyProfile?.companyName
+      ?? other.vendorProfile?.companyName
+      ?? other.castProfile?.displayName
+      ?? other.email;
     const lastMsg = conv.messages?.[0] ?? null;
     return {
       id: conv.id,

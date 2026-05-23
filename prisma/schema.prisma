@@ -19,6 +19,7 @@ enum UserRole {
   company
   vendor
   admin
+  cast
 }
 
 enum OtpType {
@@ -56,9 +57,11 @@ model User {
   individualProfile IndividualProfile?
   companyProfile    CompanyProfile?
   vendorProfile     VendorProfile?
+  castProfile       CastProfile?
   vendorEquipment  VendorEquipment[]
   availabilitySlots AvailabilitySlot[]
   projectsOwned     Project[]         @relation("CompanyProjects")
+  projectsBilledTo  Project[]         @relation("ProjectBillingOverride")
   bookingsRequested BookingRequest[]  @relation("RequesterBookings")
   bookingsReceived  BookingRequest[]  @relation("TargetBookings")
   notifications     Notification[]
@@ -226,6 +229,69 @@ model VendorProfile {
   @@map("vendor_profiles")
 }
 
+// Profile for `cast` role users (actors, models). Mirrors IndividualProfile
+// (billing, social, media keys) plus cast-specific physical/personal columns.
+model CastProfile {
+  id             String   @id @default(uuid()) @db.Uuid
+  userId         String   @unique @map("user_id") @db.Uuid
+
+  displayName    String   @map("display_name")
+  roleType       String   @map("role_type") // 'actor' | 'model'
+  age            Int?
+  gender         String?
+
+  // Personal details
+  heightCm       Int?     @map("height_cm")
+  bodyType       String?  @map("body_type")
+  skinTone       String?  @map("skin_tone")
+  eyeColor       String?  @map("eye_color")
+  lookType       String?  @map("look_type")
+  hairType       String?  @map("hair_type")
+  languages      String[] @default([])
+
+  // Professional
+  aboutMe        String?  @map("about_me")
+  bio            String?
+  extraSkills    String[] @default([]) @map("extra_skills")
+  dailyBudget    Int?     @map("daily_budget")
+
+  // Location
+  address        String?
+  locationCity   String?  @map("location_city")
+  locationState  String?  @map("location_state")
+
+  // Media
+  avatarKey      String?  @map("avatar_key")
+  coverKey       String?  @map("cover_key")
+  showreelKey    String?  @map("showreel_key")
+
+  // Social links
+  website        String?
+  imdbUrl        String?  @map("imdb_url")
+  instagramUrl   String?  @map("instagram_url")
+  youtubeUrl     String?  @map("youtube_url")
+  vimeoUrl       String?  @map("vimeo_url")
+
+  // Billing / banking (same as IndividualProfile)
+  panNumber          String?  @map("pan_number")
+  billingName        String?  @map("billing_name")
+  gstNumber          String?  @map("gst_number")
+  sacCode            String?  @map("sac_code")
+  upiId              String?  @map("upi_id")
+  bankAccountName    String?  @map("bank_account_name")
+  bankAccountNumber  String?  @map("bank_account_number")
+  ifscCode           String?  @map("ifsc_code")
+  bankName           String?  @map("bank_name")
+
+  isAvailable    Boolean  @default(true) @map("is_available")
+  createdAt      DateTime @default(now()) @map("created_at")
+  updatedAt      DateTime @updatedAt @map("updated_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("cast_profiles")
+}
+
 model VendorEquipment {
   id           String   @id @default(uuid()) @db.Uuid
   vendorUserId String   @map("vendor_user_id") @db.Uuid
@@ -307,6 +373,11 @@ enum BookingStatus {
 model Project {
   id              String        @id @default(uuid()) @db.Uuid
   companyUserId   String        @map("company_user_id") @db.Uuid
+  // When set, invoices issued against this project route to this company
+  // (Project-level billing override). Used by the Casting Director flow:
+  // Dharma pays Taran a cast budget, Taran creates their own project, and
+  // bills the budget back to Dharma. When null, invoices go to companyUserId.
+  billedToCompanyUserId String?   @map("billed_to_company_user_id") @db.Uuid
   title           String
   productionHouseName String?   @map("production_house_name")
   description     String?
@@ -324,7 +395,8 @@ model Project {
   createdAt       DateTime      @default(now()) @map("created_at")
   updatedAt       DateTime      @updatedAt @map("updated_at")
 
-  companyUser   User            @relation("CompanyProjects", fields: [companyUserId], references: [id])
+  companyUser     User            @relation("CompanyProjects", fields: [companyUserId], references: [id])
+  billedToCompany User?           @relation("ProjectBillingOverride", fields: [billedToCompanyUserId], references: [id])
   roles         ProjectRole[]
   bookings      BookingRequest[]
   invoices      Invoice[]
@@ -332,6 +404,7 @@ model Project {
   subUserAssignments SubUserProjectAssignment[]
 
   @@index([companyUserId, status])
+  @@index([billedToCompanyUserId])
   @@map("projects")
 }
 

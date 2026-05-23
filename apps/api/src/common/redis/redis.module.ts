@@ -10,12 +10,14 @@ function buildClient(config: ConfigService): Redis {
   const port = config.get<number>('redis.port') ?? 6379;
   const password = config.get<string | undefined>('redis.password');
   const db = config.get<number>('redis.db') ?? 0;
+  const tls = config.get<object | undefined>('redis.tls');
 
   const client = new Redis({
     host,
     port,
     password,
     db,
+    tls,
     lazyConnect: false,
     maxRetriesPerRequest: null,
     enableReadyCheck: true,

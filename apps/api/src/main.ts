@@ -91,7 +91,8 @@ async function bootstrap() {
   SwaggerModule.setup('docs', app, document);
 
   const port = config.get<number>('port') ?? 3000;
-  await app.listen(port);
+  console.log(`[bootstrap] about to call app.listen on port ${port}`);
+  await app.listen(port, '0.0.0.0');
   console.log(`CrewCall API running at http://localhost:${port}/v1, Swagger at http://localhost:${port}/docs, WebSocket chat at ws://localhost:${port}/chat`);
 }
 

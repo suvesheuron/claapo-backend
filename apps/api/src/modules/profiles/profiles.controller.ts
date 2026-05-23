@@ -9,6 +9,7 @@ import { AuthUser } from '../auth/auth.service';
 import { UpdateIndividualProfileDto } from './dto/update-individual-profile.dto';
 import { UpdateCompanyProfileDto } from './dto/update-company-profile.dto';
 import { UpdateVendorProfileDto } from './dto/update-vendor-profile.dto';
+import { UpdateCastProfileDto } from './dto/update-cast-profile.dto';
 import { PresignedUploadDto } from './dto/presigned-upload.dto';
 import { ConfirmUploadDto } from './dto/confirm-upload.dto';
 import { CreateSubUserDto } from './dto/create-sub-user.dto';
@@ -49,6 +50,14 @@ export class ProfilesController {
   @ApiOperation({ summary: 'Update vendor profile' })
   updateVendor(@CurrentUser() user: AuthUser, @Body() dto: UpdateVendorProfileDto) {
     return this.profilesService.updateVendor(user.id, dto);
+  }
+
+  @Patch('cast')
+  @UseGuards(RolesGuard)
+  @Roles('cast')
+  @ApiOperation({ summary: 'Update cast profile (actor/model)' })
+  updateCast(@CurrentUser() user: AuthUser, @Body() dto: UpdateCastProfileDto) {
+    return this.profilesService.updateCast(user.id, dto);
   }
 
   @Get('sub-users/list')
@@ -101,15 +110,15 @@ export class ProfilesController {
 
   @Post('cover')
   @UseGuards(RolesGuard)
-  @Roles('individual', 'vendor', 'company')
-  @ApiOperation({ summary: 'Get presigned URL to upload cover photo (individual/vendor/company)' })
+  @Roles('individual', 'vendor', 'company', 'cast')
+  @ApiOperation({ summary: 'Get presigned URL to upload cover photo (individual/vendor/company/cast)' })
   getCoverUploadUrl(@CurrentUser() user: AuthUser, @Body() dto: PresignedUploadDto) {
     return this.profilesService.getPresignedCoverUrl(user.id, user.role, dto.contentType);
   }
 
   @Post('cover/confirm')
   @UseGuards(RolesGuard)
-  @Roles('individual', 'vendor', 'company')
+  @Roles('individual', 'vendor', 'company', 'cast')
   @ApiOperation({ summary: 'Confirm cover photo upload and set key on profile' })
   confirmCover(@CurrentUser() user: AuthUser, @Body() body: ConfirmUploadDto) {
     return this.profilesService.setCoverKey(user.id, user.role, body.key);
@@ -117,15 +126,15 @@ export class ProfilesController {
 
   @Post('showreel')
   @UseGuards(RolesGuard)
-  @Roles('individual')
-  @ApiOperation({ summary: 'Get presigned URL to upload showreel (individual only)' })
+  @Roles('individual', 'cast')
+  @ApiOperation({ summary: 'Get presigned URL to upload showreel (individual/cast)' })
   getShowreelUploadUrl(@CurrentUser() user: AuthUser, @Body() dto: PresignedUploadDto) {
     return this.profilesService.getPresignedShowreelUrl(user.id);
   }
 
   @Post('showreel/confirm')
   @UseGuards(RolesGuard)
-  @Roles('individual')
+  @Roles('individual', 'cast')
   @ApiOperation({ summary: 'Confirm showreel upload and set key on profile' })
   confirmShowreel(@CurrentUser() user: AuthUser, @Body() body: ConfirmUploadDto) {
     return this.profilesService.setShowreelKey(user.id, body.key);
