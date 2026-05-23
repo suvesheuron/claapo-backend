@@ -13,6 +13,7 @@ import { PrismaService } from '../../database/prisma.service';
 import { RegisterIndividualDto } from './dto/register-individual.dto';
 import { RegisterCompanyDto } from './dto/register-company.dto';
 import { RegisterVendorDto } from './dto/register-vendor.dto';
+import { RegisterCastDto } from './dto/register-cast.dto';
 import { LoginDto } from './dto/login.dto';
 
 const BCRYPT_ROUNDS = 12;
@@ -114,6 +115,30 @@ export class AuthService {
         phone: dto.phone,
         passwordHash,
         role: UserRole.vendor,
+      },
+    });
+    return { userId: user.id, message: 'Registration successful. Verify OTP to activate.' };
+  }
+
+  async registerCast(dto: RegisterCastDto): Promise<{ userId: string; message: string }> {
+    await this.ensureEmailPhoneAvailable(dto.email, dto.phone);
+    const passwordHash = await this.hashPassword(dto.password);
+    const user = await this.prisma.user.create({
+      data: {
+        email: dto.email,
+        phone: dto.phone,
+        passwordHash,
+        role: UserRole.cast,
+        displayName: dto.displayName,
+        castProfile: {
+          create: {
+            displayName: dto.displayName,
+            roleType: dto.roleType,
+            age: dto.age ?? null,
+            gender: dto.gender ?? null,
+            locationCity: dto.locationCity ?? null,
+          },
+        },
       },
     });
     return { userId: user.id, message: 'Registration successful. Verify OTP to activate.' };

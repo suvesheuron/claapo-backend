@@ -6,7 +6,12 @@ import { RolesGuard } from '../../common/guards/roles.guard';
 import { Roles } from '../../common/decorators/roles.decorator';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { AuthUser } from '../auth/auth.service';
-import { SearchCrewQueryDto, SearchVendorsQueryDto, SearchPeopleQueryDto } from './dto/search-query.dto';
+import {
+  SearchCrewQueryDto,
+  SearchVendorsQueryDto,
+  SearchPeopleQueryDto,
+  SearchCastQueryDto,
+} from './dto/search-query.dto';
 
 @ApiTags('search')
 @Controller('search')
@@ -29,6 +34,17 @@ export class SearchController {
   @ApiOperation({ summary: 'Search vendors by type' })
   searchVendors(@CurrentUser() user: AuthUser, @Query() query: SearchVendorsQueryDto) {
     return this.searchService.searchVendors(user.id, user.role, query);
+  }
+
+  @Get('cast')
+  @UseGuards(RolesGuard)
+  @Roles('company', 'admin')
+  @ApiOperation({
+    summary:
+      'Search cast (actors/models). Locked feature — requires companyType=casting_director on the viewer\'s company profile, otherwise responds 403 CAST_SEARCH_LOCKED.',
+  })
+  searchCast(@CurrentUser() user: AuthUser, @Query() query: SearchCastQueryDto) {
+    return this.searchService.searchCast(user.id, user.role, query);
   }
 
   @Get('people')

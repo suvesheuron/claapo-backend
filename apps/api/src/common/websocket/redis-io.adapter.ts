@@ -42,6 +42,27 @@ export class RedisIoAdapter extends IoAdapter {
     subClient.on('reconnecting', (delay: number) =>
       this.logger.warn(`sub client reconnecting in ${delay}ms`),
     );
+
+    // Force both clients to actually open a connection and complete a
+    // round-trip before we hand them to Socket.IO. ioredis is "lazy" — the
+    // socket isn't opened until a command runs, so passing the clients to
+    // createAdapter() without a ping can cause Socket.IO to hang at boot
+    // (subscribe queued behind an unopened TLS+AUTH handshake).
+    // 60s budget covers slow first-time TLS handshake to ElastiCache.
+    const pingWithTimeout = async (c: Redis, name: string) => {
+      const ping = c.ping();
+      const timeout = new Promise<never>((_, reject) =>
+        setTimeout(() => reject(new Error(`${name} ping timed out after 60s`)), 60_000),
+      );
+      await Promise.race([ping, timeout]);
+      this.logger.log(`${name} ping OK`);
+    };
+
+    await Promise.all([
+      pingWithTimeout(pubClient, 'pubClient'),
+      pingWithTimeout(subClient, 'subClient'),
+    ]);
+
     this.adapterConstructor = createAdapter(pubClient, subClient);
     this.logger.log('Socket.IO Redis adapter ready');
   }

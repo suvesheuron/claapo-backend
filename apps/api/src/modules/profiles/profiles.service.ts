@@ -6,6 +6,7 @@ import { StorageService } from '../storage/storage.service';
 import { UpdateIndividualProfileDto } from './dto/update-individual-profile.dto';
 import { UpdateCompanyProfileDto } from './dto/update-company-profile.dto';
 import { UpdateVendorProfileDto } from './dto/update-vendor-profile.dto';
+import { UpdateCastProfileDto } from './dto/update-cast-profile.dto';
 import { CreateSubUserDto } from './dto/create-sub-user.dto';
 
 @Injectable()
@@ -40,6 +41,7 @@ export class ProfilesService {
         individualProfile: true,
         companyProfile: true,
         vendorProfile: true,
+        castProfile: true,
         vendorEquipment: {
           include: {
             availabilities: {
@@ -93,11 +95,13 @@ export class ProfilesService {
     individualProfile: unknown;
     companyProfile: unknown;
     vendorProfile: unknown;
+    castProfile?: unknown;
     role: UserRole;
   }) {
     if (user.role === UserRole.individual) return user.individualProfile;
     if (user.role === UserRole.company) return user.companyProfile;
     if (user.role === UserRole.vendor) return user.vendorProfile;
+    if (user.role === UserRole.cast) return user.castProfile ?? null;
     return null;
   }
 
@@ -254,6 +258,70 @@ export class ProfilesService {
     });
   }
 
+  async updateCast(userId: string, dto: UpdateCastProfileDto) {
+    await this.ensureRole(userId, UserRole.cast);
+    const existing = await this.prisma.castProfile.findUnique({ where: { userId } });
+    const extraSkillsNormalized = dto.extraSkills?.map((s) => String(s).trim()).filter(Boolean);
+    const languagesNormalized = dto.languages?.map((l) => String(l).trim()).filter(Boolean);
+
+    const nextGstNumber = this.normalizeOptionalText(dto.gstNumber) ?? this.normalizeOptionalText(existing?.gstNumber ?? null) ?? null;
+    const nextSacCode = this.normalizeOptionalText(dto.sacCode) ?? this.normalizeOptionalText(existing?.sacCode ?? null) ?? null;
+    this.assertSacCodeRule(nextGstNumber, nextSacCode);
+
+    const normalizedGst = this.normalizeOptionalText(dto.gstNumber);
+    const normalizedSac = normalizedGst === null ? null : this.normalizeOptionalText(dto.sacCode);
+    const data = {
+      displayName: dto.displayName,
+      roleType: dto.roleType,
+      age: dto.age,
+      gender: dto.gender,
+      heightCm: dto.heightCm,
+      bodyType: dto.bodyType,
+      skinTone: dto.skinTone,
+      eyeColor: dto.eyeColor,
+      lookType: dto.lookType,
+      hairType: dto.hairType,
+      languages: languagesNormalized,
+      aboutMe: dto.aboutMe,
+      bio: dto.bio,
+      extraSkills: extraSkillsNormalized,
+      dailyBudget: dto.dailyBudget,
+      address: dto.address,
+      locationCity: dto.locationCity,
+      locationState: dto.locationState,
+      website: dto.website,
+      imdbUrl: dto.imdbUrl,
+      instagramUrl: dto.instagramUrl,
+      youtubeUrl: dto.youtubeUrl,
+      vimeoUrl: dto.vimeoUrl,
+      isAvailable: dto.isAvailable,
+      panNumber: dto.panNumber,
+      billingName: dto.billingName,
+      gstNumber: normalizedGst,
+      sacCode: normalizedSac,
+      upiId: dto.upiId,
+      bankAccountName: dto.bankAccountName,
+      bankAccountNumber: dto.bankAccountNumber,
+      ifscCode: dto.ifscCode,
+      bankName: dto.bankName,
+    };
+    const filtered = Object.fromEntries(Object.entries(data).filter(([, v]) => v !== undefined));
+    if (existing) {
+      return this.prisma.castProfile.update({
+        where: { userId },
+        data: filtered,
+      });
+    }
+    return this.prisma.castProfile.create({
+      data: {
+        userId,
+        displayName: dto.displayName ?? 'Unknown',
+        roleType: dto.roleType ?? 'actor',
+        ...filtered,
+      },
+    });
+  }
+
   private async ensureRole(userId: string, role: UserRole) {
     const user = await this.prisma.user.findFirst({
       where: { id: userId, deletedAt: null },
@@ -270,6 +338,7 @@ export class ProfilesService {
         individualProfile: true,
         companyProfile: true,
         vendorProfile: true,
+        castProfile: true,
         vendorEquipment: {
           include: {
             availabilities: {
@@ -365,6 +434,12 @@ export class ProfilesService {
         create: { userId, companyName: 'Unknown', vendorType: VendorType.equipment, logoKey: key },
         update: { logoKey: key },
       });
+    } else if (user.role === UserRole.cast) {
+      await this.prisma.castProfile.upsert({
+        where: { userId },
+        create: { userId, displayName: 'Unknown', roleType: 'actor', avatarKey: key },
+        update: { avatarKey: key },
+      });
     }
     return { key };
   }
@@ -374,10 +449,15 @@ export class ProfilesService {
     role: UserRole,
     contentType?: string,
   ): Promise<{ uploadUrl: string; key: string }> {
-    // All three profile roles now support a cover/banner image. Sub-users
+    // All four profile roles support a cover/banner image. Sub-users
     // (whose role still equals their parent's role) are also fine here — the
     // controller's JwtAuthGuard already gates the endpoint on a valid session.
-    if (role !== UserRole.individual && role !== UserRole.vendor && role !== UserRole.company) {
+    if (
+      role !== UserRole.individual &&
+      role !== UserRole.vendor &&
+      role !== UserRole.company &&
+      role !== UserRole.cast
+    ) {
       throw new ForbiddenException('Cover photo is not available for this role');
     }
     if (!this.storage.isConfigured() && !this.storage.isSupabaseConfigured()) {
@@ -407,6 +487,12 @@ export class ProfilesService {
         create: { userId, companyName: 'Unknown', coverKey: key },
         update: { coverKey: key },
       });
+    } else if (role === UserRole.cast) {
+      await this.prisma.castProfile.upsert({
+        where: { userId },
+        create: { userId, displayName: 'Unknown', roleType: 'actor', coverKey: key },
+        update: { coverKey: key },
+      });
     } else {
       throw new ForbiddenException('Cover photo is not available for this role');
     }
@@ -414,7 +500,13 @@ export class ProfilesService {
   }
 
   async getPresignedShowreelUrl(userId: string): Promise<{ uploadUrl: string; key: string }> {
-    await this.ensureRole(userId, UserRole.individual);
+    const user = await this.prisma.user.findFirst({
+      where: { id: userId, deletedAt: null },
+      select: { role: true },
+    });
+    if (!user || (user.role !== UserRole.individual && user.role !== UserRole.cast)) {
+      throw new ForbiddenException('Not allowed for your role');
+    }
     if (!this.storage.isConfigured() && !this.storage.isSupabaseConfigured()) {
       throw new Error('Storage is not configured. Set AWS_S3_BUCKET or SUPABASE_* env vars.');
     }
@@ -423,12 +515,26 @@ export class ProfilesService {
   }
 
   async setShowreelKey(userId: string, key: string) {
-    await this.ensureRole(userId, UserRole.individual);
-    await this.prisma.individualProfile.upsert({
-      where: { userId },
-      create: { userId, displayName: 'Unknown', showreelKey: key },
-      update: { showreelKey: key },
+    const user = await this.prisma.user.findFirst({
+      where: { id: userId, deletedAt: null },
+      select: { role: true },
     });
+    if (!user) throw new NotFoundException('User not found');
+    if (user.role === UserRole.individual) {
+      await this.prisma.individualProfile.upsert({
+        where: { userId },
+        create: { userId, displayName: 'Unknown', showreelKey: key },
+        update: { showreelKey: key },
+      });
+    } else if (user.role === UserRole.cast) {
+      await this.prisma.castProfile.upsert({
+        where: { userId },
+        create: { userId, displayName: 'Unknown', roleType: 'actor', showreelKey: key },
+        update: { showreelKey: key },
+      });
+    } else {
+      throw new ForbiddenException('Not allowed for your role');
+    }
     return { key };
   }
 

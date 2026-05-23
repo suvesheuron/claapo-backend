@@ -52,20 +52,19 @@ export class InvoicesService {
   }
 
   private async shouldApplyGstForIssuer(issuerUserId: string): Promise<boolean> {
-    // Three role-profiles can carry a GSTIN. Originally only individuals and
+    // Four role-profiles can carry a GSTIN. Originally only individuals and
     // vendors issued invoices, so companyProfile wasn't checked. Once the
     // company→company hiring flow let companies be the booked party (spec 8),
     // their main-account companyProfile.gstNumber became a valid issuer GST
-    // too — must look here, otherwise c2c invoices get a spurious "missing
-    // GST" rejection even when the company's GSTIN is on file and verified.
-    // Caller already resolves `issuerUserId` to the account owner (sub-users
-    // act for the main account), so this read sees the right row.
+    // too. Cast (actor/model) profiles also have a gstNumber column for
+    // self-employed performers who are GST-registered.
     const issuer = await this.prisma.user.findUnique({
       where: { id: issuerUserId },
       select: {
         individualProfile: { select: { gstNumber: true } },
         vendorProfile: { select: { gstNumber: true } },
         companyProfile: { select: { gstNumber: true } },
+        castProfile: { select: { gstNumber: true } },
       },
     });
     if (!issuer) return false;
@@ -73,8 +72,18 @@ export class InvoicesService {
       issuer.individualProfile?.gstNumber
       ?? issuer.vendorProfile?.gstNumber
       ?? issuer.companyProfile?.gstNumber
+      ?? issuer.castProfile?.gstNumber
       ?? null;
     return this.isValidGstNumber(gstNumber);
+  }
+
+  /**
+   * Resolves the recipient for an invoice given the project. When the project
+   * has a billing override (Casting Director flow), invoices route to that
+   * override; otherwise they go to the project owner.
+   */
+  private resolveInvoiceRecipient(project: { companyUserId: string; billedToCompanyUserId: string | null }): string {
+    return project.billedToCompanyUserId ?? project.companyUserId;
   }
 
   private normalizeTaxInput(
@@ -96,9 +105,15 @@ export class InvoicesService {
 
   async create(issuerUserId: string, role: UserRole, dto: CreateInvoiceDto) {
     // Companies can issue when they are themselves booked by another company
-    // (spec 8). The "is the issuer a confirmed target on this project" check
-    // below remains the real authorization gate — role is just a router.
-    if (role !== UserRole.individual && role !== UserRole.vendor && role !== UserRole.company) {
+    // (spec 8). Cast (actor/model) issues directly to their booking recipient.
+    // The "is the issuer a confirmed target on this project" check below
+    // remains the real authorization gate — role is just a router.
+    if (
+      role !== UserRole.individual &&
+      role !== UserRole.vendor &&
+      role !== UserRole.company &&
+      role !== UserRole.cast
+    ) {
       throw new ForbiddenException('This role cannot issue invoices');
     }
     const vendorCtx = role === UserRole.vendor ? await this.getVendorAccountContext(issuerUserId) : null;
@@ -155,7 +170,7 @@ export class InvoicesService {
         data: {
           projectId: dto.projectId,
           issuerUserId: issuerAccountUserId,
-          recipientUserId: project.companyUserId,
+          recipientUserId: this.resolveInvoiceRecipient(project),
           invoiceNumber: customInvoiceNumber,
           serialNumber: null,
           amount,
@@ -186,7 +201,7 @@ export class InvoicesService {
             data: {
               projectId: dto.projectId,
               issuerUserId: issuerAccountUserId,
-              recipientUserId: project.companyUserId,
+              recipientUserId: this.resolveInvoiceRecipient(project),
               invoiceNumber,
               serialNumber,
               amount,
@@ -294,14 +309,14 @@ export class InvoicesService {
   }
 
   async sendOfflineVendorInvoice(userId: string, role: UserRole, dto: SendOfflineVendorInvoiceDto) {
-    if (role !== UserRole.individual && role !== UserRole.vendor) {
-      throw new ForbiddenException('Only individuals and vendors can send offline invoices');
+    if (role !== UserRole.individual && role !== UserRole.vendor && role !== UserRole.cast) {
+      throw new ForbiddenException('Only individuals, vendors, or cast can send offline invoices');
     }
     const vendorCtx = role === UserRole.vendor ? await this.getVendorAccountContext(userId) : null;
     const issuerAccountUserId = vendorCtx ? vendorCtx.accountOwnerId : userId;
     const project = await this.prisma.project.findUnique({
       where: { id: dto.projectId },
-      select: { id: true, title: true, companyUserId: true },
+      select: { id: true, title: true, companyUserId: true, billedToCompanyUserId: true },
     });
     if (!project) throw new NotFoundException('Project not found');
     const relatedBooking = await this.prisma.bookingRequest.findFirst({
@@ -347,7 +362,7 @@ export class InvoicesService {
             data: {
               projectId: dto.projectId,
               issuerUserId: issuerAccountUserId,
-              recipientUserId: project.companyUserId,
+              recipientUserId: this.resolveInvoiceRecipient(project),
               invoiceNumber,
               serialNumber,
               amount,
@@ -1001,7 +1016,12 @@ export class InvoicesService {
   }
 
   async update(invoiceId: string, userId: string, role: UserRole, dto: UpdateInvoiceDto) {
-    if (role !== UserRole.individual && role !== UserRole.vendor && role !== UserRole.company) {
+    if (
+      role !== UserRole.individual &&
+      role !== UserRole.vendor &&
+      role !== UserRole.company &&
+      role !== UserRole.cast
+    ) {
       throw new ForbiddenException('Only issuer can update');
     }
     const vendorCtx = role === UserRole.vendor ? await this.getVendorAccountContext(userId) : null;
@@ -1059,7 +1079,12 @@ export class InvoicesService {
   }
 
   async send(invoiceId: string, userId: string, role: UserRole) {
-    if (role !== UserRole.individual && role !== UserRole.vendor && role !== UserRole.company) {
+    if (
+      role !== UserRole.individual &&
+      role !== UserRole.vendor &&
+      role !== UserRole.company &&
+      role !== UserRole.cast
+    ) {
       throw new ForbiddenException('Only issuer can send');
     }
     const vendorCtx = role === UserRole.vendor ? await this.getVendorAccountContext(userId) : null;
@@ -1158,7 +1183,7 @@ export class InvoicesService {
         await this.ensureProjectAssignedToSubUser(companyCtx.accountOwnerId, userId, invoice.projectId);
       }
     } else {
-      if (role !== UserRole.individual && role !== UserRole.vendor) {
+      if (role !== UserRole.individual && role !== UserRole.vendor && role !== UserRole.cast) {
         throw new ForbiddenException('Only issuer can add attachments');
       }
       const vendorCtx = role === UserRole.vendor ? await this.getVendorAccountContext(userId) : null;
@@ -1199,7 +1224,7 @@ export class InvoicesService {
         await this.ensureProjectAssignedToSubUser(companyCtx.accountOwnerId, userId, invoice.projectId);
       }
     } else {
-      if (role !== UserRole.individual && role !== UserRole.vendor) {
+      if (role !== UserRole.individual && role !== UserRole.vendor && role !== UserRole.cast) {
         throw new ForbiddenException('Only issuer can add attachments');
       }
       const vendorCtx = role === UserRole.vendor ? await this.getVendorAccountContext(userId) : null;
@@ -1270,7 +1295,7 @@ export class InvoicesService {
         await this.ensureProjectAssignedToSubUser(companyCtx.accountOwnerId, userId, attachment.invoice.projectId);
       }
     } else {
-      if (role !== UserRole.individual && role !== UserRole.vendor) {
+      if (role !== UserRole.individual && role !== UserRole.vendor && role !== UserRole.cast) {
         throw new ForbiddenException('Only issuer can delete attachments');
       }
       const vendorCtx = role === UserRole.vendor ? await this.getVendorAccountContext(userId) : null;

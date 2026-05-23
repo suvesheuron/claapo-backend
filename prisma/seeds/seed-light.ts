@@ -64,6 +64,9 @@ async function main() {
   const freelancer4Id = randomUUID();
   const vendor1Id = randomUUID();
   const vendor2Id = randomUUID();
+  const castingCo1Id = randomUUID();
+  const cast1Id = randomUUID();
+  const cast2Id = randomUUID();
 
   const project1Id = randomUUID();
   const project2Id = randomUUID();
@@ -193,6 +196,35 @@ async function main() {
         role: UserRole.vendor,
         isVerified: true,
         isActive: true,
+      },
+      {
+        id: castingCo1Id,
+        email: 'castingco1@claapo.test',
+        phone: '+919000000011',
+        passwordHash,
+        role: UserRole.company,
+        isVerified: true,
+        isActive: true,
+      },
+      {
+        id: cast1Id,
+        email: 'cast1@claapo.test',
+        phone: '+919000000012',
+        passwordHash,
+        role: UserRole.cast,
+        isVerified: true,
+        isActive: true,
+        displayName: 'Aanya Kapoor',
+      },
+      {
+        id: cast2Id,
+        email: 'cast2@claapo.test',
+        phone: '+919000000013',
+        passwordHash,
+        role: UserRole.cast,
+        isVerified: true,
+        isActive: true,
+        displayName: 'Vihaan Khanna',
       },
     ],
   });
@@ -324,6 +356,64 @@ async function main() {
         panNumber: 'CCCCC0000C',
         isGstVerified: true,
         logoKey: 'https://placehold.co/200x200/845EC2/ffffff?text=SS',
+      },
+      {
+        userId: castingCo1Id,
+        companyName: 'Taran Bajaj Casting Co',
+        // Unlocks Cast Search and the project billing-override picker.
+        companyType: 'casting_director',
+        skills: ['Cast Hiring', 'Talent Management'],
+        locationCity: 'Mumbai',
+        locationState: 'Maharashtra',
+        bio: 'Casting agency placing actors and models for Mumbai productions.',
+        aboutUs:
+          'Established 2019. We source talent across Hindi cinema, OTT and ad films for production houses in India and abroad.',
+      },
+    ],
+  });
+
+  // ---------------------------------------------------------------------------
+  // Cast profiles
+  // ---------------------------------------------------------------------------
+  await prisma.castProfile.createMany({
+    data: [
+      {
+        userId: cast1Id,
+        displayName: 'Aanya Kapoor',
+        roleType: 'actor',
+        age: 26,
+        gender: 'female',
+        heightCm: 168,
+        bodyType: 'Slim',
+        skinTone: 'Wheatish',
+        eyeColor: 'Brown',
+        lookType: 'Urban Look',
+        hairType: 'Wavy',
+        languages: ['Hindi', 'English', 'Punjabi'],
+        aboutMe: 'Trained at FTII. Featured in two indie films and an ad campaign for Tata.',
+        extraSkills: ['Classical Dance', 'Horse Riding'],
+        dailyBudget: 5000000, // ₹50,000 in paise
+        locationCity: 'Mumbai',
+        locationState: 'Maharashtra',
+      },
+      {
+        userId: cast2Id,
+        displayName: 'Vihaan Khanna',
+        roleType: 'model',
+        age: 24,
+        gender: 'male',
+        heightCm: 183,
+        bodyType: 'Athletic',
+        skinTone: 'Fair',
+        eyeColor: 'Hazel',
+        lookType: 'Modern Look',
+        hairType: 'Straight',
+        languages: ['Hindi', 'English'],
+        aboutMe: 'Print and runway model. 5 years editorial experience.',
+        extraSkills: ['Swimming', 'Martial Arts'],
+        dailyBudget: 3500000,
+        locationCity: 'Mumbai',
+        locationState: 'Maharashtra',
       },
     ],
   });
@@ -907,6 +997,9 @@ async function main() {
   console.log('  freelancer4@claapo.test (Karan Mehta — Gaffer)');
   console.log('  vendor1@claapo.test    (Demo Cine Rentals)');
   console.log('  vendor2@claapo.test    (Reel Catering Co)');
+  console.log('  castingco1@claapo.test (Taran Bajaj Casting Co — casting director)');
+  console.log('  cast1@claapo.test      (Aanya Kapoor — actor)');
+  console.log('  cast2@claapo.test      (Vihaan Khanna — model)');
 }
 
 main()

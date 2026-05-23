@@ -8,6 +8,7 @@ import { AuthUser } from './auth.service';
 import { RegisterIndividualDto } from './dto/register-individual.dto';
 import { RegisterCompanyDto } from './dto/register-company.dto';
 import { RegisterVendorDto } from './dto/register-vendor.dto';
+import { RegisterCastDto } from './dto/register-cast.dto';
 import { LoginDto } from './dto/login.dto';
 import { OtpSendDto } from './dto/otp-send.dto';
 import { OtpVerifyDto } from './dto/otp-verify.dto';
@@ -41,6 +42,12 @@ export class AuthController {
   @ApiOperation({ summary: 'Register as vendor' })
   async registerVendor(@Body() dto: RegisterVendorDto) {
     return this.authService.registerVendor(dto);
+  }
+
+  @Post('register/cast')
+  @ApiOperation({ summary: 'Register as cast (actor/model)' })
+  async registerCast(@Body() dto: RegisterCastDto) {
+    return this.authService.registerCast(dto);
   }
 
   @Post('otp/send')

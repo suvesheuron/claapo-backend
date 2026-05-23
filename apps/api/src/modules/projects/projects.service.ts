@@ -16,9 +16,17 @@ export class ProjectsService {
     }
     const ctx = await this.getCompanyAccountContext(companyUserId);
     if (!ctx.isMainUser) throw new ForbiddenException('Only Main ID can create projects');
+    // Validate the billing override: only allowed for casting directors and
+    // only when the target company has actually hired this casting director
+    // (an accepted/locked booking exists with the override target as requester
+    // and the casting director's account as target).
+    if (dto.billedToCompanyUserId) {
+      await this.validateBillingOverride(ctx.accountOwnerId, dto.billedToCompanyUserId);
+    }
     return this.prisma.project.create({
       data: {
         companyUserId: ctx.accountOwnerId,
+        billedToCompanyUserId: dto.billedToCompanyUserId ?? null,
         title: dto.title,
         productionHouseName: dto.productionHouseName,
         description: dto.description,
@@ -35,6 +43,99 @@ export class ProjectsService {
       },
       include: { roles: true },
     });
+  }
+
+  /**
+   * Asserts that `companyUserId` (a casting director) is allowed to bill
+   * `targetCompanyUserId` for invoices on this project. The target must:
+   *   1. Be an active company user
+   *   2. Have an accepted or locked booking with the casting director as
+   *      target (i.e. the casting director was hired by them).
+   *
+   * Throws ForbiddenException if either check fails.
+   */
+  private async validateBillingOverride(companyUserId: string, targetCompanyUserId: string) {
+    if (companyUserId === targetCompanyUserId) {
+      throw new BadRequestException('Cannot bill yourself');
+    }
+    const me = await this.prisma.user.findUnique({
+      where: { id: companyUserId },
+      include: { companyProfile: { select: { companyType: true } } },
+    });
+    if (!me || me.companyProfile?.companyType !== 'casting_director') {
+      throw new ForbiddenException(
+        'Project billing override is only available for Casting Director accounts',
+      );
+    }
+    const target = await this.prisma.user.findFirst({
+      where: { id: targetCompanyUserId, role: UserRole.company, deletedAt: null, isActive: true },
+      select: { id: true },
+    });
+    if (!target) throw new BadRequestException('Billing target must be an active company');
+    const hiringBooking = await this.prisma.bookingRequest.findFirst({
+      where: {
+        requesterUserId: targetCompanyUserId,
+        targetUserId: companyUserId,
+        status: { in: ['accepted', 'locked'] },
+      },
+      select: { id: true },
+    });
+    if (!hiringBooking) {
+      throw new BadRequestException(
+        'You can only bill a company that has hired you (no accepted/locked booking found)',
+      );
+    }
+  }
+
+  /**
+   * Lists companies that have hired the current casting director — i.e.
+   * companies that issued an accepted or locked booking with this user as
+   * target. Used to populate the "Bill invoices to" dropdown when a casting
+   * director creates a project. Empty list = no valid billing-override
+   * candidates; the project must bill to the casting director themselves.
+   */
+  async listBillingOptions(companyUserId: string) {
+    const ctx = await this.getCompanyAccountContext(companyUserId);
+    const me = await this.prisma.user.findUnique({
+      where: { id: ctx.accountOwnerId },
+      include: { companyProfile: { select: { companyType: true } } },
+    });
+    if (!me || me.companyProfile?.companyType !== 'casting_director') {
+      return { items: [] };
+    }
+    const bookings = await this.prisma.bookingRequest.findMany({
+      where: {
+        targetUserId: ctx.accountOwnerId,
+        status: { in: ['accepted', 'locked'] },
+        requester: { role: UserRole.company, deletedAt: null, isActive: true },
+      },
+      select: {
+        requester: {
+          select: {
+            id: true,
+            email: true,
+            displayName: true,
+            companyProfile: { select: { companyName: true } },
+          },
+        },
+      },
+      orderBy: { createdAt: 'desc' },
+    });
+    const seen = new Set<string>();
+    const items = [] as Array<{ id: string; label: string; email: string }>;
+    for (const b of bookings) {
+      if (!b.requester) continue;
+      if (seen.has(b.requester.id)) continue;
+      seen.add(b.requester.id);
+      items.push({
+        id: b.requester.id,
+        label: b.requester.companyProfile?.companyName
+          ?? b.requester.displayName
+          ?? b.requester.email,
+        email: b.requester.email,
+      });
+    }
+    return { items };
   }
 
   async listOwn(companyUserId: string, page = 1, limit = 20) {

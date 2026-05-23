@@ -30,6 +30,7 @@
       ],
       "secrets": [
         { "name": "DATABASE_URL",        "valueFrom": "arn:aws:secretsmanager:ap-south-1:539898340820:secret:claapo/prod/db-url-AIfb8a" },
+        { "name": "DIRECT_URL",          "valueFrom": "arn:aws:secretsmanager:ap-south-1:539898340820:secret:claapo/prod/db-url-AIfb8a" },
         { "name": "JWT_SECRET",          "valueFrom": "arn:aws:secretsmanager:ap-south-1:539898340820:secret:claapo/prod/jwt-secret-H3fE1w" },
         { "name": "JWT_REFRESH_SECRET",  "valueFrom": "arn:aws:secretsmanager:ap-south-1:539898340820:secret:claapo/prod/jwt-refresh-secret-hQdoZo" },
         { "name": "REDIS_PASSWORD",      "valueFrom": "arn:aws:secretsmanager:ap-south-1:539898340820:secret:claapo/prod/redis-auth-heAPU2" }

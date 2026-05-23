@@ -58,6 +58,7 @@ import { AppController } from './app.controller';
           port: config.get<number>('redis.port') ?? 6379,
           password: config.get<string | undefined>('redis.password'),
           db: config.get<number>('redis.db') ?? 0,
+          tls: config.get<object | undefined>('redis.tls'),
         },
       }),
     }),

@@ -2,10 +2,12 @@ import { Injectable, ForbiddenException, BadRequestException } from '@nestjs/com
 import { UserRole } from '@prisma/client';
 import { PrismaService } from '../../database/prisma.service';
 import { StorageService } from '../storage/storage.service';
+import { isCastingDirector } from '../profiles/company-type.constants';
 import type {
   SearchCrewQueryDto,
   SearchVendorsQueryDto,
   SearchPeopleQueryDto,
+  SearchCastQueryDto,
 } from './dto/search-query.dto';
 
 @Injectable()
@@ -544,6 +546,125 @@ export class SearchService {
   }
 
   /**
+   * Cast search — actors/models. Locked to company accounts whose
+   * companyProfile.companyType === 'casting_director'. Other companies get a
+   * 403 with a stable code so the UI can render the "Available on Casting
+   * Agency plan" upgrade hint.
+   */
+  async searchCast(viewerId: string, viewerRole: UserRole, query: SearchCastQueryDto) {
+    if (viewerRole !== UserRole.company && viewerRole !== UserRole.admin) {
+      throw new ForbiddenException({
+        message: 'Only companies can use cast search',
+        code: 'CAST_SEARCH_FORBIDDEN',
+      });
+    }
+    if (viewerRole === UserRole.company) {
+      const viewer = await this.prisma.user.findUnique({
+        where: { id: viewerId },
+        select: {
+          mainUserId: true,
+          companyProfile: { select: { companyType: true } },
+        },
+      });
+      // Resolve to the account owner so sub-users inherit the casting-director
+      // permission of their parent account.
+      const ownerId = viewer?.mainUserId ?? viewerId;
+      const owner = viewer?.mainUserId
+        ? await this.prisma.user.findUnique({
+            where: { id: ownerId },
+            select: { companyProfile: { select: { companyType: true } } },
+          })
+        : viewer;
+      if (!isCastingDirector(owner?.companyProfile?.companyType ?? null)) {
+        throw new ForbiddenException({
+          message: 'Cast Search is available only for Casting Director / Agency accounts',
+          code: 'CAST_SEARCH_LOCKED',
+        });
+      }
+    }
+
+    const page = query.page ?? 1;
+    const limit = Math.min(query.limit ?? 20, 50);
+    const skip = (page - 1) * limit;
+
+    const where: any = { user: { deletedAt: null, isActive: true, mainUserId: null } };
+    const AND: any[] = [];
+    if (query.name?.trim()) {
+      AND.push({ displayName: { contains: query.name.trim(), mode: 'insensitive' } });
+    }
+    if (query.roleType) AND.push({ roleType: query.roleType });
+    if (query.gender) AND.push({ gender: { equals: query.gender, mode: 'insensitive' } });
+    if (query.lookType) AND.push({ lookType: { equals: query.lookType, mode: 'insensitive' } });
+    if (query.bodyType) AND.push({ bodyType: { equals: query.bodyType, mode: 'insensitive' } });
+    if (query.city?.trim()) {
+      AND.push({ locationCity: { contains: query.city.trim(), mode: 'insensitive' } });
+    }
+    if (query.rateMin != null) AND.push({ dailyBudget: { gte: query.rateMin } });
+    if (query.rateMax != null) AND.push({ dailyBudget: { lte: query.rateMax } });
+    if (query.language?.trim()) {
+      const langs = query.language.split(',').map((l) => l.trim()).filter(Boolean);
+      if (langs.length) AND.push({ languages: { hasSome: langs } });
+    }
+    if (AND.length) where.AND = AND;
+
+    const [rawItems, total] = await Promise.all([
+      this.prisma.castProfile.findMany({
+        where,
+        select: {
+          userId: true,
+          displayName: true,
+          roleType: true,
+          age: true,
+          gender: true,
+          heightCm: true,
+          bodyType: true,
+          lookType: true,
+          languages: true,
+          locationCity: true,
+          locationState: true,
+          dailyBudget: true,
+          isAvailable: true,
+          avatarKey: true,
+          aboutMe: true,
+        },
+        orderBy: { updatedAt: 'desc' },
+        skip,
+        take: limit,
+      }),
+      this.prisma.castProfile.count({ where }),
+    ]);
+
+    const userIds = rawItems.map((i) => i.userId);
+    const users = userIds.length
+      ? await this.prisma.user.findMany({ where: { id: { in: userIds } }, select: { id: true, email: true } })
+      : [];
+    const emailByUserId = new Map(users.map((u) => [u.id, u.email]));
+    const avatarUrls = await Promise.all(rawItems.map((p) => this.storage.resolveAvatarUrl(p.avatarKey)));
+
+    return {
+      items: rawItems.map((p, idx) => ({
+        userId: p.userId,
+        displayName: p.displayName,
+        roleType: p.roleType,
+        age: p.age,
+        gender: p.gender,
+        heightCm: p.heightCm,
+        bodyType: p.bodyType,
+        lookType: p.lookType,
+        languages: p.languages,
+        locationCity: p.locationCity,
+        locationState: p.locationState,
+        dailyBudget: p.dailyBudget,
+        isAvailable: p.isAvailable,
+        aboutMe: p.aboutMe,
+        email: emailByUserId.get(p.userId) ?? '',
+        avatarUrl: avatarUrls[idx],
+      })),
+      meta: { total, page, limit, pages: Math.ceil(total / limit) },
+    };
+  }
+
+  /**
    * Simple name-only search across crew (individual), vendor, and company profiles.
    *
    * Returns the minimal public-card data each platform shows in the directory:
@@ -563,7 +684,7 @@ export class SearchService {
 
     type DirectoryItem = {
       userId: string;
-      role: 'individual' | 'vendor' | 'company';
+      role: 'individual' | 'vendor' | 'company' | 'cast';
       name: string;
       // For crew this is the first skill ("DOP", "Director"), for vendors the
       // vendorType, for companies the companyType. The UI surfaces this as a
@@ -677,6 +798,38 @@ export class SearchService {
           locationState: r.locationState ?? null,
           avatarUrl: null,
           avatarKey: r.logoKey ?? null,
+        })),
+      );
+    }
+
+    if (!category || category === 'cast') {
+      const where: any = { user: baseUserWhere };
+      if (q) {
+        where.displayName = { contains: q, mode: 'insensitive' };
+      }
+      const rows = await this.prisma.castProfile.findMany({
+        where,
+        select: {
+          userId: true,
+          displayName: true,
+          roleType: true,
+          locationCity: true,
+          locationState: true,
+          avatarKey: true,
+        },
+        orderBy: { displayName: 'asc' },
+        take: limit * 3,
+      });
+      buckets.push(
+        rows.map((r) => ({
+          userId: r.userId,
+          role: 'cast' as const,
+          name: r.displayName ?? '',
+          categoryLabel: r.roleType ?? 'Cast',
+          locationCity: r.locationCity ?? null,
+          locationState: r.locationState ?? null,
+          avatarUrl: null,
+          avatarKey: r.avatarKey ?? null,
         })),
       );
     }

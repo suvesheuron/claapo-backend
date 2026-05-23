@@ -314,7 +314,7 @@ export class AvailabilityService {
 
   /** Bulk set availability (individual/vendor). Only available/blocked; booked and past_work are system-managed. */
   async bulkSet(userId: string, role: UserRole, slots: SlotInputDto[]) {
-    if (role !== 'individual' && role !== 'vendor') {
+    if (role !== 'individual' && role !== 'vendor' && role !== 'cast') {
       throw new ForbiddenException('Only individuals and vendors can set availability');
     }
     if (!slots.length) {
@@ -468,7 +468,7 @@ export class AvailabilityService {
 
   /** Individual/vendor sets work/equipment notes for a booked or past_work date. */
   async setSlotNote(userId: string, role: UserRole, dateOnly: string, notes: string) {
-    if (role !== 'individual' && role !== 'vendor') {
+    if (role !== 'individual' && role !== 'vendor' && role !== 'cast') {
       throw new ForbiddenException('Only individuals and vendors can set work notes');
     }
     const startOfDayUtc = this.parseDateOnlyAsUtc(dateOnly);
