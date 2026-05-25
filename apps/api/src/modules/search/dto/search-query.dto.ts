@@ -134,6 +134,11 @@ export class SearchCastQueryDto {
   @ApiPropertyOptional()
   @IsOptional()
   @IsString()
+  hairType?: string;
+
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsString()
   gender?: string;
 
   @ApiPropertyOptional()
@@ -154,6 +159,16 @@ export class SearchCastQueryDto {
   @IsInt()
   @Min(0)
   rateMax?: number;
+
+  @ApiPropertyOptional({ description: 'Shoot window start (ISO date)' })
+  @IsOptional()
+  @IsDateString()
+  startDate?: string;
+
+  @ApiPropertyOptional({ description: 'Shoot window end (ISO date)' })
+  @IsOptional()
+  @IsDateString()
+  endDate?: string;
 
   @ApiPropertyOptional({ default: 1 })
   @IsOptional()

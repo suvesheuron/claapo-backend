@@ -396,9 +396,26 @@ export class ProjectsService {
           }
         }
       };
-    } else {
+    } else if (role === UserRole.cast) {
+      // Cast: projects where they have bookings. Without this explicit
+      // branch, cast users hit the admin `else` below and see every project
+      // on the platform — which is the bug surfaced when a cast user opened
+      // the Messages page and saw 60+ unrelated projects.
+      whereClause = {
+        bookings: {
+          some: {
+            targetUserId: userId,
+            status: { notIn: ['declined', 'expired', 'cancelled'] },
+          }
+        }
+      };
+    } else if (role === UserRole.admin) {
       // Admin: all projects
       whereClause = {};
+    } else {
+      // Defensive default — unknown role gets an impossible filter so we
+      // never accidentally leak every project on the platform again.
+      whereClause = { id: '00000000-0000-0000-0000-000000000000' };
     }
 
     // Fetch projects with conversation and invoice counts
