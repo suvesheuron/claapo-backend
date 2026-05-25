@@ -39,7 +39,13 @@ export class StorageService {
     this.apiBaseUrl = this.config.get<string>('apiBaseUrl') ?? 'http://localhost:3000';
     this.supabaseBucket = this.config.get<string>('supabase.storageBucket') ?? 'uploads';
 
-    if (this.bucket && (process.env.AWS_ACCESS_KEY_ID || process.env.AWS_PROFILE)) {
+    // Initialize S3 whenever a bucket is configured. The AWS SDK's default
+    // credential provider chain finds creds automatically:
+    //   1. AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY env vars (local dev)
+    //   2. ECS Fargate task role via 169.254.170.2 metadata (production)
+    //   3. EC2 instance role (if ever run on EC2)
+    // Explicitly checking for env-var credentials breaks the ECS task-role path.
+    if (this.bucket) {
       this.s3 = new S3Client({
         region: this.region,
         ...(process.env.AWS_ENDPOINT && { endpoint: process.env.AWS_ENDPOINT }),

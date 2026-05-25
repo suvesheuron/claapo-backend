@@ -596,6 +596,7 @@ export class SearchService {
     if (query.gender) AND.push({ gender: { equals: query.gender, mode: 'insensitive' } });
     if (query.lookType) AND.push({ lookType: { equals: query.lookType, mode: 'insensitive' } });
     if (query.bodyType) AND.push({ bodyType: { equals: query.bodyType, mode: 'insensitive' } });
+    if (query.hairType) AND.push({ hairType: { equals: query.hairType, mode: 'insensitive' } });
     if (query.city?.trim()) {
       AND.push({ locationCity: { contains: query.city.trim(), mode: 'insensitive' } });
     }
@@ -606,6 +607,31 @@ export class SearchService {
       if (langs.length) AND.push({ languages: { hasSome: langs } });
     }
     if (AND.length) where.AND = AND;
+
+    // Availability filter: when both dates are provided, exclude cast users
+    // who are already booked OR have blocked themselves for any day in the
+    // window. Mirrors the date-window behavior of searchCrew, but limited to
+    // hard conflicts (booked/blocked) — past_work is not a conflict.
+    let unavailableUserIds = new Set<string>();
+    if (query.startDate && query.endDate) {
+      const start = new Date(query.startDate);
+      const end = new Date(query.endDate);
+      if (!Number.isNaN(start.getTime()) && !Number.isNaN(end.getTime()) && start <= end) {
+        const conflicts = await this.prisma.availabilitySlot.findMany({
+          where: {
+            date: { gte: start, lte: end },
+            status: { in: ['booked', 'blocked'] },
+          },
+          select: { userId: true },
+          distinct: ['userId'],
+        });
+        unavailableUserIds = new Set(conflicts.map((c) => c.userId));
+        if (unavailableUserIds.size > 0) {
+          AND.push({ userId: { notIn: Array.from(unavailableUserIds) } });
+          where.AND = AND;
+        }
+      }
+    }
 
     const [rawItems, total] = await Promise.all([
       this.prisma.castProfile.findMany({
@@ -619,6 +645,7 @@ export class SearchService {
           heightCm: true,
           bodyType: true,
           lookType: true,
+          hairType: true,
           languages: true,
           locationCity: true,
           locationState: true,
@@ -651,6 +678,7 @@ export class SearchService {
         heightCm: p.heightCm,
         bodyType: p.bodyType,
         lookType: p.lookType,
+        hairType: p.hairType,
         languages: p.languages,
         locationCity: p.locationCity,
         locationState: p.locationState,
