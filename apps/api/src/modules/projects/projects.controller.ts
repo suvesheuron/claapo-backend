@@ -85,4 +85,13 @@ export class ProjectsController {
   getProjectSubUsers(@CurrentUser() user: AuthUser, @Param('id') id: string) {
     return this.projectsService.getProjectSubUsers(id, user.id, user.role);
   }
+
+  @Get(':id/bookings')
+  @ApiOperation({
+    summary:
+      'List ALL bookings on this project (project owner sees every booking on the project, including ones requested by a hired Casting Director). Authorization mirrors GET /projects/:id.',
+  })
+  getProjectBookings(@CurrentUser() user: AuthUser, @Param('id') id: string) {
+    return this.projectsService.listProjectBookings(id, user.id, user.role);
+  }
 }

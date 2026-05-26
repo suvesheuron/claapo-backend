@@ -193,4 +193,58 @@ export class ChatGateway implements OnGatewayInit, OnGatewayConnection, OnGatewa
   emitUnreadUpdated(userId: string, totalUnread: number) {
     this.emitToUser(userId, 'unread_updated', { totalUnread });
   }
+
+  /**
+   * Push an invoice status change to a user.
+   *
+   * Payload carries enough context for the client to **optimistically patch**
+   * its UI without a refetch:
+   *  - `invoiceId` / `status`: which invoice and its new state
+   *  - `projectId`: which project row to bump on the invoices list
+   *  - `isIncoming`: true when this user is the recipient of a newly-sent
+   *    invoice (their project's invoice count should increment); false for
+   *    the issuer or for non-`sent` status flips (where count is unchanged)
+   *
+   * Clients should still refetch in the background to reconcile the
+   * authoritative state — the payload is a hint to skip the fetch-latency
+   * window, not a replacement for the source of truth.
+   */
+  emitInvoiceUpdated(
+    userId: string,
+    payload: {
+      invoiceId: string;
+      status: string;
+      projectId: string | null;
+      isIncoming: boolean;
+    },
+  ) {
+    this.emitToUser(userId, 'invoice_updated', payload);
+  }
+
+  /**
+   * Push a per-conversation row delta to a user so their conversations list
+   * can update the preview text + timestamp without a full refetch. Replaces
+   * the case where the conversation list looked stale after a new message
+   * even on pull-to-refresh, because the client now applies the server's
+   * authoritative lastMessage directly. `incrementUnread` is true when the
+   * recipient should bump their unread count for this conversation (sender
+   * sends false to themselves).
+   */
+  emitConversationUpdated(
+    userId: string,
+    data: {
+      conversationId: string;
+      lastMessage: {
+        id: string;
+        content: string | null;
+        senderId: string;
+        type?: string;
+        createdAt: string | Date;
+      };
+      lastMessageAt: string | Date;
+      incrementUnread: boolean;
+    },
+  ) {
+    this.emitToUser(userId, 'conversation_updated', data);
+  }
 }

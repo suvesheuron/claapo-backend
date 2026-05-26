@@ -11,6 +11,7 @@ import { RecordOfflineCompanyInvoiceDto } from './dto/record-offline-company-inv
 import { SendOfflineVendorInvoiceDto } from './dto/send-offline-vendor-invoice.dto';
 import { NotificationsService } from '../notifications/notifications.service';
 import { StorageService } from '../storage/storage.service';
+import { ChatGateway } from '../chat/chat.gateway';
 
 const INVOICE_ATTACHMENTS_PREFIX = 'invoices/';
 const MAX_ATTACHMENTS_PER_INVOICE = 10;
@@ -25,6 +26,7 @@ export class InvoicesService {
     private readonly config: ConfigService,
     private readonly notifications: NotificationsService,
     private readonly storage: StorageService,
+    private readonly chatGateway: ChatGateway,
   ) {
     const keyId = this.config.get<string>('razorpay.keyId');
     const keySecret = this.config.get<string>('razorpay.keySecret');
@@ -101,6 +103,57 @@ export class InvoicesService {
   private computeTaxAmount(subtotalPaise: number, taxRatePct: number): number {
     if (subtotalPaise <= 0 || taxRatePct <= 0) return 0;
     return Math.round(subtotalPaise * (taxRatePct / 100));
+  }
+
+  /**
+   * Push an `invoice_updated` socket event to both parties of an invoice so
+   * clients can drop the invoice-alerts poller AND optimistically patch their
+   * UI (project row count, badge, etc.) without waiting for a refetch.
+   *
+   * Each side gets the SAME core payload but a side-specific `isIncoming`
+   * flag: recipient sees `isIncoming: true` (their project row should bump
+   * when status is `sent`), issuer sees `isIncoming: false`. Self-recorded
+   * offline invoices (where issuer === recipient) emit once with
+   * `isIncoming: false` because there's no third party arriving — the user
+   * created it themselves.
+   *
+   * `projectId` is included so clients can route the patch to the right
+   * project row without a server round-trip. Best-effort throughout: socket
+   * failures must never block the primary DB write.
+   */
+  private pushInvoiceUpdated(
+    issuerUserId: string | null | undefined,
+    recipientUserId: string | null | undefined,
+    invoiceId: string,
+    status: string,
+    projectId: string | null,
+  ) {
+    const distinctRecipient =
+      recipientUserId && recipientUserId !== issuerUserId ? recipientUserId : null;
+    if (issuerUserId) {
+      try {
+        this.chatGateway.emitInvoiceUpdated(issuerUserId, {
+          invoiceId,
+          status,
+          projectId,
+          isIncoming: false,
+        });
+      } catch {
+        // ignore
+      }
+    }
+    if (distinctRecipient) {
+      try {
+        this.chatGateway.emitInvoiceUpdated(distinctRecipient, {
+          invoiceId,
+          status,
+          projectId,
+          isIncoming: true,
+        });
+      } catch {
+        // ignore
+      }
+    }
   }
 
   async create(issuerUserId: string, role: UserRole, dto: CreateInvoiceDto) {
@@ -296,6 +349,7 @@ export class InvoicesService {
             include: { lineItems: true, project: true },
           });
         });
+        this.pushInvoiceUpdated(invoice.issuerUserId, invoice.recipientUserId, invoice.id, invoice.status, invoice.projectId);
         return invoice;
       } catch (error) {
         const maybePrisma = error as { code?: string };
@@ -402,6 +456,7 @@ export class InvoicesService {
           `${issuerName} sent you an invoice for ${amountFormatted} for project "${project.title}".`,
           { invoiceId: invoice.id, projectId: invoice.projectId, projectTitle: project.title },
         );
+        this.pushInvoiceUpdated(invoice.issuerUserId, invoice.recipientUserId, invoice.id, invoice.status, invoice.projectId);
         return invoice;
       } catch (error) {
         const maybePrisma = error as { code?: string };
@@ -688,7 +743,7 @@ export class InvoicesService {
 
     const newPaid = alreadyPaid + increment;
     const fullySettled = newPaid >= total;
-    return this.prisma.invoice.update({
+    const updated = await this.prisma.invoice.update({
       where: { id: invoiceId },
       data: {
         paidAmount: newPaid,
@@ -696,6 +751,8 @@ export class InvoicesService {
       },
       select: { id: true, status: true, paidAt: true, paidAmount: true, totalAmount: true },
     });
+    this.pushInvoiceUpdated(invoice.issuerUserId, invoice.recipientUserId, updated.id, updated.status, invoice.projectId);
+    return updated;
   }
 
   async declineAsRecipient(invoiceId: string, userId: string, reason?: string) {
@@ -745,6 +802,7 @@ export class InvoicesService {
         },
       );
     }
+    this.pushInvoiceUpdated(invoice.issuerUserId, invoice.recipientUserId, updated.id, updated.status, invoice.projectId);
     return updated;
   }
 
@@ -1209,6 +1267,7 @@ export class InvoicesService {
       `${issuerName} sent you an invoice for ${amountFormatted} for project "${invoice.project.title}".`,
       { invoiceId: invoice.id, projectId: invoice.projectId, projectTitle: invoice.project.title },
     );
+    this.pushInvoiceUpdated(invoice.issuerUserId, invoice.recipientUserId, updated.id, updated.status, invoice.projectId);
     return updated;
   }
 
@@ -1229,11 +1288,13 @@ export class InvoicesService {
     if (invoice.status !== 'draft' && invoice.status !== 'sent') {
       throw new BadRequestException('Only draft or sent invoices can be cancelled');
     }
-    return this.prisma.invoice.update({
+    const updated = await this.prisma.invoice.update({
       where: { id: invoiceId },
       data: { status: 'cancelled' },
       include: { lineItems: true },
     });
+    this.pushInvoiceUpdated(invoice.issuerUserId, invoice.recipientUserId, updated.id, updated.status, invoice.projectId);
+    return updated;
   }
 
   async getPdfUrl(invoiceId: string, userId: string) {
@@ -1436,6 +1497,7 @@ export class InvoicesService {
       where: { id: invoice.id },
       data: { status: 'paid', paidAt: new Date() },
     });
+    this.pushInvoiceUpdated(invoice.issuerUserId, invoice.recipientUserId, invoice.id, 'paid', invoice.projectId);
   }
 
   private async ensureInvoiceAccess(

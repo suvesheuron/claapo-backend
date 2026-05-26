@@ -760,8 +760,18 @@ export class BookingsService implements OnApplicationBootstrap {
           );
         }
       }
+    } else if (role === UserRole.company) {
+      // Company-as-target (company → company collaborations, Casting Director
+      // hires, etc.) is intentionally double-bookable. A production company
+      // can be engaged on overlapping shoot dates across different
+      // projects — they're an organization, not a single person. Skip the
+      // availability-slot conflict check AND skip the slot-block on accept,
+      // so a future booking on the same date sails through.
+      //
+      // Crew (individual) and cast retain the slot-based conflict check below
+      // because they ARE single people with a personal calendar.
     } else {
-      // Individual crew remain profile-blocked via availability slots.
+      // Individual crew + cast remain profile-blocked via availability slots.
       const existingBookings = await this.prisma.availabilitySlot.findMany({
         where: {
           userId: booking.targetUserId,
@@ -794,7 +804,7 @@ export class BookingsService implements OnApplicationBootstrap {
         }
       }
 
-      // Block the dates for individual crew booking.
+      // Block the dates for individual crew / cast booking.
       for (const dateKey of datesToCheck) {
         await this.prisma.availabilitySlot.upsert({
           where: { userId_date: { userId: booking.targetUserId, date: dateKey } },
