@@ -10,6 +10,32 @@ import type {
   SearchCastQueryDto,
 } from './dto/search-query.dto';
 
+/**
+ * Expand a single companyType filter value into every alias it may have been
+ * stored as. CompanyProfile.companyType is a free-form string today, so older
+ * rows can hold either the canonical slug ('casting_director') OR the display
+ * label ('Casting Director / Agency'). Matching against the full alias list
+ * makes the search robust to both.
+ */
+function companyTypeAliases(input: string): string[] {
+  const v = input.trim();
+  if (!v) return [];
+  // Slug ↔ label pairs. Add new entries here as REGISTRATION_COMPANY_TYPES
+  // grows in the frontend.
+  const PAIRS: Array<[string, string]> = [
+    ['casting_director', 'Casting Director / Agency'],
+    ['production_house', 'Production House'],
+    ['studio', 'Studio'],
+    ['agency', 'Agency'],
+  ];
+  for (const [slug, label] of PAIRS) {
+    if (v === slug || v.toLowerCase() === label.toLowerCase()) {
+      return [slug, label];
+    }
+  }
+  return [v];
+}
+
 @Injectable()
 export class SearchService {
   /** Days after shoot end where temporary location still applies. */
@@ -596,6 +622,7 @@ export class SearchService {
     if (query.gender) AND.push({ gender: { equals: query.gender, mode: 'insensitive' } });
     if (query.lookType) AND.push({ lookType: { equals: query.lookType, mode: 'insensitive' } });
     if (query.bodyType) AND.push({ bodyType: { equals: query.bodyType, mode: 'insensitive' } });
+    if (query.hairType) AND.push({ hairType: { equals: query.hairType, mode: 'insensitive' } });
     if (query.city?.trim()) {
       AND.push({ locationCity: { contains: query.city.trim(), mode: 'insensitive' } });
     }
@@ -606,6 +633,31 @@ export class SearchService {
       if (langs.length) AND.push({ languages: { hasSome: langs } });
     }
     if (AND.length) where.AND = AND;
+
+    // Availability filter: when both dates are provided, exclude cast users
+    // who are already booked OR have blocked themselves for any day in the
+    // window. Mirrors the date-window behavior of searchCrew, but limited to
+    // hard conflicts (booked/blocked) — past_work is not a conflict.
+    let unavailableUserIds = new Set<string>();
+    if (query.startDate && query.endDate) {
+      const start = new Date(query.startDate);
+      const end = new Date(query.endDate);
+      if (!Number.isNaN(start.getTime()) && !Number.isNaN(end.getTime()) && start <= end) {
+        const conflicts = await this.prisma.availabilitySlot.findMany({
+          where: {
+            date: { gte: start, lte: end },
+            status: { in: ['booked', 'blocked'] },
+          },
+          select: { userId: true },
+          distinct: ['userId'],
+        });
+        unavailableUserIds = new Set(conflicts.map((c) => c.userId));
+        if (unavailableUserIds.size > 0) {
+          AND.push({ userId: { notIn: Array.from(unavailableUserIds) } });
+          where.AND = AND;
+        }
+      }
+    }
 
     const [rawItems, total] = await Promise.all([
       this.prisma.castProfile.findMany({
@@ -619,6 +671,7 @@ export class SearchService {
           heightCm: true,
           bodyType: true,
           lookType: true,
+          hairType: true,
           languages: true,
           locationCity: true,
           locationState: true,
@@ -651,6 +704,7 @@ export class SearchService {
         heightCm: p.heightCm,
         bodyType: p.bodyType,
         lookType: p.lookType,
+        hairType: p.hairType,
         languages: p.languages,
         locationCity: p.locationCity,
         locationState: p.locationState,
@@ -681,6 +735,8 @@ export class SearchService {
     const skip = (page - 1) * limit;
     const q = query.q?.trim() ?? '';
     const category = query.category;
+    const cityFilter = query.city?.trim() ?? '';
+    const companyTypeFilter = query.companyType?.trim() ?? '';
 
     type DirectoryItem = {
       userId: string;
@@ -708,6 +764,9 @@ export class SearchService {
       const where: any = { user: baseUserWhere };
       if (q) {
         where.displayName = { contains: q, mode: 'insensitive' };
+      }
+      if (cityFilter) {
+        where.locationCity = { contains: cityFilter, mode: 'insensitive' };
       }
       const rows = await this.prisma.individualProfile.findMany({
         where,
@@ -743,6 +802,9 @@ export class SearchService {
       if (q) {
         where.companyName = { contains: q, mode: 'insensitive' };
       }
+      if (cityFilter) {
+        where.locationCity = { contains: cityFilter, mode: 'insensitive' };
+      }
       const rows = await this.prisma.vendorProfile.findMany({
         where,
         select: {
@@ -775,6 +837,20 @@ export class SearchService {
       if (q) {
         where.companyName = { contains: q, mode: 'insensitive' };
       }
+      if (cityFilter) {
+        where.locationCity = { contains: cityFilter, mode: 'insensitive' };
+      }
+      if (companyTypeFilter) {
+        // The column has historically accepted either the canonical slug
+        // (e.g. 'casting_director') OR the human label ('Casting Director /
+        // Agency'). The dropdown should send the canonical form, but match
+        // both shapes so older / hand-entered rows still surface.
+        const aliases = companyTypeAliases(companyTypeFilter);
+        where.companyType =
+          aliases.length > 1
+            ? { in: aliases }
+            : { equals: aliases[0], mode: 'insensitive' };
+      }
       const rows = await this.prisma.companyProfile.findMany({
         where,
         select: {
@@ -806,6 +882,9 @@ export class SearchService {
       const where: any = { user: baseUserWhere };
       if (q) {
         where.displayName = { contains: q, mode: 'insensitive' };
+      }
+      if (cityFilter) {
+        where.locationCity = { contains: cityFilter, mode: 'insensitive' };
       }
       const rows = await this.prisma.castProfile.findMany({
         where,

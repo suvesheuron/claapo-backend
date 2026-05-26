@@ -149,8 +149,40 @@ export class BookingsService implements OnApplicationBootstrap {
       include: { roles: true },
     });
     if (!project) throw new NotFoundException('Project not found');
-    if (project.companyUserId !== companyCtx.accountOwnerId) throw new ForbiddenException('Not your project');
-    if (!companyCtx.isMainUser) {
+    // A company is authorized to send booking requests on a project when:
+    //   (a) they OWN it, OR
+    //   (b) they are a Casting Director / Agency that has been HIRED onto it
+    //       (accepted / locked booking as target). Lets Dharma hire Taran
+    //       Casting Co, then Taran books actors directly under Dharma's
+    //       project. Invoices on that project still route to the owner
+    //       (Dharma) unless a billing override is set.
+    const ownsProject = project.companyUserId === companyCtx.accountOwnerId;
+    if (!ownsProject) {
+      const owner = await this.prisma.user.findUnique({
+        where: { id: companyCtx.accountOwnerId },
+        include: { companyProfile: { select: { companyType: true } } },
+      });
+      const isCastingDirector = owner?.companyProfile?.companyType === 'casting_director';
+      if (!isCastingDirector) {
+        throw new ForbiddenException('Not your project');
+      }
+      const hiredOnProject = await this.prisma.bookingRequest.findFirst({
+        where: {
+          projectId: dto.projectId,
+          targetUserId: companyCtx.accountOwnerId,
+          status: { in: ['accepted', 'locked'] },
+        },
+        select: { id: true },
+      });
+      if (!hiredOnProject) {
+        throw new ForbiddenException('Not your project');
+      }
+    }
+    if (ownsProject && !companyCtx.isMainUser) {
+      // Sub-user assignment gate only applies on the OWN-project path.
+      // Sub-users of a casting director acting on a hired-on project would
+      // follow a different authorization model that we haven't introduced
+      // yet — for now keep sub-users restricted to owned projects.
       const assigned = await this.prisma.subUserProjectAssignment.findFirst({
         where: {
           accountUserId: companyCtx.accountOwnerId,
