@@ -141,7 +141,20 @@ export class ProjectsService {
   async listOwn(companyUserId: string, page = 1, limit = 20) {
     const ctx = await this.getCompanyAccountContext(companyUserId);
     const skip = (page - 1) * limit;
-    const where = ctx.isMainUser
+    // For Casting Director / Agency accounts the Projects list also includes
+    // projects where THEY were hired (accepted/locked target booking). This
+    // matches the spec: a CD hired by Dharma must see Dharma's project in
+    // their Ongoing Projects so they can act on it (cast hires, etc.).
+    // For all other companies the existing behavior — only owned projects —
+    // is preserved.
+    const owner = ctx.isMainUser
+      ? await this.prisma.user.findUnique({
+          where: { id: ctx.accountOwnerId },
+          include: { companyProfile: { select: { companyType: true } } },
+        })
+      : null;
+    const isCastingDirector = owner?.companyProfile?.companyType === 'casting_director';
+    const ownedClause = ctx.isMainUser
       ? { companyUserId: ctx.accountOwnerId }
       : {
           companyUserId: ctx.accountOwnerId,
@@ -149,6 +162,21 @@ export class ProjectsService {
             some: { subUserId: companyUserId },
           },
         };
+    const where: any = isCastingDirector && ctx.isMainUser
+      ? {
+          OR: [
+            ownedClause,
+            {
+              bookings: {
+                some: {
+                  targetUserId: ctx.accountOwnerId,
+                  status: { in: ['accepted', 'locked'] },
+                },
+              },
+            },
+          ],
+        }
+      : ownedClause;
     const [items, total] = await Promise.all([
       this.prisma.project.findMany({
         where,
@@ -198,6 +226,19 @@ export class ProjectsService {
         });
         if (assigned) return project;
       }
+      // Company hired ON this project (c2c). Already works for vendor below;
+      // companies need the same check so a Casting Director hired by another
+      // production house can open that project's detail page from their own
+      // Projects list and book actors under it.
+      const hiredBooking = await this.prisma.bookingRequest.findFirst({
+        where: {
+          projectId,
+          targetUserId: ctx.accountOwnerId,
+          status: { in: ['accepted', 'locked'] },
+        },
+        select: { id: true },
+      });
+      if (hiredBooking) return project;
       throw new ForbiddenException('You do not have access to this project');
     }
 
@@ -397,17 +438,34 @@ export class ProjectsService {
         }
       };
     } else if (role === UserRole.cast) {
-      // Cast: projects where they have bookings. Without this explicit
-      // branch, cast users hit the admin `else` below and see every project
-      // on the platform — which is the bug surfaced when a cast user opened
-      // the Messages page and saw 60+ unrelated projects.
+      // Cast: projects where they have bookings OR are already in a
+      // conversation on the project (inquiry-before-booking flow — a
+      // casting director can chat a cast user about a project before any
+      // booking exists). Without the second clause the cast user's
+      // Messages page would be empty until they accept a booking, hiding
+      // the inquiry message that triggered the conversation. Mirrors the
+      // company branch above.
       whereClause = {
-        bookings: {
-          some: {
-            targetUserId: userId,
-            status: { notIn: ['declined', 'expired', 'cancelled'] },
-          }
-        }
+        OR: [
+          {
+            bookings: {
+              some: {
+                targetUserId: userId,
+                status: { notIn: ['declined', 'expired', 'cancelled'] },
+              },
+            },
+          },
+          {
+            conversations: {
+              some: {
+                OR: [
+                  { participantA: userId },
+                  { participantB: userId },
+                ],
+              },
+            },
+          },
+        ],
       };
     } else if (role === UserRole.admin) {
       // Admin: all projects

@@ -20,6 +20,19 @@ export class SearchPeopleQueryDto {
   @IsIn(SEARCH_PEOPLE_CATEGORIES as unknown as string[])
   category?: SearchPeopleCategory;
 
+  @ApiPropertyOptional({ description: 'City filter (case-insensitive contains).' })
+  @IsOptional()
+  @IsString()
+  city?: string;
+
+  @ApiPropertyOptional({
+    description:
+      'Company type filter — only applied when category=company (e.g. Production House, Casting Director / Agency).',
+  })
+  @IsOptional()
+  @IsString()
+  companyType?: string;
+
   @ApiPropertyOptional({ default: 1 })
   @IsOptional()
   @Type(() => Number)

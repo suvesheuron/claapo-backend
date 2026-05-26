@@ -480,6 +480,7 @@ export class InvoicesService {
               individualProfile: { select: { displayName: true, skills: true } },
               companyProfile: { select: { companyName: true } },
               vendorProfile: { select: { companyName: true, vendorServiceCategory: true } },
+              castProfile: { select: { displayName: true, roleType: true } },
             },
           },
           recipient: {
@@ -488,6 +489,7 @@ export class InvoicesService {
               individualProfile: { select: { displayName: true, skills: true } },
               companyProfile: { select: { companyName: true } },
               vendorProfile: { select: { companyName: true, vendorServiceCategory: true } },
+              castProfile: { select: { displayName: true, roleType: true } },
             },
           },
         },
@@ -559,6 +561,22 @@ export class InvoicesService {
                 bankName: true,
               },
             },
+            castProfile: {
+              select: {
+                displayName: true,
+                billingName: true,
+                locationCity: true,
+                address: true,
+                panNumber: true,
+                gstNumber: true,
+                sacCode: true,
+                upiId: true,
+                bankAccountName: true,
+                bankAccountNumber: true,
+                ifscCode: true,
+                bankName: true,
+              },
+            },
           },
         },
         recipient: {
@@ -606,6 +624,22 @@ export class InvoicesService {
                 sacCode: true,
                 address: true,
                 panNumber: true,
+                bankAccountName: true,
+                bankAccountNumber: true,
+                ifscCode: true,
+                bankName: true,
+              },
+            },
+            castProfile: {
+              select: {
+                displayName: true,
+                billingName: true,
+                locationCity: true,
+                address: true,
+                panNumber: true,
+                gstNumber: true,
+                sacCode: true,
+                upiId: true,
                 bankAccountName: true,
                 bankAccountNumber: true,
                 ifscCode: true,
@@ -776,6 +810,20 @@ export class InvoicesService {
         ifscCode?: string | null;
         bankName?: string | null;
       } | null;
+      castProfile?: {
+        displayName: string;
+        billingName?: string | null;
+        locationCity?: string | null;
+        address?: string | null;
+        panNumber?: string | null;
+        gstNumber?: string | null;
+        sacCode?: string | null;
+        upiId?: string | null;
+        bankAccountName?: string | null;
+        bankAccountNumber?: string | null;
+        ifscCode?: string | null;
+        bankName?: string | null;
+      } | null;
     };
     recipient: {
       id: string;
@@ -820,6 +868,20 @@ export class InvoicesService {
         ifscCode?: string | null;
         bankName?: string | null;
       } | null;
+      castProfile?: {
+        displayName: string;
+        billingName?: string | null;
+        locationCity?: string | null;
+        address?: string | null;
+        panNumber?: string | null;
+        gstNumber?: string | null;
+        sacCode?: string | null;
+        upiId?: string | null;
+        bankAccountName?: string | null;
+        bankAccountNumber?: string | null;
+        ifscCode?: string | null;
+        bankName?: string | null;
+      } | null;
     };
     lineItems: { description: string; quantity: unknown; unitPrice: number; amount: number }[];
     attachments?: { id: string; fileKey: string; fileName: string; mimeType: string; size: number }[];
@@ -853,8 +915,29 @@ export class InvoicesService {
       vendorProfile?: { locationCity?: string | null } | null;
     }) =>
       u.individualProfile?.locationCity ?? u.companyProfile?.locationCity ?? u.vendorProfile?.locationCity ?? null;
-    const issuerInd = invoice.issuer.individualProfile;
-    const recipientInd = invoice.recipient.individualProfile;
+    // Cast profile has the same billing-relevant fields as Individual
+    // (displayName, billingName, address, PAN, GST, SAC, bank…). Aliasing
+    // it here lets the formatter below treat cast issuers/recipients
+    // identically to individuals without duplicating every branch.
+    type IndShape = {
+      displayName: string;
+      billingName?: string | null;
+      locationCity?: string | null;
+      address?: string | null;
+      panNumber?: string | null;
+      gstNumber?: string | null;
+      sacCode?: string | null;
+      upiId?: string | null;
+      bankAccountName?: string | null;
+      bankAccountNumber?: string | null;
+      ifscCode?: string | null;
+      bankName?: string | null;
+      skills?: string[];
+    };
+    const issuerCast = (invoice.issuer as { castProfile?: IndShape | null }).castProfile ?? null;
+    const recipientCast = (invoice.recipient as { castProfile?: IndShape | null }).castProfile ?? null;
+    const issuerInd: IndShape | null | undefined = invoice.issuer.individualProfile ?? issuerCast;
+    const recipientInd: IndShape | null | undefined = invoice.recipient.individualProfile ?? recipientCast;
     const issuerCompany = invoice.issuer.companyProfile;
     const issuerVendor = invoice.issuer.vendorProfile;
     const recipientCompany = invoice.recipient.companyProfile;

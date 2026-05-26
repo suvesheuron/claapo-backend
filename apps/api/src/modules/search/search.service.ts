@@ -10,6 +10,32 @@ import type {
   SearchCastQueryDto,
 } from './dto/search-query.dto';
 
+/**
+ * Expand a single companyType filter value into every alias it may have been
+ * stored as. CompanyProfile.companyType is a free-form string today, so older
+ * rows can hold either the canonical slug ('casting_director') OR the display
+ * label ('Casting Director / Agency'). Matching against the full alias list
+ * makes the search robust to both.
+ */
+function companyTypeAliases(input: string): string[] {
+  const v = input.trim();
+  if (!v) return [];
+  // Slug ↔ label pairs. Add new entries here as REGISTRATION_COMPANY_TYPES
+  // grows in the frontend.
+  const PAIRS: Array<[string, string]> = [
+    ['casting_director', 'Casting Director / Agency'],
+    ['production_house', 'Production House'],
+    ['studio', 'Studio'],
+    ['agency', 'Agency'],
+  ];
+  for (const [slug, label] of PAIRS) {
+    if (v === slug || v.toLowerCase() === label.toLowerCase()) {
+      return [slug, label];
+    }
+  }
+  return [v];
+}
+
 @Injectable()
 export class SearchService {
   /** Days after shoot end where temporary location still applies. */
@@ -709,6 +735,8 @@ export class SearchService {
     const skip = (page - 1) * limit;
     const q = query.q?.trim() ?? '';
     const category = query.category;
+    const cityFilter = query.city?.trim() ?? '';
+    const companyTypeFilter = query.companyType?.trim() ?? '';
 
     type DirectoryItem = {
       userId: string;
@@ -736,6 +764,9 @@ export class SearchService {
       const where: any = { user: baseUserWhere };
       if (q) {
         where.displayName = { contains: q, mode: 'insensitive' };
+      }
+      if (cityFilter) {
+        where.locationCity = { contains: cityFilter, mode: 'insensitive' };
       }
       const rows = await this.prisma.individualProfile.findMany({
         where,
@@ -771,6 +802,9 @@ export class SearchService {
       if (q) {
         where.companyName = { contains: q, mode: 'insensitive' };
       }
+      if (cityFilter) {
+        where.locationCity = { contains: cityFilter, mode: 'insensitive' };
+      }
       const rows = await this.prisma.vendorProfile.findMany({
         where,
         select: {
@@ -803,6 +837,20 @@ export class SearchService {
       if (q) {
         where.companyName = { contains: q, mode: 'insensitive' };
       }
+      if (cityFilter) {
+        where.locationCity = { contains: cityFilter, mode: 'insensitive' };
+      }
+      if (companyTypeFilter) {
+        // The column has historically accepted either the canonical slug
+        // (e.g. 'casting_director') OR the human label ('Casting Director /
+        // Agency'). The dropdown should send the canonical form, but match
+        // both shapes so older / hand-entered rows still surface.
+        const aliases = companyTypeAliases(companyTypeFilter);
+        where.companyType =
+          aliases.length > 1
+            ? { in: aliases }
+            : { equals: aliases[0], mode: 'insensitive' };
+      }
       const rows = await this.prisma.companyProfile.findMany({
         where,
         select: {
@@ -834,6 +882,9 @@ export class SearchService {
       const where: any = { user: baseUserWhere };
       if (q) {
         where.displayName = { contains: q, mode: 'insensitive' };
+      }
+      if (cityFilter) {
+        where.locationCity = { contains: cityFilter, mode: 'insensitive' };
       }
       const rows = await this.prisma.castProfile.findMany({
         where,
