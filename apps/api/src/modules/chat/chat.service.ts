@@ -995,17 +995,11 @@ export class ChatService {
   async getProjectMessagesByDate(
     userId: string,
     projectId: string,
-    startIso: string,
-    endIso: string,
+    startIso?: string,
+    endIso?: string,
     page = 1,
     limit = 50,
   ) {
-    if (!startIso || !endIso) throw new BadRequestException('start and end are required');
-    const start = new Date(startIso);
-    const end = new Date(endIso);
-    if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime())) {
-      throw new BadRequestException('Invalid start or end date');
-    }
 
     const project = await this.prisma.project.findUnique({ where: { id: projectId } });
     if (!project) throw new NotFoundException('Project not found');
@@ -1043,39 +1037,66 @@ export class ChatService {
       await this.ensureProjectAssignedToSubUser(companyCtx.accountOwnerId, userId, projectId);
     }
 
-    const where = {
+    const where: Record<string, any> = {
       deletedAt: null,
-      createdAt: { gte: start, lt: end },
       conversation: { projectId },
-    } as const;
+    };
+    if (startIso && endIso) {
+      const start = new Date(startIso);
+      const end = new Date(endIso);
+      if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime())) {
+        throw new BadRequestException('Invalid start or end date');
+      }
+      where.createdAt = { gte: start, lt: end };
+    }
 
-    const skip = (page - 1) * limit;
-    const [rows, total] = await Promise.all([
-      this.prisma.message.findMany({
+    let rows: any[];
+    let total: number;
+    if (startIso && endIso) {
+      // Date-specific: chronological, paginated, with count
+      const skip = (page - 1) * limit;
+      [rows, total] = await Promise.all([
+        this.prisma.message.findMany({
+          where,
+          include: {
+            sender: {
+              select: {
+                id: true, email: true, displayName: true, mainUserId: true,
+                individualProfile: { select: { displayName: true } },
+                companyProfile: { select: { companyName: true } },
+                vendorProfile: { select: { companyName: true } },
+                castProfile: { select: { displayName: true } },
+              },
+            },
+            conversation: { select: { id: true, participantA: true, participantB: true } },
+          },
+          orderBy: { createdAt: 'asc' },
+          skip,
+          take: limit,
+        }),
+        this.prisma.message.count({ where }),
+      ]);
+    } else {
+      // No date filter: most recent messages only, single query, no count
+      rows = await this.prisma.message.findMany({
         where,
         include: {
           sender: {
             select: {
-              id: true,
-              email: true,
-              displayName: true,
-              mainUserId: true,
+              id: true, email: true, displayName: true, mainUserId: true,
               individualProfile: { select: { displayName: true } },
               companyProfile: { select: { companyName: true } },
               vendorProfile: { select: { companyName: true } },
               castProfile: { select: { displayName: true } },
             },
           },
-          conversation: {
-            select: { id: true, participantA: true, participantB: true },
-          },
+          conversation: { select: { id: true, participantA: true, participantB: true } },
         },
-        orderBy: { createdAt: 'asc' },
-        skip,
-        take: limit,
-      }),
-      this.prisma.message.count({ where }),
-    ]);
+        orderBy: { createdAt: 'desc' },
+        take: Math.min(limit, 100),
+      });
+      total = rows.length;
+    }
 
     const ownerId = companyCtx.accountOwnerId;
 
@@ -1153,7 +1174,9 @@ export class ChatService {
           isSameAccount,
         };
       }),
-      meta: { total, page, limit, pages: Math.max(1, Math.ceil(total / limit)) },
+      meta: startIso && endIso
+        ? { total, page, limit, pages: Math.max(1, Math.ceil(total / limit)) }
+        : { total, page: 1, limit, pages: 1 },
     };
   }
 

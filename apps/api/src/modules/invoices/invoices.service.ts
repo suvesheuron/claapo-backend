@@ -395,6 +395,22 @@ export class InvoicesService {
     const totalAmount = amount + gstAmount;
     const issuedAt = this.parseIssuedOnDate(dto.issuedOn);
 
+    const issuerUser = await this.prisma.user.findUnique({
+      where: { id: issuerAccountUserId },
+      select: {
+        individualProfile: { select: { displayName: true } },
+        castProfile: { select: { displayName: true } },
+        vendorProfile: { select: { companyName: true } },
+        companyProfile: { select: { companyName: true } },
+      },
+    });
+    const offlineBillingName =
+      issuerUser?.individualProfile?.displayName
+      ?? issuerUser?.castProfile?.displayName
+      ?? issuerUser?.vendorProfile?.companyName
+      ?? issuerUser?.companyProfile?.companyName
+      ?? null;
+
     const lineItemCreate = {
       description: 'Offline invoice',
       quantity: new Prisma.Decimal(1),
@@ -426,6 +442,7 @@ export class InvoicesService {
               totalAmount,
               status: 'sent',
               recordedOfflineByCompany: false,
+              offlineBillingName,
               dueDate: null,
               lineItems: { create: lineItemCreate },
               ...(issuedAt ? { createdAt: issuedAt } : {}),
@@ -436,6 +453,7 @@ export class InvoicesService {
               issuer: {
                 select: {
                   individualProfile: { select: { displayName: true } },
+                  castProfile: { select: { displayName: true } },
                   companyProfile: { select: { companyName: true } },
                   vendorProfile: { select: { companyName: true } },
                 },
@@ -445,6 +463,7 @@ export class InvoicesService {
         });
         const issuerName =
           invoice.issuer.individualProfile?.displayName ??
+          invoice.issuer.castProfile?.displayName ??
           invoice.issuer.vendorProfile?.companyName ??
           invoice.issuer.companyProfile?.companyName ??
           'A crew member';
@@ -630,6 +649,8 @@ export class InvoicesService {
                 bankAccountNumber: true,
                 ifscCode: true,
                 bankName: true,
+                roleType: true,
+                extraSkills: true,
               },
             },
           },
@@ -699,6 +720,8 @@ export class InvoicesService {
                 bankAccountNumber: true,
                 ifscCode: true,
                 bankName: true,
+                roleType: true,
+                extraSkills: true,
               },
             },
           },
@@ -947,10 +970,10 @@ export class InvoicesService {
     offlineDepartment?: string | null;
     recordedOfflineByCompany?: boolean;
   }) {
-    const offlineBillingLabel =
-      invoice.recordedOfflineByCompany && invoice.offlineBillingName?.trim()
-        ? invoice.offlineBillingName.trim()
-        : null;
+    const isOfflineInvoice = !!invoice.recordedOfflineByCompany || (invoice.offlineBillingName?.trim() != null && invoice.offlineBillingName.trim() !== '');
+    const offlineBillingLabel = isOfflineInvoice && invoice.offlineBillingName?.trim()
+      ? invoice.offlineBillingName.trim()
+      : null;
     const offlineDepartmentLabel =
       invoice.recordedOfflineByCompany && invoice.offlineDepartment?.trim()
         ? invoice.offlineDepartment.trim()
@@ -958,21 +981,25 @@ export class InvoicesService {
     const getName = (u: {
       email: string;
       individualProfile?: { displayName: string; billingName?: string | null } | null;
+      castProfile?: { displayName: string; billingName?: string | null } | null;
       vendorProfile?: { companyName: string; billingName?: string | null } | null;
       companyProfile?: { companyName: string } | null;
     }) =>
       u.individualProfile?.billingName
       ?? u.individualProfile?.displayName
+      ?? u.castProfile?.billingName
+      ?? u.castProfile?.displayName
       ?? u.vendorProfile?.billingName
       ?? u.vendorProfile?.companyName
       ?? u.companyProfile?.companyName
       ?? u.email;
     const getCity = (u: {
       individualProfile?: { locationCity?: string | null } | null;
+      castProfile?: { locationCity?: string | null } | null;
       companyProfile?: { locationCity?: string | null } | null;
       vendorProfile?: { locationCity?: string | null } | null;
     }) =>
-      u.individualProfile?.locationCity ?? u.companyProfile?.locationCity ?? u.vendorProfile?.locationCity ?? null;
+      u.individualProfile?.locationCity ?? u.castProfile?.locationCity ?? u.companyProfile?.locationCity ?? u.vendorProfile?.locationCity ?? null;
     // Cast profile has the same billing-relevant fields as Individual
     // (displayName, billingName, address, PAN, GST, SAC, bank…). Aliasing
     // it here lets the formatter below treat cast issuers/recipients
@@ -991,6 +1018,8 @@ export class InvoicesService {
       ifscCode?: string | null;
       bankName?: string | null;
       skills?: string[];
+      roleType?: string | null;
+      extraSkills?: string[];
     };
     const issuerCast = (invoice.issuer as { castProfile?: IndShape | null }).castProfile ?? null;
     const recipientCast = (invoice.recipient as { castProfile?: IndShape | null }).castProfile ?? null;
@@ -1129,10 +1158,11 @@ export class InvoicesService {
       fromDepartment: offlineDepartmentLabel,
       // Offline-recorded invoice flags so the UI can render an "Offline" badge
       // and highlight the attached invoice document.
+      isOfflineInvoice,
       recordedOfflineByCompany: !!invoice.recordedOfflineByCompany,
       offlineBillingName: invoice.offlineBillingName ?? null,
       offlineDepartment: invoice.offlineDepartment ?? null,
-      fromRole: issuerInd?.skills?.[0] ?? null,
+      fromRole: issuerInd?.skills?.[0] ?? issuerCast?.roleType ?? issuerCast?.extraSkills?.[0] ?? null,
       fromCity: getCity(invoice.issuer),
       toName: getName(invoice.recipient),
       toCity: getCity(invoice.recipient),
@@ -1240,6 +1270,7 @@ export class InvoicesService {
         issuer: {
           select: {
             individualProfile: { select: { displayName: true } },
+            castProfile: { select: { displayName: true } },
             companyProfile: { select: { companyName: true } },
             vendorProfile: { select: { companyName: true } },
           },
@@ -1256,6 +1287,7 @@ export class InvoicesService {
     });
     const issuerName =
       invoice.issuer.individualProfile?.displayName ??
+      invoice.issuer.castProfile?.displayName ??
       invoice.issuer.vendorProfile?.companyName ??
       invoice.issuer.companyProfile?.companyName ??
       'A crew member';

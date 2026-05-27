@@ -451,10 +451,26 @@ export class ProjectsService {
             id: true,
             email: true,
             role: true,
-            individualProfile: true,
-            vendorProfile: true,
-            companyProfile: { select: { companyName: true } },
-            castProfile: { select: { displayName: true, roleType: true } },
+            // Profile slices carry the avatar/logo key and the per-role label
+            // that the Project Detail booking card renders under the name
+            // (DOP / Camera vendor / Actor / Production House — image #37).
+            individualProfile: {
+              select: { displayName: true, skills: true, avatarKey: true },
+            },
+            vendorProfile: {
+              select: {
+                companyName: true,
+                vendorServiceCategory: true,
+                vendorType: true,
+                logoKey: true,
+              },
+            },
+            companyProfile: {
+              select: { companyName: true, companyType: true, logoKey: true },
+            },
+            castProfile: {
+              select: { displayName: true, roleType: true, avatarKey: true },
+            },
           },
         },
         requester: {
