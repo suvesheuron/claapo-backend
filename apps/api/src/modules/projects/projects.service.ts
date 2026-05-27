@@ -177,32 +177,48 @@ export class ProjectsService {
           ],
         }
       : ownedClause;
-    const [items, total] = await Promise.all([
+    // Fetch all matching projects (no DB pagination here) so we can sort by
+    // "recent activity" — derived from project.updatedAt plus the max
+    // updatedAt across bookings, conversations and invoices on the project.
+    // Slicing happens in memory afterwards. Per-company project counts are
+    // bounded enough that this stays cheap; if a single account ever grows
+    // past a few hundred projects we can switch to a denormalized
+    // `lastActivityAt` column on Project, but that's overkill today.
+    const [allItems, total] = await Promise.all([
       this.prisma.project.findMany({
         where,
         include: { roles: true },
-        orderBy: { createdAt: 'desc' },
-        skip,
-        take: limit,
+        orderBy: { updatedAt: 'desc' },
       }),
       this.prisma.project.count({ where }),
     ]);
-    const projectIds = items.map((p) => p.id);
-    const activeCounts =
-      projectIds.length === 0
-        ? []
-        : await this.prisma.bookingRequest.groupBy({
+    const allIds = allItems.map((p) => p.id);
+    const [activeCounts, activityMap] = await Promise.all([
+      allIds.length === 0
+        ? Promise.resolve([] as Array<{ projectId: string; _count: { id: number } }>)
+        : this.prisma.bookingRequest.groupBy({
             by: ['projectId'],
             where: {
-              projectId: { in: projectIds },
+              projectId: { in: allIds },
               status: { in: ['pending', 'accepted', 'locked'] },
             },
             _count: { id: true },
-          });
+          }),
+      this.computeLastActivity(allIds),
+    ]);
     const countByProjectId = new Map(activeCounts.map((c) => [c.projectId, c._count.id]));
-    const itemsWithCount = items.map((p) => ({
+    // Sort by recent activity desc. Falls back to project.updatedAt /
+    // createdAt when no related rows exist (handled inside computeLastActivity).
+    const sortedItems = [...allItems].sort((a, b) => {
+      const da = activityMap.get(a.id)?.getTime() ?? a.updatedAt?.getTime() ?? a.createdAt.getTime();
+      const db = activityMap.get(b.id)?.getTime() ?? b.updatedAt?.getTime() ?? b.createdAt.getTime();
+      return db - da;
+    });
+    const pageItems = sortedItems.slice(skip, skip + limit);
+    const itemsWithCount = pageItems.map((p) => ({
       ...p,
       _count: { bookings: countByProjectId.get(p.id) ?? 0 },
+      lastActivityAt: activityMap.get(p.id) ?? p.updatedAt ?? p.createdAt,
     }));
     return {
       items: itemsWithCount,
@@ -210,10 +226,72 @@ export class ProjectsService {
     };
   }
 
+  /**
+   * Returns a Map<projectId, lastActivityAt> using the freshest of:
+   *   - project.updatedAt
+   *   - latest booking updatedAt on the project
+   *   - latest conversation lastMessageAt / updatedAt on the project
+   *   - latest invoice updatedAt on the project
+   *
+   * Drives the "most recently active project sorts first" rule used by all
+   * project-list views (image #33).
+   */
+  private async computeLastActivity(projectIds: string[]): Promise<Map<string, Date>> {
+    if (projectIds.length === 0) return new Map();
+    const [bookingAgg, convoAgg, invoiceAgg, projects] = await Promise.all([
+      this.prisma.bookingRequest.groupBy({
+        by: ['projectId'],
+        where: { projectId: { in: projectIds } },
+        _max: { updatedAt: true },
+      }),
+      this.prisma.conversation.groupBy({
+        by: ['projectId'],
+        where: { projectId: { in: projectIds } },
+        _max: { lastMessageAt: true, updatedAt: true },
+      }),
+      this.prisma.invoice.groupBy({
+        by: ['projectId'],
+        where: { projectId: { in: projectIds } },
+        _max: { updatedAt: true },
+      }),
+      this.prisma.project.findMany({
+        where: { id: { in: projectIds } },
+        select: { id: true, updatedAt: true, createdAt: true },
+      }),
+    ]);
+    const map = new Map<string, Date>();
+    const bump = (id: string | null | undefined, d: Date | null | undefined) => {
+      if (!id || !d) return;
+      const cur = map.get(id);
+      if (!cur || d > cur) map.set(id, d);
+    };
+    for (const p of projects) bump(p.id, p.updatedAt ?? p.createdAt);
+    for (const b of bookingAgg) bump(b.projectId, b._max.updatedAt ?? null);
+    for (const c of convoAgg) {
+      bump(c.projectId, c._max.lastMessageAt ?? null);
+      bump(c.projectId, c._max.updatedAt ?? null);
+    }
+    for (const i of invoiceAgg) bump(i.projectId, i._max.updatedAt ?? null);
+    return map;
+  }
+
   async getOne(projectId: string, userId: string, role: UserRole) {
     const project = await this.prisma.project.findUnique({
       where: { id: projectId },
-      include: { roles: true, companyUser: { select: { id: true, email: true } } },
+      include: {
+        roles: true,
+        // Surface the project owner's companyType so the frontend can detect
+        // CD-owned projects regardless of who's viewing (a CD viewing their
+        // own project, a sub-user, etc.). Drives the "hide Crew/Vendor on
+        // CD-owned projects" UI rule on ProjectDetail.
+        companyUser: {
+          select: {
+            id: true,
+            email: true,
+            companyProfile: { select: { companyType: true, companyName: true } },
+          },
+        },
+      },
     });
     if (!project) throw new NotFoundException('Project not found');
 
@@ -291,11 +369,124 @@ export class ProjectsService {
     const project = await this.prisma.project.findUnique({ where: { id: projectId } });
     if (!project) throw new NotFoundException('Project not found');
     if (project.companyUserId !== ctx.accountOwnerId) throw new ForbiddenException('Not your project');
-    if (project.status !== 'draft') {
-      throw new BadRequestException('Only draft projects can be deleted');
+    // Completed projects are an immutable historical record — finance,
+    // invoicing, and past-work calendar slots depend on them.
+    if (project.status === 'completed') {
+      throw new BadRequestException('Completed projects cannot be deleted');
     }
-    await this.prisma.project.delete({ where: { id: projectId } });
+    // Block delete when there's actual money on the line. Any paid (full or
+    // partial) invoice keeps the project alive so we don't orphan payment
+    // history. Users can cancel those invoices manually first if they
+    // really need to remove the project.
+    const paidInvoice = await this.prisma.invoice.findFirst({
+      where: {
+        projectId,
+        OR: [
+          { paidAmount: { gt: 0 } },
+          { status: { in: ['paid', 'overdue', 'sent'] as const } },
+        ],
+      },
+      select: { id: true, invoiceNumber: true, status: true, paidAmount: true },
+    });
+    if (paidInvoice && (paidInvoice.paidAmount > 0 || paidInvoice.status === 'paid')) {
+      throw new BadRequestException(
+        'Cannot delete a project with paid invoices. Cancel them first.',
+      );
+    }
+
+    // Bookings and invoices don't cascade from Project in the schema (see
+    // prisma/schema.prisma). Conversations / project roles / sub-user
+    // assignments DO cascade. Reviews / contracts / invoice line items /
+    // invoice attachments cascade from their owners. So in a transaction:
+    //   1. For accepted/locked bookings, sweep the target's AvailabilitySlot
+    //      rows back to 'available' so the crew's calendar isn't stuck
+    //      "booked" for a project that no longer exists.
+    //   2. Delete invoices (cascades line items + attachments).
+    //   3. Delete bookings (cascades reviews + contracts).
+    //   4. Delete the project (cascades conversations + roles + sub-user
+    //      assignments).
+    await this.prisma.$transaction(async (tx) => {
+      const activeBookings = await tx.bookingRequest.findMany({
+        where: { projectId, status: { in: ['accepted', 'locked'] } },
+        select: { targetUserId: true, shootDates: true },
+      });
+      for (const b of activeBookings) {
+        const dates = (b.shootDates ?? []).filter((d): d is Date => d instanceof Date);
+        if (dates.length === 0) continue;
+        await tx.availabilitySlot.updateMany({
+          where: { userId: b.targetUserId, date: { in: dates }, status: 'booked' },
+          data: { status: 'available' },
+        });
+      }
+      await tx.invoice.deleteMany({ where: { projectId } });
+      await tx.bookingRequest.deleteMany({ where: { projectId } });
+      await tx.project.delete({ where: { id: projectId } });
+    });
     return { message: 'Project deleted' };
+  }
+
+  /**
+   * Lists ALL bookings on a project, scoped to viewers who already have access
+   * to it. Unlike `/bookings/outgoing` (which is "bookings I requested"), this
+   * returns every booking attached to the project — including ones requested
+   * by a hired Casting Director on the project owner's behalf. Concretely:
+   * Dharma owns "ABC Film", hires Casting Director Taran, Taran books actors
+   * for the project. Dharma's ProjectDetail page calls this endpoint and sees
+   * Taran's cast bookings on the project.
+   *
+   * Access: anyone who can read the project via `getOne` — project owner,
+   * sub-users assigned to it, vendors/cast/individuals with accepted/locked
+   * target bookings, and companies hired on the project (CDs etc.).
+   */
+  async listProjectBookings(projectId: string, userId: string, role: UserRole) {
+    // Authorize — reuse getOne's access rules. If the user can't read the
+    // project, getOne throws and we never reach the bookings query.
+    await this.getOne(projectId, userId, role);
+    const items = await this.prisma.bookingRequest.findMany({
+      where: { projectId },
+      include: {
+        project: true,
+        target: {
+          select: {
+            id: true,
+            email: true,
+            role: true,
+            // Profile slices carry the avatar/logo key and the per-role label
+            // that the Project Detail booking card renders under the name
+            // (DOP / Camera vendor / Actor / Production House — image #37).
+            individualProfile: {
+              select: { displayName: true, skills: true, avatarKey: true },
+            },
+            vendorProfile: {
+              select: {
+                companyName: true,
+                vendorServiceCategory: true,
+                vendorType: true,
+                logoKey: true,
+              },
+            },
+            companyProfile: {
+              select: { companyName: true, companyType: true, logoKey: true },
+            },
+            castProfile: {
+              select: { displayName: true, roleType: true, avatarKey: true },
+            },
+          },
+        },
+        requester: {
+          select: {
+            id: true,
+            email: true,
+            role: true,
+            companyProfile: { select: { companyName: true, companyType: true } },
+          },
+        },
+        projectRole: true,
+        vendorEquipment: { select: { id: true, name: true } },
+      },
+      orderBy: { createdAt: 'desc' },
+    });
+    return { items };
   }
 
   async getProjectSubUsers(projectId: string, userId: string, role: UserRole) {
@@ -476,8 +667,12 @@ export class ProjectsService {
       whereClause = { id: '00000000-0000-0000-0000-000000000000' };
     }
 
-    // Fetch projects with conversation and invoice counts
-    const [items, total] = await Promise.all([
+    // Fetch projects with conversation and invoice counts. Same trick as
+    // listOwn — pull all matching rows, sort by recent activity in memory,
+    // then slice for pagination. The activity sort makes the most recently
+    // touched project surface first (image #33) across crew / cast / vendor
+    // views, not just companies.
+    const [allItems, total] = await Promise.all([
       this.prisma.project.findMany({
         where: whereClause,
         select: {
@@ -488,6 +683,7 @@ export class ProjectsService {
           endDate: true,
           budget: true,
           createdAt: true,
+          updatedAt: true,
           _count: {
             select: {
               conversations: true,
@@ -496,12 +692,17 @@ export class ProjectsService {
             }
           }
         },
-        orderBy: { createdAt: 'desc' },
-        skip,
-        take: limit,
+        orderBy: { updatedAt: 'desc' },
       }),
       this.prisma.project.count({ where: whereClause }),
     ]);
+    const activityMap = await this.computeLastActivity(allItems.map((p) => p.id));
+    const sortedAll = [...allItems].sort((a, b) => {
+      const da = activityMap.get(a.id)?.getTime() ?? a.updatedAt?.getTime() ?? a.createdAt.getTime();
+      const db = activityMap.get(b.id)?.getTime() ?? b.updatedAt?.getTime() ?? b.createdAt.getTime();
+      return db - da;
+    });
+    const items = sortedAll.slice(skip, skip + limit);
 
     const projectIds = items.map((project) => project.id);
     const invoiceWhere: Record<string, unknown> = { projectId: { in: projectIds } };
@@ -615,6 +816,8 @@ export class ProjectsService {
         endDate: project.endDate,
         approvedBudget: project.budget ?? 0,
         createdAt: project.createdAt,
+        // Aggregate "last touched" timestamp — drives the activity-first sort.
+        lastActivityAt: activityMap.get(project.id) ?? project.updatedAt ?? project.createdAt,
         // Latest chat activity on the project — null when no conversation
         // has any messages yet. Frontend uses it to sort projects so the
         // freshest chat bubbles up.

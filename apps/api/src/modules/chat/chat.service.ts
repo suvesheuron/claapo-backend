@@ -521,13 +521,81 @@ export class ChatService {
       }),
     ]);
 
-    // Push unread update to the other participant (not the sender)
-    const otherParticipantId = conv.participantA === mainUserId ? conv.participantB : conv.participantA;
-    if (otherParticipantId && otherParticipantId !== (mainUserId ?? userId)) {
+    // Push unread update to the other participant (not the sender).
+    // Conversation participants are always resolved to the account-owner id
+    // (main user), so compare against `mainUserId ?? userId` — using
+    // `mainUserId` alone is null for main-user senders and silently picks the
+    // wrong participant.
+    const senderAccountUserId = mainUserId ?? userId;
+    const otherParticipantId =
+      conv.participantA === senderAccountUserId ? conv.participantB : conv.participantA;
+    if (otherParticipantId && otherParticipantId !== senderAccountUserId) {
       this.pushUnreadForUser(otherParticipantId).catch(() => {});
     }
 
+    // Push a row delta to both participants' conversation lists so previews
+    // refresh instantly — bypasses any client-side fetch staleness and means
+    // a refresh isn't needed to see the latest message in the chat-preview
+    // page. Sender sees the row jump to the top without bumping unread;
+    // recipient bumps unread by 1. Best-effort — never blocks the response.
+    this.broadcastConversationUpdated(
+      conv.id,
+      conv.lastMessageAt ?? new Date(),
+      senderAccountUserId,
+      otherParticipantId,
+      {
+        id: message.id,
+        content: message.content,
+        senderId: message.senderId,
+        type: message.type as string,
+        createdAt: message.createdAt,
+      },
+    );
+
     return this.formatMessage(message, userId, mainUserId);
+  }
+
+  /**
+   * Fan out a `conversation_updated` event to both sides of a conversation.
+   * `senderAccountUserId` is the account-owner id of whoever sent the message
+   * (subusers resolve to their main account, matching the participant model).
+   * `recipientAccountUserId` is the other participant — may be null if the
+   * conversation only has the sender (shouldn't happen in practice, but the
+   * guard keeps the helper safe to call from any path).
+   */
+  private broadcastConversationUpdated(
+    conversationId: string,
+    lastMessageAt: Date,
+    senderAccountUserId: string,
+    recipientAccountUserId: string | null,
+    lastMessage: {
+      id: string;
+      content: string | null;
+      senderId: string;
+      type?: string;
+      createdAt: Date;
+    },
+  ) {
+    try {
+      // Sender: bump the row to the top but don't increment unread (they're
+      // the one who just typed the message — it's already read on their side).
+      this.chatGateway.emitConversationUpdated(senderAccountUserId, {
+        conversationId,
+        lastMessage,
+        lastMessageAt,
+        incrementUnread: false,
+      });
+      if (recipientAccountUserId && recipientAccountUserId !== senderAccountUserId) {
+        this.chatGateway.emitConversationUpdated(recipientAccountUserId, {
+          conversationId,
+          lastMessage,
+          lastMessageAt,
+          incrementUnread: true,
+        });
+      }
+    } catch {
+      // Best-effort: socket push must never break the primary write.
+    }
   }
 
   /** Mark all messages in conversation as read (for current user as recipient) */
@@ -627,6 +695,29 @@ export class ChatService {
         data: { lastMessageAt: new Date() },
       }),
     ]);
+
+    // Push unread to the target so their chat-tab badge updates instantly —
+    // without this, auto-generated booking summaries are invisible until the
+    // recipient refreshes the chat list. companyUserId is always the sender,
+    // so target == the other participant by construction.
+    this.pushUnreadForUser(targetUserId).catch(() => {});
+
+    // Same row-delta push as regular sendMessage so the auto-booking summary
+    // shows up in the recipient's conversation list preview without needing
+    // a refetch. Both participants are passed; the helper de-dupes.
+    this.broadcastConversationUpdated(
+      conv.id,
+      new Date(),
+      companyUserId,
+      targetUserId,
+      {
+        id: message.id,
+        content: message.content,
+        senderId: message.senderId,
+        type: message.type as string,
+        createdAt: message.createdAt,
+      },
+    );
 
     return message;
   }
@@ -904,17 +995,11 @@ export class ChatService {
   async getProjectMessagesByDate(
     userId: string,
     projectId: string,
-    startIso: string,
-    endIso: string,
+    startIso?: string,
+    endIso?: string,
     page = 1,
     limit = 50,
   ) {
-    if (!startIso || !endIso) throw new BadRequestException('start and end are required');
-    const start = new Date(startIso);
-    const end = new Date(endIso);
-    if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime())) {
-      throw new BadRequestException('Invalid start or end date');
-    }
 
     const project = await this.prisma.project.findUnique({ where: { id: projectId } });
     if (!project) throw new NotFoundException('Project not found');
@@ -952,39 +1037,66 @@ export class ChatService {
       await this.ensureProjectAssignedToSubUser(companyCtx.accountOwnerId, userId, projectId);
     }
 
-    const where = {
+    const where: Record<string, any> = {
       deletedAt: null,
-      createdAt: { gte: start, lt: end },
       conversation: { projectId },
-    } as const;
+    };
+    if (startIso && endIso) {
+      const start = new Date(startIso);
+      const end = new Date(endIso);
+      if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime())) {
+        throw new BadRequestException('Invalid start or end date');
+      }
+      where.createdAt = { gte: start, lt: end };
+    }
 
-    const skip = (page - 1) * limit;
-    const [rows, total] = await Promise.all([
-      this.prisma.message.findMany({
+    let rows: any[];
+    let total: number;
+    if (startIso && endIso) {
+      // Date-specific: chronological, paginated, with count
+      const skip = (page - 1) * limit;
+      [rows, total] = await Promise.all([
+        this.prisma.message.findMany({
+          where,
+          include: {
+            sender: {
+              select: {
+                id: true, email: true, displayName: true, mainUserId: true,
+                individualProfile: { select: { displayName: true } },
+                companyProfile: { select: { companyName: true } },
+                vendorProfile: { select: { companyName: true } },
+                castProfile: { select: { displayName: true } },
+              },
+            },
+            conversation: { select: { id: true, participantA: true, participantB: true } },
+          },
+          orderBy: { createdAt: 'asc' },
+          skip,
+          take: limit,
+        }),
+        this.prisma.message.count({ where }),
+      ]);
+    } else {
+      // No date filter: most recent messages only, single query, no count
+      rows = await this.prisma.message.findMany({
         where,
         include: {
           sender: {
             select: {
-              id: true,
-              email: true,
-              displayName: true,
-              mainUserId: true,
+              id: true, email: true, displayName: true, mainUserId: true,
               individualProfile: { select: { displayName: true } },
               companyProfile: { select: { companyName: true } },
               vendorProfile: { select: { companyName: true } },
               castProfile: { select: { displayName: true } },
             },
           },
-          conversation: {
-            select: { id: true, participantA: true, participantB: true },
-          },
+          conversation: { select: { id: true, participantA: true, participantB: true } },
         },
-        orderBy: { createdAt: 'asc' },
-        skip,
-        take: limit,
-      }),
-      this.prisma.message.count({ where }),
-    ]);
+        orderBy: { createdAt: 'desc' },
+        take: Math.min(limit, 100),
+      });
+      total = rows.length;
+    }
 
     const ownerId = companyCtx.accountOwnerId;
 
@@ -1062,7 +1174,9 @@ export class ChatService {
           isSameAccount,
         };
       }),
-      meta: { total, page, limit, pages: Math.max(1, Math.ceil(total / limit)) },
+      meta: startIso && endIso
+        ? { total, page, limit, pages: Math.max(1, Math.ceil(total / limit)) }
+        : { total, page: 1, limit, pages: 1 },
     };
   }
 

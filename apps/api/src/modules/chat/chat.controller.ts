@@ -70,12 +70,12 @@ export class ChatController {
   }
 
   @Get('project/:projectId/messages/by-date')
-  @ApiOperation({ summary: 'List messages across a project\'s conversations within a date range (paginated)' })
+  @ApiOperation({ summary: 'List messages across a project\'s conversations within a date range (paginated). Omit start/end to fetch all messages.' })
   getProjectMessagesByDate(
     @CurrentUser() user: AuthUser,
     @Param('projectId') projectId: string,
-    @Query('start') start: string,
-    @Query('end') end: string,
+    @Query('start') start?: string,
+    @Query('end') end?: string,
     @Query('page') page?: string,
     @Query('limit') limit?: string,
   ) {
