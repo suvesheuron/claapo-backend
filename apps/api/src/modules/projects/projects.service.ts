@@ -499,11 +499,19 @@ export class ProjectsService {
 
     if (role === UserRole.company) {
       const ctx = await this.getCompanyAccountContext(userId);
+      // Non-owner companies (e.g. a Casting Director hired on someone else's
+      // project) can read the project itself via getOne, but they don't own
+      // its sub-user assignments. Return an empty list instead of 403 so the
+      // ProjectDetail page doesn't spam error logs every time they open a
+      // project they're hired on. Owner stays strict.
       if (project.companyUserId !== ctx.accountOwnerId) {
-        throw new ForbiddenException('You do not have access to this project');
+        return { items: [] };
       }
     } else {
-      throw new ForbiddenException('Only company users can view project assignments');
+      // Other roles never have sub-user assignments on a project — degrade
+      // to empty rather than 403 so role mixups (e.g. a sub-user invitee
+      // re-loading the page) don't surface as errors.
+      return { items: [] };
     }
 
     return {
