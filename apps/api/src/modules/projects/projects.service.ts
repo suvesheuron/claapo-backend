@@ -617,24 +617,61 @@ export class ProjectsService {
         OR: [ownedProjectsClause, bookedOnProjectsClause, conversationOnProjectsClause],
       };
     } else if (role === UserRole.vendor) {
-      // Vendor: projects where they have bookings
+      // Vendor: projects where they have bookings OR are already in a
+      // conversation on the project (inquiry-before-booking flow — a company
+      // can chat a vendor about a project before any booking exists). Mirrors
+      // the individual and cast branches.
       whereClause = {
-        bookings: {
-          some: {
-            targetUserId: mainUserId,
-            status: { notIn: ['declined', 'expired', 'cancelled'] },
-          }
-        }
+        OR: [
+          {
+            bookings: {
+              some: {
+                targetUserId: mainUserId,
+                status: { notIn: ['declined', 'expired', 'cancelled'] },
+              },
+            },
+          },
+          {
+            conversations: {
+              some: {
+                OR: [
+                  { participantA: mainUserId },
+                  { participantB: mainUserId },
+                ],
+              },
+            },
+          },
+        ],
       };
     } else if (role === UserRole.individual) {
-      // Individual: projects where they have bookings
+      // Individual: projects where they have bookings OR are already in a
+      // conversation on the project (inquiry-before-booking flow — a company
+      // can chat an individual crew member about a project before any booking
+      // exists). Without the second clause the individual's Messages page
+      // would be empty until they accept a booking, hiding the inquiry
+      // message that triggered the conversation. Mirrors the company and
+      // cast branches above.
       whereClause = {
-        bookings: {
-          some: {
-            targetUserId: userId,
-            status: { notIn: ['declined', 'expired', 'cancelled'] },
-          }
-        }
+        OR: [
+          {
+            bookings: {
+              some: {
+                targetUserId: userId,
+                status: { notIn: ['declined', 'expired', 'cancelled'] },
+              },
+            },
+          },
+          {
+            conversations: {
+              some: {
+                OR: [
+                  { participantA: userId },
+                  { participantB: userId },
+                ],
+              },
+            },
+          },
+        ],
       };
     } else if (role === UserRole.cast) {
       // Cast: projects where they have bookings OR are already in a
@@ -690,6 +727,7 @@ export class ProjectsService {
           startDate: true,
           endDate: true,
           budget: true,
+          companyUserId: true,
           createdAt: true,
           updatedAt: true,
           _count: {
@@ -830,7 +868,7 @@ export class ProjectsService {
         // has any messages yet. Frontend uses it to sort projects so the
         // freshest chat bubbles up.
         lastMessageAt: lastMessageAtByProject.get(project.id) ?? null,
-        conversationCount: project._count.conversations,
+        conversationCount: project.companyUserId === mainUserId ? project._count.conversations : 0,
         invoiceCount: (amountStatsByProject.get(project.id)?.invoiceCount ?? 0),
         bookingCount: project._count.bookings,
       })),
