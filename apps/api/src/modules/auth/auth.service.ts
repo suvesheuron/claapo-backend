@@ -10,6 +10,7 @@ import * as bcrypt from 'bcrypt';
 import { randomBytes, createHash } from 'crypto';
 import { UserRole, OtpType } from '@prisma/client';
 import { PrismaService } from '../../database/prisma.service';
+import { AppCacheService } from '../../common/cache/app-cache.service';
 import { RegisterIndividualDto } from './dto/register-individual.dto';
 import { RegisterCompanyDto } from './dto/register-company.dto';
 import { RegisterVendorDto } from './dto/register-vendor.dto';
@@ -38,6 +39,7 @@ export class AuthService {
     private readonly prisma: PrismaService,
     private readonly jwtService: JwtService,
     private readonly config: ConfigService,
+    private readonly cache: AppCacheService,
   ) {}
 
   private async hashPassword(password: string): Promise<string> {
@@ -354,10 +356,25 @@ export class AuthService {
   }
 
   async validateUser(payload: AuthUser): Promise<AuthUser | null> {
-    const user = await this.prisma.user.findFirst({
-      where: { id: payload.id, deletedAt: null, isActive: true },
-    });
-    if (!user) return null;
-    return { id: user.id, email: user.email, role: user.role };
+    // validateUser runs in the JWT guard, so every authenticated request hits
+    // it. A typical page mount fires 5–8 API calls in parallel, each of which
+    // would otherwise spend a Prisma connection here — enough to drain the
+    // 17-connection pool when other queries pile on (we saw a pool timeout in
+    // production logs). Cache the active-user identity for a short TTL so the
+    // guard becomes a Redis lookup instead of a DB roundtrip on the hot path.
+    // The TTL is intentionally short (60s) so deactivated / soft-deleted users
+    // lose access quickly without needing an explicit invalidate.
+    return this.cache.wrap(
+      `auth:validate:${payload.id}`,
+      60,
+      async () => {
+        const user = await this.prisma.user.findFirst({
+          where: { id: payload.id, deletedAt: null, isActive: true },
+          select: { id: true, email: true, role: true },
+        });
+        if (!user) return null;
+        return { id: user.id, email: user.email, role: user.role };
+      },
+    );
   }
 }
