@@ -14,6 +14,9 @@ import { PresignedUploadDto } from './dto/presigned-upload.dto';
 import { ConfirmUploadDto } from './dto/confirm-upload.dto';
 import { CreateSubUserDto } from './dto/create-sub-user.dto';
 import { AssignSubUserProjectDto } from './dto/assign-sub-user-project.dto';
+import { ShowcaseUploadUrlDto } from './dto/showcase-upload-url.dto';
+import { CreateShowcaseItemDto } from './dto/create-showcase-item.dto';
+import { CoverUploadDto } from './dto/cover-upload.dto';
 
 @ApiTags('profile')
 @Controller('profile')
@@ -111,8 +114,8 @@ export class ProfilesController {
   @Post('cover')
   @UseGuards(RolesGuard)
   @Roles('individual', 'vendor', 'company', 'cast')
-  @ApiOperation({ summary: 'Get presigned URL to upload cover photo (individual/vendor/company/cast)' })
-  getCoverUploadUrl(@CurrentUser() user: AuthUser, @Body() dto: PresignedUploadDto) {
+  @ApiOperation({ summary: 'Get presigned URL to upload cover photo/video (individual/vendor/company/cast)' })
+  getCoverUploadUrl(@CurrentUser() user: AuthUser, @Body() dto: CoverUploadDto) {
     return this.profilesService.getPresignedCoverUrl(user.id, user.role, dto.contentType);
   }
 
@@ -138,6 +141,38 @@ export class ProfilesController {
   @ApiOperation({ summary: 'Confirm showreel upload and set key on profile' })
   confirmShowreel(@CurrentUser() user: AuthUser, @Body() body: ConfirmUploadDto) {
     return this.profilesService.setShowreelKey(user.id, body.key);
+  }
+
+  @Get('showcase/list')
+  @UseGuards(RolesGuard)
+  @Roles('cast')
+  @ApiOperation({ summary: 'List own Work Showcase items (cast)' })
+  listShowcase(@CurrentUser() user: AuthUser) {
+    return this.profilesService.listShowcaseItems(user.id);
+  }
+
+  @Post('showcase/upload-url')
+  @UseGuards(RolesGuard)
+  @Roles('cast')
+  @ApiOperation({ summary: 'Get presigned URL to upload a Work Showcase item (image/video/document)' })
+  getShowcaseUploadUrl(@CurrentUser() user: AuthUser, @Body() dto: ShowcaseUploadUrlDto) {
+    return this.profilesService.getShowcaseUploadUrl(user.id, dto.contentType);
+  }
+
+  @Post('showcase')
+  @UseGuards(RolesGuard)
+  @Roles('cast')
+  @ApiOperation({ summary: 'Register an uploaded Work Showcase item (cast)' })
+  createShowcaseItem(@CurrentUser() user: AuthUser, @Body() dto: CreateShowcaseItemDto) {
+    return this.profilesService.createShowcaseItem(user.id, dto);
+  }
+
+  @Delete('showcase/:itemId')
+  @UseGuards(RolesGuard)
+  @Roles('cast')
+  @ApiOperation({ summary: 'Delete a Work Showcase item (cast)' })
+  deleteShowcaseItem(@CurrentUser() user: AuthUser, @Param('itemId') itemId: string) {
+    return this.profilesService.deleteShowcaseItem(user.id, itemId);
   }
 
   @Get(':userId')

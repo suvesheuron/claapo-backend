@@ -2,13 +2,17 @@ import { Injectable, ForbiddenException, NotFoundException, BadRequestException 
 import { InvoiceTaxType, UserRole } from '@prisma/client';
 import { PrismaService } from '../../database/prisma.service';
 import { StorageService } from '../storage/storage.service';
+import { NotificationsService } from '../notifications/notifications.service';
 import { CreateProjectDto } from './dto/create-project.dto';
 import { UpdateProjectDto } from './dto/update-project.dto';
 import { AddProjectRoleDto } from './dto/add-role.dto';
 
 @Injectable()
 export class ProjectsService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly notifications: NotificationsService,
+  ) {}
 
   async create(companyUserId: string, dto: CreateProjectDto) {
     if (new Date(dto.startDate) > new Date(dto.endDate)) {
@@ -356,6 +360,161 @@ export class ProjectsService {
     if (dto.locationCity !== undefined) data.locationCity = dto.locationCity;
     if (dto.budget !== undefined) data.budget = dto.budget;
     if (dto.status !== undefined) data.status = dto.status;
+
+    const datesChanged = dto.shootDates !== undefined;
+    const locationsChanged = dto.shootLocations !== undefined;
+
+    if (datesChanged || locationsChanged) {
+      const newShootDates = data.shootDates as Date[] | undefined;
+      const newShootLocations = data.shootLocations as string[] | undefined;
+
+      // Fetch old project data before updating (for notification message)
+      const oldProjectData = await this.prisma.project.findUnique({
+        where: { id: projectId },
+        select: { title: true, shootDates: true, shootLocations: true },
+      });
+      const projectTitle = oldProjectData?.title ?? 'Unknown project';
+      const oldShootDates = (oldProjectData?.shootDates ?? []).map((d: Date) => {
+        const x = new Date(d);
+        return new Date(Date.UTC(x.getUTCFullYear(), x.getUTCMonth(), x.getUTCDate()));
+      });
+      const oldLocations = oldProjectData?.shootLocations ?? [];
+
+      // Build notification body
+      const fmtDate = (d: Date) =>
+        d.toLocaleDateString('en-IN', { day: '2-digit', month: 'short', timeZone: 'UTC' });
+      const fmtDates = (dates: Date[]) => dates.map((d) => fmtDate(d)).join(', ');
+      let notifBody = '';
+      if (datesChanged && newShootDates) {
+        const from = oldShootDates.length ? fmtDates(oldShootDates) : 'none';
+        const to = newShootDates.length ? fmtDates(newShootDates) : 'none';
+        notifBody += `Shoot dates: ${from} → ${to}`;
+      }
+      if (locationsChanged) {
+        const newLocs = newShootLocations ?? [];
+        const from = oldLocations.length ? oldLocations.join(', ') : 'none';
+        const to = newLocs.length ? newLocs.join(', ') : 'none';
+        if (notifBody) notifBody += ' | ';
+        notifBody += `Locations: ${from} → ${to}`;
+      }
+
+      // Collect affected users for notification before the transaction
+      const affectedBookingUsers = await this.prisma.bookingRequest.findMany({
+        where: { projectId, status: { notIn: ['declined', 'expired', 'cancelled'] } },
+        select: { targetUserId: true },
+      });
+      const allTargetIds = [...new Set(affectedBookingUsers.map((b) => b.targetUserId))];
+
+      const updated = await this.prisma.$transaction(async (tx) => {
+        const proj = await tx.project.update({
+          where: { id: projectId },
+          data,
+          include: { roles: true },
+        });
+
+        const activeBookings = await tx.bookingRequest.findMany({
+          where: { projectId, status: { notIn: ['declined', 'expired', 'cancelled'] } },
+          select: { id: true, targetUserId: true, status: true, shootDates: true },
+        });
+
+        if (activeBookings.length === 0) return proj;
+
+        // Role lookup for slot management
+        const targetUserIds = [...new Set(activeBookings.map((b) => b.targetUserId))];
+        const targetUsers = await tx.user.findMany({
+          where: { id: { in: targetUserIds } },
+          select: { id: true, role: true },
+        });
+        const targetRoleMap = new Map(targetUsers.map((u) => [u.id, u.role]));
+
+        for (const booking of activeBookings) {
+          const updateData: Record<string, unknown> = {};
+
+          if (datesChanged && newShootDates) {
+            updateData.shootDates = newShootDates;
+          }
+
+          if (locationsChanged) {
+            if (newShootLocations) {
+              updateData.shootLocations = newShootLocations;
+            }
+            if (newShootDates && newShootLocations) {
+              updateData.shootDateLocations = newShootDates.map((d, i) => ({
+                date: d.toISOString().slice(0, 10),
+                location: newShootLocations[i] ?? newShootLocations[newShootLocations.length - 1] ?? '',
+              }));
+            } else if (newShootLocations) {
+              const existingDates = (booking.shootDates ?? []).map((d: Date) => {
+                const x = new Date(d);
+                return new Date(Date.UTC(x.getUTCFullYear(), x.getUTCMonth(), x.getUTCDate()));
+              });
+              updateData.shootDateLocations = existingDates.map((d, i) => ({
+                date: d.toISOString().slice(0, 10),
+                location: newShootLocations[i] ?? newShootLocations[newShootLocations.length - 1] ?? '',
+              }));
+            }
+          }
+
+          if (Object.keys(updateData).length > 0) {
+            await tx.bookingRequest.update({
+              where: { id: booking.id },
+              data: updateData,
+            });
+          }
+
+          // Sync AvailabilitySlot for individual/cast accepted/locked bookings
+          if (datesChanged && newShootDates && ['accepted', 'locked'].includes(booking.status)) {
+            const role = targetRoleMap.get(booking.targetUserId);
+            if (role === 'individual' || role === 'cast') {
+              const oldDates = (booking.shootDates ?? []).map((d: Date) => {
+                const x = new Date(d);
+                return new Date(Date.UTC(x.getUTCFullYear(), x.getUTCMonth(), x.getUTCDate()));
+              });
+              const oldKeys = new Set(oldDates.map((d) => d.toISOString().slice(0, 10)));
+              const newKeys = new Set(newShootDates.map((d) => d.toISOString().slice(0, 10)));
+
+              const removed = oldDates.filter((d) => !newKeys.has(d.toISOString().slice(0, 10)));
+              if (removed.length > 0) {
+                await tx.availabilitySlot.updateMany({
+                  where: { userId: booking.targetUserId, date: { in: removed }, status: 'booked' },
+                  data: { status: 'available' },
+                });
+              }
+
+              for (const nd of newShootDates) {
+                if (!oldKeys.has(nd.toISOString().slice(0, 10))) {
+                  await tx.availabilitySlot.upsert({
+                    where: { userId_date: { userId: booking.targetUserId, date: nd } },
+                    create: { userId: booking.targetUserId, date: nd, status: 'booked' },
+                    update: { status: 'booked' },
+                  });
+                }
+              }
+            }
+          }
+        }
+
+        return proj;
+      });
+
+      // Send notifications after successful transaction
+      if (allTargetIds.length > 0) {
+        for (const uid of allTargetIds) {
+          this.notifications
+            .createForUser(
+              uid,
+              'booking_date_changed',
+              `"${projectTitle}" schedule updated`,
+              notifBody,
+              { projectId } as Record<string, unknown>,
+            )
+            .catch(() => {});
+        }
+      }
+
+      return updated;
+    }
+
     return this.prisma.project.update({
       where: { id: projectId },
       data,

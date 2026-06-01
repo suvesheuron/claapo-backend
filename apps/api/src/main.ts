@@ -33,7 +33,7 @@ const quietLogger: LoggerService = {
 };
 
 function assertRequiredEnv() {
-  const required = ['JWT_SECRET', 'JWT_REFRESH_SECRET'];
+  const required = ['JWT_SECRET', 'JWT_REFRESH_SECRET', 'OTP_HMAC_SECRET'];
   const missing = required.filter((k) => !process.env[k]);
   if (missing.length > 0) {
     throw new Error(

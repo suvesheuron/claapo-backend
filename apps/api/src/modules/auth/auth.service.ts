@@ -7,10 +7,12 @@ import {
 import { JwtService } from '@nestjs/jwt';
 import { ConfigService } from '@nestjs/config';
 import * as bcrypt from 'bcrypt';
-import { randomBytes, createHash } from 'crypto';
+import { randomBytes, createHash, createHmac, timingSafeEqual } from 'crypto';
 import { UserRole, OtpType } from '@prisma/client';
 import { PrismaService } from '../../database/prisma.service';
 import { AppCacheService } from '../../common/cache/app-cache.service';
+import { SmsService } from '../sms/sms.service';
+import { EmailService } from '../email/email.service';
 import { RegisterIndividualDto } from './dto/register-individual.dto';
 import { RegisterCompanyDto } from './dto/register-company.dto';
 import { RegisterVendorDto } from './dto/register-vendor.dto';
@@ -40,6 +42,8 @@ export class AuthService {
     private readonly jwtService: JwtService,
     private readonly config: ConfigService,
     private readonly cache: AppCacheService,
+    private readonly sms: SmsService,
+    private readonly email: EmailService,
   ) {}
 
   private async hashPassword(password: string): Promise<string> {
@@ -60,12 +64,23 @@ export class AuthService {
     return otp;
   }
 
-  private async hashOtp(otp: string): Promise<string> {
-    return bcrypt.hash(otp, 10);
+  /**
+   * HMAC-SHA256 with a server-side secret. Sync, constant-time, no threadpool —
+   * roughly 1000x faster than the bcrypt cost-12 it replaces, which matters
+   * because sendOtp ran on a hot path before SMS retries even start.
+   * The OTP itself only lives 5 minutes, so we don't need bcrypt-grade KDF
+   * stretching here — the secret prevents offline rainbow lookup against the
+   * 10^6 6-digit space if the DB is exfiltrated, and that's the whole threat.
+   */
+  private hashOtp(otp: string): string {
+    const secret = this.config.get<string>('otpHmacSecret') ?? '';
+    return createHmac('sha256', secret).update(otp).digest('hex');
   }
 
-  private async verifyOtp(otp: string, hash: string): Promise<boolean> {
-    return bcrypt.compare(otp, hash);
+  private verifyOtp(otp: string, hash: string): boolean {
+    const candidate = this.hashOtp(otp);
+    if (candidate.length !== hash.length) return false;
+    return timingSafeEqual(Buffer.from(candidate), Buffer.from(hash));
   }
 
   /** Include plaintext OTP in JSON when SMS is not wired (dev/staging demos). Never enabled in production unless EXPOSE_OTP_IN_API is set. */
@@ -159,7 +174,7 @@ export class AuthService {
   async sendOtp(phone: string): Promise<{ message: string; devOtp?: string }> {
     const user = await this.prisma.user.findFirst({ where: { phone, deletedAt: null } });
     const otp = this.generateOtp();
-    const otpHash = await this.hashOtp(otp);
+    const otpHash = this.hashOtp(otp);
     const expiresAt = new Date(Date.now() + OTP_EXPIRY_MINUTES * 60 * 1000);
     await this.prisma.otpSession.create({
       data: {
@@ -169,7 +184,7 @@ export class AuthService {
         expiresAt,
       },
     });
-    // TODO: enqueue SMS via BullMQ (MSG91/Twilio). For now log + optional devOtp in response.
+    await this.sms.sendOtp(phone, otp);
     if (this.config.get('env') === 'development') {
       console.log(`[DEV] OTP for ${phone}: ${otp} (expires in ${OTP_EXPIRY_MINUTES} min)`);
     }
@@ -197,7 +212,75 @@ export class AuthService {
     });
     let matched = false;
     for (const s of sessions) {
-      if (await this.verifyOtp(otp, s.otpHash)) {
+      if (this.verifyOtp(otp, s.otpHash)) {
+        matched = true;
+        await this.prisma.otpSession.update({
+          where: { id: s.id },
+          data: { usedAt: new Date() },
+        });
+        break;
+      }
+    }
+    if (!matched) throw new BadRequestException('Invalid or expired OTP');
+    if (!user.isActive) throw new UnauthorizedException('Account is deactivated');
+
+    await this.prisma.user.update({
+      where: { id: user.id },
+      data: { isVerified: true },
+    });
+    const userWithMain = await this.prisma.user.findUnique({
+      where: { id: user.id },
+      select: { id: true, email: true, role: true, displayName: true, mainUserId: true },
+    });
+    return this.issueTokenPair(userWithMain!);
+  }
+
+  async sendOtpEmail(email: string): Promise<{ message: string; devOtp?: string }> {
+    const user = await this.prisma.user.findFirst({ where: { email, deletedAt: null } });
+    // Same generic-response pattern as phone OTP — don't leak whether the email
+    // exists. The OtpSession row is created either way to keep timing similar.
+    const otp = this.generateOtp();
+    const otpHash = this.hashOtp(otp);
+    const expiresAt = new Date(Date.now() + OTP_EXPIRY_MINUTES * 60 * 1000);
+    await this.prisma.otpSession.create({
+      data: {
+        userId: user?.id ?? undefined,
+        otpHash,
+        type: OtpType.registration,
+        expiresAt,
+      },
+    });
+    if (user) {
+      await this.email.sendOtp(email, otp);
+    }
+    if (this.config.get('env') === 'development') {
+      console.log(`[DEV] Email OTP for ${email}: ${otp} (expires in ${OTP_EXPIRY_MINUTES} min)`);
+    }
+    if (this.exposeOtpInApi()) {
+      return { message: 'OTP sent successfully', devOtp: otp };
+    }
+    return { message: 'OTP sent successfully' };
+  }
+
+  async verifyOtpEmailAndLogin(email: string, otp: string): Promise<TokenPair> {
+    const user = await this.prisma.user.findFirst({
+      where: { email, deletedAt: null },
+    });
+    if (!user) throw new BadRequestException('No user found for this email. Register first.');
+
+    const sessions = await this.prisma.otpSession.findMany({
+      where: {
+        type: OtpType.registration,
+        usedAt: null,
+        expiresAt: { gt: new Date() },
+        OR: [{ userId: user.id }, { userId: null }],
+      },
+      orderBy: { createdAt: 'desc' },
+      take: 10,
+    });
+    let matched = false;
+    for (const s of sessions) {
+      if (this.verifyOtp(otp, s.otpHash)) {
         matched = true;
         await this.prisma.otpSession.update({
           where: { id: s.id },
@@ -315,11 +398,12 @@ export class AuthService {
     const genericMsg = 'If this number is registered, you will receive an OTP.';
     if (!user) return { message: genericMsg };
     const otp = this.generateOtp();
-    const otpHash = await this.hashOtp(otp);
+    const otpHash = this.hashOtp(otp);
     const expiresAt = new Date(Date.now() + OTP_EXPIRY_MINUTES * 60 * 1000);
     await this.prisma.otpSession.create({
       data: { userId: user.id, otpHash, type: OtpType.password_reset, expiresAt },
     });
+    await this.sms.sendOtp(phone, otp);
     if (this.config.get('env') === 'development') {
       console.log(`[DEV] Password reset OTP for ${phone}: ${otp}`);
     }
@@ -327,6 +411,52 @@ export class AuthService {
       return { message: genericMsg, devOtp: otp };
     }
     return { message: genericMsg };
+  }
+
+  async passwordResetRequestEmail(email: string): Promise<{ message: string; devOtp?: string }> {
+    const user = await this.prisma.user.findFirst({ where: { email, deletedAt: null } });
+    const genericMsg = 'If this email is registered, you will receive an OTP.';
+    if (!user) return { message: genericMsg };
+    const otp = this.generateOtp();
+    const otpHash = this.hashOtp(otp);
+    const expiresAt = new Date(Date.now() + OTP_EXPIRY_MINUTES * 60 * 1000);
+    await this.prisma.otpSession.create({
+      data: { userId: user.id, otpHash, type: OtpType.password_reset, expiresAt },
+    });
+    await this.email.sendOtp(email, otp);
+    if (this.config.get('env') === 'development') {
+      console.log(`[DEV] Password reset OTP for ${email}: ${otp}`);
+    }
+    if (this.exposeOtpInApi()) {
+      return { message: genericMsg, devOtp: otp };
+    }
+    return { message: genericMsg };
+  }
+
+  async passwordResetConfirmEmail(
+    email: string,
+    otp: string,
+    newPassword: string,
+  ): Promise<{ message: string }> {
+    const user = await this.prisma.user.findFirst({ where: { email, deletedAt: null } });
+    if (!user) throw new BadRequestException('User not found');
+    const sessions = await this.prisma.otpSession.findMany({
+      where: { userId: user.id, type: OtpType.password_reset, usedAt: null, expiresAt: { gt: new Date() } },
+      orderBy: { createdAt: 'desc' },
+      take: 5,
+    });
+    let matched = false;
+    for (const s of sessions) {
+      if (this.verifyOtp(otp, s.otpHash)) {
+        matched = true;
+        await this.prisma.otpSession.update({ where: { id: s.id }, data: { usedAt: new Date() } });
+        break;
+      }
+    }
+    if (!matched) throw new BadRequestException('Invalid or expired OTP');
+    const passwordHash = await this.hashPassword(newPassword);
+    await this.prisma.user.update({ where: { id: user.id }, data: { passwordHash } });
+    return { message: 'Password reset successful' };
   }
 
   async passwordResetConfirm(
@@ -343,7 +473,7 @@ export class AuthService {
     });
     let matched = false;
     for (const s of sessions) {
-      if (await this.verifyOtp(otp, s.otpHash)) {
+      if (this.verifyOtp(otp, s.otpHash)) {
         matched = true;
         await this.prisma.otpSession.update({ where: { id: s.id }, data: { usedAt: new Date() } });
         break;

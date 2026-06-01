@@ -8,6 +8,9 @@ import { UpdateCompanyProfileDto } from './dto/update-company-profile.dto';
 import { UpdateVendorProfileDto } from './dto/update-vendor-profile.dto';
 import { UpdateCastProfileDto } from './dto/update-cast-profile.dto';
 import { CreateSubUserDto } from './dto/create-sub-user.dto';
+import { CreateShowcaseItemDto } from './dto/create-showcase-item.dto';
+
+type ShowcaseMediaType = 'image' | 'video' | 'document';
 
 @Injectable()
 export class ProfilesService {
@@ -15,6 +18,28 @@ export class ProfilesService {
   private static readonly ALLOWED_IMAGE_CONTENT_TYPES = ['image/jpeg', 'image/png', 'image/webp'] as const;
   // Backwards-compat alias for any legacy reference inside this file.
   private static readonly ALLOWED_COVER_CONTENT_TYPES = ProfilesService.ALLOWED_IMAGE_CONTENT_TYPES;
+
+  // Work Showcase accepts images, videos and documents (no audio). Each MIME
+  // maps to the stored mediaType (how the client renders it) and the file
+  // extension we write into the S3 key.
+  private static readonly SHOWCASE_MIME_MAP: Record<string, { mediaType: ShowcaseMediaType; extension: string }> = {
+    'image/jpeg': { mediaType: 'image', extension: 'jpg' },
+    'image/jpg': { mediaType: 'image', extension: 'jpg' },
+    'image/png': { mediaType: 'image', extension: 'png' },
+    'image/webp': { mediaType: 'image', extension: 'webp' },
+    'image/gif': { mediaType: 'image', extension: 'gif' },
+    'video/mp4': { mediaType: 'video', extension: 'mp4' },
+    'video/quicktime': { mediaType: 'video', extension: 'mov' },
+    'video/webm': { mediaType: 'video', extension: 'webm' },
+    'application/pdf': { mediaType: 'document', extension: 'pdf' },
+    'application/msword': { mediaType: 'document', extension: 'doc' },
+    'application/vnd.openxmlformats-officedocument.wordprocessingml.document': { mediaType: 'document', extension: 'docx' },
+    'application/vnd.ms-excel': { mediaType: 'document', extension: 'xls' },
+    'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet': { mediaType: 'document', extension: 'xlsx' },
+    'application/vnd.ms-powerpoint': { mediaType: 'document', extension: 'ppt' },
+    'application/vnd.openxmlformats-officedocument.presentationml.presentation': { mediaType: 'document', extension: 'pptx' },
+    'text/plain': { mediaType: 'document', extension: 'txt' },
+  };
 
   constructor(
     private readonly prisma: PrismaService,
@@ -67,13 +92,18 @@ export class ProfilesService {
     const logoUrl = p?.logoKey
       ? (await this.storage.getSignedUrl(p.logoKey)) ?? this.storage.getPublicUrl(p.logoKey)
       : null;
+    // Cast members get a Work Showcase (images/videos/documents) on their
+    // profile in place of the single-video showreel.
+    const showcaseItems = user.role === UserRole.cast ? await this.resolveShowcaseItems(user.id) : undefined;
     const profilePayload = profile
       ? {
           ...profile,
           avatarUrl,
           coverUrl: coverUrl ?? undefined,
+          coverType: this.coverTypeFromKey(p?.coverKey) ?? undefined,
           showreelUrl: showreelUrl ?? undefined,
           logoUrl: logoUrl ?? undefined,
+          ...(showcaseItems ? { showcaseItems } : {}),
           ...(user.role === UserRole.vendor && (user as { vendorEquipment?: unknown[] }).vendorEquipment
             ? { equipment: (user as { vendorEquipment: unknown[] }).vendorEquipment }
             : {}),
@@ -373,11 +403,12 @@ export class ProfilesService {
     const equipment = target.role === UserRole.vendor && (target as { vendorEquipment?: unknown[] }).vendorEquipment
       ? (target as { vendorEquipment: unknown[] }).vendorEquipment
       : undefined;
+    const showcaseItems = target.role === UserRole.cast ? await this.resolveShowcaseItems(target.id) : undefined;
     return {
       id: target.id,
       role: target.role,
       phone: target.phone,
-      profile: { ...sanitized, avatarUrl, coverUrl, showreelUrl, logoUrl, ...(equipment ? { equipment } : {}) },
+      profile: { ...sanitized, avatarUrl, coverUrl, coverType: this.coverTypeFromKey(base.coverKey as string | null) ?? undefined, showreelUrl, logoUrl, ...(showcaseItems ? { showcaseItems } : {}), ...(equipment ? { equipment } : {}) },
     };
   }
 
@@ -395,6 +426,28 @@ export class ProfilesService {
     if (normalized === 'image/png') return { contentType: normalized, extension: 'png' };
     if (normalized === 'image/webp') return { contentType: normalized, extension: 'webp' };
     return { contentType: normalized, extension: 'jpg' };
+  }
+
+  // A cover/banner can be an image OR a short motion banner (video). Video
+  // MIMEs map here; anything else falls back to the image resolver.
+  private static readonly COVER_VIDEO_TYPES: Record<string, string> = {
+    'video/mp4': 'mp4',
+    'video/quicktime': 'mov',
+    'video/webm': 'webm',
+  };
+
+  private resolveCoverContentType(contentType?: string): { contentType: string; extension: string; mediaType: 'image' | 'video' } {
+    const normalized = (contentType ?? '').toLowerCase();
+    const videoExt = ProfilesService.COVER_VIDEO_TYPES[normalized];
+    if (videoExt) return { contentType: normalized, extension: videoExt, mediaType: 'video' };
+    return { ...this.resolveImageContentType(contentType), mediaType: 'image' };
+  }
+
+  /** Infer how a stored cover should be rendered from its key extension. */
+  private coverTypeFromKey(key?: string | null): 'image' | 'video' | null {
+    if (!key) return null;
+    const ext = key.split('.').pop()?.toLowerCase();
+    return ext && ['mp4', 'mov', 'webm', 'm4v'].includes(ext) ? 'video' : 'image';
   }
 
   async getPresignedAvatarUrl(
@@ -463,7 +516,7 @@ export class ProfilesService {
     if (!this.storage.isConfigured() && !this.storage.isSupabaseConfigured()) {
       throw new Error('Storage is not configured. Set AWS_S3_BUCKET or SUPABASE_* env vars.');
     }
-    const resolved = this.resolveImageContentType(contentType);
+    const resolved = this.resolveCoverContentType(contentType);
     const key = `users/${userId}/cover/${Date.now()}.${resolved.extension}`;
     return this.storage.getPresignedPutUrl(key, resolved.contentType);
   }
@@ -536,6 +589,104 @@ export class ProfilesService {
       throw new ForbiddenException('Not allowed for your role');
     }
     return { key };
+  }
+
+  // ── Work Showcase (Cast) ──────────────────────────────────────────────
+  // A gallery of images / videos / documents shown on the cast member's
+  // profile (replaces the single-video showreel for cast). Backed by the
+  // PortfolioItem table.
+
+  async getShowcaseUploadUrl(userId: string, contentType: string) {
+    await this.ensureRole(userId, UserRole.cast);
+    if (!this.storage.isConfigured() && !this.storage.isSupabaseConfigured()) {
+      throw new Error('Storage is not configured. Set AWS_S3_BUCKET or SUPABASE_* env vars.');
+    }
+    const normalized = (contentType ?? '').trim().toLowerCase();
+    const mapped = ProfilesService.SHOWCASE_MIME_MAP[normalized];
+    if (!mapped) {
+      throw new BadRequestException('Unsupported file type. Upload an image, video, or document (no audio).');
+    }
+    // The contentType signed here MUST match the Content-Type the client sends
+    // on the PUT, or S3 returns SignatureDoesNotMatch (same gotcha as avatar).
+    const key = `users/${userId}/showcase/${Date.now()}.${mapped.extension}`;
+    const presigned = await this.storage.getPresignedPutUrl(key, normalized);
+    return { ...presigned, mediaType: mapped.mediaType };
+  }
+
+  async createShowcaseItem(userId: string, dto: CreateShowcaseItemDto) {
+    await this.ensureRole(userId, UserRole.cast);
+    // Don't let a caller register a key that isn't under their own namespace.
+    const expectedPrefix = `users/${userId}/showcase/`;
+    if (!dto.key.startsWith(expectedPrefix)) {
+      throw new BadRequestException('Invalid storage key for this user.');
+    }
+    const last = await this.prisma.portfolioItem.findFirst({
+      where: { userId },
+      orderBy: { sortOrder: 'desc' },
+      select: { sortOrder: true },
+    });
+    const item = await this.prisma.portfolioItem.create({
+      data: {
+        userId,
+        title: dto.title?.trim() || dto.fileName?.trim() || 'Untitled',
+        imageKey: dto.key,
+        mediaType: dto.mediaType,
+        fileName: dto.fileName?.trim() || null,
+        mimeType: dto.mimeType?.trim() || null,
+        sortOrder: (last?.sortOrder ?? -1) + 1,
+      },
+    });
+    return this.resolveShowcaseItem(item);
+  }
+
+  async listShowcaseItems(userId: string) {
+    await this.ensureRole(userId, UserRole.cast);
+    return { items: await this.resolveShowcaseItems(userId) };
+  }
+
+  async deleteShowcaseItem(userId: string, itemId: string) {
+    await this.ensureRole(userId, UserRole.cast);
+    const item = await this.prisma.portfolioItem.findFirst({ where: { id: itemId, userId } });
+    if (!item) throw new NotFoundException('Showcase item not found');
+    await this.prisma.portfolioItem.delete({ where: { id: itemId } });
+    // Best-effort storage cleanup — never block the delete on a storage error.
+    try {
+      await this.storage.deleteObject(item.imageKey);
+    } catch {
+      /* ignore — orphaned object will TTL out of any signed-URL cache */
+    }
+    return { message: 'Item removed' };
+  }
+
+  private async resolveShowcaseItems(userId: string) {
+    const items = await this.prisma.portfolioItem.findMany({
+      where: { userId },
+      orderBy: { sortOrder: 'asc' },
+    });
+    return Promise.all(items.map((i) => this.resolveShowcaseItem(i)));
+  }
+
+  private async resolveShowcaseItem(item: {
+    id: string;
+    title: string;
+    imageKey: string;
+    mediaType: string;
+    fileName: string | null;
+    mimeType: string | null;
+    sortOrder: number;
+    createdAt: Date;
+  }) {
+    const url = (await this.storage.getSignedUrl(item.imageKey)) ?? this.storage.getPublicUrl(item.imageKey);
+    return {
+      id: item.id,
+      title: item.title,
+      mediaType: item.mediaType,
+      fileName: item.fileName,
+      mimeType: item.mimeType,
+      sortOrder: item.sortOrder,
+      url,
+      createdAt: item.createdAt,
+    };
   }
 
   async listSubUsers(userId: string, role: UserRole) {

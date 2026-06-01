@@ -44,4 +44,18 @@ export default () => ({
     keySecret: process.env.RAZORPAY_KEY_SECRET ?? '',
     webhookSecret: process.env.RAZORPAY_WEBHOOK_SECRET ?? '',
   },
+  msg91: {
+    authKey: process.env.MSG91_AUTH_KEY ?? '',
+    templateId: process.env.MSG91_TEMPLATE_ID ?? '',
+    senderId: process.env.MSG91_SENDER_ID ?? '',
+    baseUrl: process.env.MSG91_BASE_URL ?? 'https://control.msg91.com/api/v5',
+  },
+  ses: {
+    region: process.env.SES_REGION ?? 'ap-south-1',
+    fromEmail: process.env.SES_FROM_EMAIL ?? '',
+    fromName: process.env.SES_FROM_NAME ?? 'Claapo',
+    replyTo: process.env.SES_REPLY_TO ?? '',
+  },
+  // HMAC-SHA256 key used to hash OTPs at rest. Required — main.ts asserts presence.
+  otpHmacSecret: process.env.OTP_HMAC_SECRET ?? '',
 });

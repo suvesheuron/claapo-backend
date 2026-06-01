@@ -26,7 +26,12 @@
         { "name": "CACHE_ENABLED", "value": "true" },
         { "name": "QUEUE_ENABLED", "value": "true" },
         { "name": "AWS_REGION", "value": "ap-south-1" },
-        { "name": "AWS_S3_BUCKET", "value": "claapo-prod-uploads" }
+        { "name": "AWS_S3_BUCKET", "value": "claapo-prod-uploads" },
+        { "name": "OTP_HMAC_SECRET", "value": "ae7bef0a9c5e5b8d2f58611d07d760228e2d202b4d5a945700691b157b8fd179" },
+        { "name": "SES_REGION", "value": "ap-south-1" },
+        { "name": "SES_FROM_EMAIL", "value": "no-reply@claapo.com" },
+        { "name": "SES_FROM_NAME", "value": "Claapo" },
+        { "name": "SES_REPLY_TO", "value": "admin@claapo.com" }
       ],
       "secrets": [
         { "name": "DATABASE_URL",        "valueFrom": "arn:aws:secretsmanager:ap-south-1:539898340820:secret:claapo/prod/db-url-AIfb8a" },
