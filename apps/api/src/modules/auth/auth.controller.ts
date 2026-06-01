@@ -12,11 +12,17 @@ import { RegisterCastDto } from './dto/register-cast.dto';
 import { LoginDto } from './dto/login.dto';
 import { OtpSendDto } from './dto/otp-send.dto';
 import { OtpVerifyDto } from './dto/otp-verify.dto';
+import { OtpEmailSendDto } from './dto/otp-email-send.dto';
+import { OtpEmailVerifyDto } from './dto/otp-email-verify.dto';
 import { RefreshTokenDto } from './dto/refresh-token.dto';
 import {
   PasswordResetRequestDto,
   PasswordResetConfirmDto,
 } from './dto/password-reset.dto';
+import {
+  PasswordResetEmailRequestDto,
+  PasswordResetEmailConfirmDto,
+} from './dto/password-reset-email.dto';
 
 @ApiTags('auth')
 @Controller('auth')
@@ -62,6 +68,18 @@ export class AuthController {
     return this.authService.verifyOtpAndLogin(dto.phone, dto.otp);
   }
 
+  @Post('otp/email/send')
+  @ApiOperation({ summary: 'Send OTP to email' })
+  async sendOtpEmail(@Body() dto: OtpEmailSendDto) {
+    return this.authService.sendOtpEmail(dto.email);
+  }
+
+  @Post('otp/email/verify')
+  @ApiOperation({ summary: 'Verify email OTP and get tokens' })
+  async verifyOtpEmail(@Body() dto: OtpEmailVerifyDto): Promise<TokenPair> {
+    return this.authService.verifyOtpEmailAndLogin(dto.email, dto.otp);
+  }
+
   @Post('login')
   @HttpCode(HttpStatus.OK)
   @ApiOperation({ summary: 'Email + password login' })
@@ -98,5 +116,18 @@ export class AuthController {
   @ApiOperation({ summary: 'Confirm OTP and set new password' })
   async passwordResetConfirm(@Body() dto: PasswordResetConfirmDto) {
     return this.authService.passwordResetConfirm(dto.phone, dto.otp, dto.newPassword);
+  }
+
+  @Post('password/reset/email/request')
+  @ApiOperation({ summary: 'Request password reset OTP via email' })
+  async passwordResetRequestEmail(@Body() dto: PasswordResetEmailRequestDto) {
+    return this.authService.passwordResetRequestEmail(dto.email);
+  }
+
+  @Post('password/reset/email/confirm')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({ summary: 'Confirm email OTP and set new password' })
+  async passwordResetConfirmEmail(@Body() dto: PasswordResetEmailConfirmDto) {
+    return this.authService.passwordResetConfirmEmail(dto.email, dto.otp, dto.newPassword);
   }
 }

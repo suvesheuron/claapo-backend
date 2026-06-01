@@ -670,7 +670,13 @@ model PortfolioItem {
   id        String   @id @default(uuid()) @db.Uuid
   userId    String   @map("user_id") @db.Uuid
   title     String
+  // Generic storage key for the underlying file. Despite the legacy column
+  // name, this holds the object key for images, videos AND documents — the
+  // mediaType column below disambiguates how to render it.
   imageKey  String   @map("image_key")
+  mediaType String   @default("image") @map("media_type") // image | video | document
+  fileName  String?  @map("file_name") // original upload name (mainly for documents)
+  mimeType  String?  @map("mime_type")
   category  String?
   sortOrder Int      @default(0) @map("sort_order")
   createdAt DateTime @default(now()) @map("created_at")
