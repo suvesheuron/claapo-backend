@@ -407,6 +407,7 @@ export class ProfilesService {
     return {
       id: target.id,
       role: target.role,
+      email: target.email,
       phone: target.phone,
       profile: { ...sanitized, avatarUrl, coverUrl, coverType: this.coverTypeFromKey(base.coverKey as string | null) ?? undefined, showreelUrl, logoUrl, ...(showcaseItems ? { showcaseItems } : {}), ...(equipment ? { equipment } : {}) },
     };
