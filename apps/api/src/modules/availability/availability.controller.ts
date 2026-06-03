@@ -32,7 +32,7 @@ export class AvailabilityController {
 
   @Put('bulk')
   @UseGuards(RolesGuard)
-  @Roles('individual', 'vendor', 'cast')
+  @Roles('individual', 'vendor', 'cast', 'location')
   @ApiOperation({ summary: 'Set availability for date range (bulk)' })
   bulkSet(@CurrentUser() user: AuthUser, @Body() body: BulkAvailabilityDto) {
     return this.availabilityService.bulkSet(user.id, user.role, body.slots);
@@ -40,7 +40,7 @@ export class AvailabilityController {
 
   @Patch('me/note')
   @UseGuards(RolesGuard)
-  @Roles('individual', 'vendor', 'cast')
+  @Roles('individual', 'vendor', 'cast', 'location')
   @ApiOperation({ summary: 'Set work/equipment notes for a hired (booked) or past work date' })
   setSlotNote(@CurrentUser() user: AuthUser, @Body() body: SetSlotNoteDto) {
     return this.availabilityService.setSlotNote(user.id, user.role, body.date, body.notes);

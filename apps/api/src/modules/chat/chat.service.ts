@@ -109,11 +109,13 @@ export class ChatService {
     if (!hasAccess && role === UserRole.vendor && !user?.mainUserId) {
       hasAccess = true;
     }
-    // Allow individual/crew and cast users access if they are one of the conversation participants.
-    // This enables crew/cast members to chat with company/vendor users on projects.
-    if (!hasAccess && (role === UserRole.individual || role === UserRole.cast)) {
-      // Individual/cast users can create conversations for any project they're invited to chat about.
-      // The access is validated by the fact that both participants must be valid users.
+    // Allow individual/crew, cast, and location users access if they are one of
+    // the conversation participants. This enables crew/cast/location members to
+    // chat with company/vendor users on projects (incl. pre-booking inquiries).
+    if (!hasAccess && (role === UserRole.individual || role === UserRole.cast || role === UserRole.location)) {
+      // These users can create conversations for any project they're invited to
+      // chat about. Access is validated by the fact that both participants must
+      // be valid users.
       hasAccess = true;
     }
     // Company→company hiring flow: when the OTHER company owns the project and
@@ -158,6 +160,7 @@ export class ChatService {
             companyProfile: { select: { companyName: true } },
             vendorProfile: { select: { companyName: true } },
             castProfile: { select: { displayName: true } },
+            locationProfile: { select: { propertyName: true } },
           },
         },
         participantBUser: {
@@ -168,6 +171,7 @@ export class ChatService {
             companyProfile: { select: { companyName: true } },
             vendorProfile: { select: { companyName: true } },
             castProfile: { select: { displayName: true } },
+            locationProfile: { select: { propertyName: true } },
           },
         },
       },
@@ -215,6 +219,7 @@ export class ChatService {
             companyProfile: { select: { companyName: true } },
             vendorProfile: { select: { companyName: true } },
             castProfile: { select: { displayName: true } },
+            locationProfile: { select: { propertyName: true } },
           },
         },
         participantBUser: {
@@ -225,6 +230,7 @@ export class ChatService {
             companyProfile: { select: { companyName: true } },
             vendorProfile: { select: { companyName: true } },
             castProfile: { select: { displayName: true } },
+            locationProfile: { select: { propertyName: true } },
           },
         },
       },
@@ -314,6 +320,7 @@ export class ChatService {
               companyProfile: { select: { companyName: true } },
               vendorProfile: { select: { companyName: true } },
               castProfile: { select: { displayName: true } },
+              locationProfile: { select: { propertyName: true } },
             },
           },
           participantBUser: {
@@ -324,6 +331,7 @@ export class ChatService {
               companyProfile: { select: { companyName: true } },
               vendorProfile: { select: { companyName: true } },
               castProfile: { select: { displayName: true } },
+              locationProfile: { select: { propertyName: true } },
             },
           },
           messages: {
@@ -399,6 +407,7 @@ export class ChatService {
       ?? m.sender?.companyProfile?.companyName
       ?? m.sender?.vendorProfile?.companyName
       ?? (m.sender as { castProfile?: { displayName?: string } | null } | undefined)?.castProfile?.displayName
+      ?? (m.sender as { locationProfile?: { propertyName?: string } | null } | undefined)?.locationProfile?.propertyName
       ?? m.sender?.email
       ?? 'User';
 
@@ -450,6 +459,7 @@ export class ChatService {
             companyProfile: { select: { companyName: true } },
             vendorProfile: { select: { companyName: true } },
             castProfile: { select: { displayName: true } },
+            locationProfile: { select: { propertyName: true } },
           },
         },
       },
@@ -510,6 +520,7 @@ export class ChatService {
               companyProfile: { select: { companyName: true } },
               vendorProfile: { select: { companyName: true } },
               castProfile: { select: { displayName: true } },
+              locationProfile: { select: { propertyName: true } },
             },
           },
           replyTo: { select: { id: true, content: true, senderId: true } },
@@ -746,6 +757,7 @@ export class ChatService {
             companyProfile: { select: { companyName: true } },
             vendorProfile: { select: { companyName: true } },
             castProfile: { select: { displayName: true } },
+            locationProfile: { select: { propertyName: true } },
           },
         },
         replyTo: { select: { id: true, content: true, senderId: true } },
@@ -890,6 +902,7 @@ export class ChatService {
               companyProfile: { select: { companyName: true } },
               vendorProfile: { select: { companyName: true } },
               castProfile: { select: { displayName: true } },
+              locationProfile: { select: { propertyName: true } },
             },
           },
         },
@@ -918,6 +931,7 @@ export class ChatService {
           forwardedMessage.sender.companyProfile?.companyName ??
           forwardedMessage.sender.vendorProfile?.companyName ??
           (forwardedMessage.sender as { castProfile?: { displayName?: string } | null }).castProfile?.displayName ??
+          (forwardedMessage.sender as { locationProfile?: { propertyName?: string } | null }).locationProfile?.propertyName ??
           '—',
       },
     };
@@ -953,6 +967,7 @@ export class ChatService {
             companyProfile: { select: { companyName: true } },
             vendorProfile: { select: { companyName: true } },
             castProfile: { select: { displayName: true } },
+            locationProfile: { select: { propertyName: true } },
           },
         },
         conversation: {
@@ -982,6 +997,7 @@ export class ChatService {
             m.sender.companyProfile?.companyName ??
             m.sender.vendorProfile?.companyName ??
             (m.sender as { castProfile?: { displayName?: string } | null }).castProfile?.displayName ??
+            (m.sender as { locationProfile?: { propertyName?: string } | null }).locationProfile?.propertyName ??
             m.sender.email,
         },
       })),
@@ -1066,6 +1082,7 @@ export class ChatService {
                 companyProfile: { select: { companyName: true } },
                 vendorProfile: { select: { companyName: true } },
                 castProfile: { select: { displayName: true } },
+                locationProfile: { select: { propertyName: true } },
               },
             },
             conversation: { select: { id: true, participantA: true, participantB: true } },
@@ -1088,6 +1105,7 @@ export class ChatService {
               companyProfile: { select: { companyName: true } },
               vendorProfile: { select: { companyName: true } },
               castProfile: { select: { displayName: true } },
+              locationProfile: { select: { propertyName: true } },
             },
           },
           conversation: { select: { id: true, participantA: true, participantB: true } },
@@ -1126,6 +1144,7 @@ export class ChatService {
           companyProfile: { select: { companyName: true } },
           vendorProfile: { select: { companyName: true } },
           castProfile: { select: { displayName: true } },
+          locationProfile: { select: { propertyName: true } },
         },
       });
       for (const p of participants) {
@@ -1133,6 +1152,7 @@ export class ChatService {
                      p.companyProfile?.companyName ??
                      p.vendorProfile?.companyName ??
                      (p as { castProfile?: { displayName?: string } | null }).castProfile?.displayName ??
+                     (p as { locationProfile?: { propertyName?: string } | null }).locationProfile?.propertyName ??
                      p.email;
         participantNames.set(p.id, name);
       }
@@ -1169,6 +1189,7 @@ export class ChatService {
               m.sender.companyProfile?.companyName ??
               m.sender.vendorProfile?.companyName ??
               (m.sender as { castProfile?: { displayName?: string } | null }).castProfile?.displayName ??
+              (m.sender as { locationProfile?: { propertyName?: string } | null }).locationProfile?.propertyName ??
               m.sender.email,
           },
           isSameAccount,
@@ -1238,13 +1259,13 @@ export class ChatService {
     participantA: string;
     participantB: string;
     lastMessageAt: Date | null;
-    participantAUser: { id: string; email: string; individualProfile?: { displayName: string } | null; companyProfile?: { companyName: string } | null; vendorProfile?: { companyName: string } | null; castProfile?: { displayName: string } | null };
-    participantBUser: { id: string; email: string; individualProfile?: { displayName: string } | null; companyProfile?: { companyName: string } | null; vendorProfile?: { companyName: string } | null; castProfile?: { displayName: string } | null };
+    participantAUser: { id: string; email: string; individualProfile?: { displayName: string } | null; companyProfile?: { companyName: string } | null; vendorProfile?: { companyName: string } | null; castProfile?: { displayName: string } | null; locationProfile?: { propertyName: string } | null };
+    participantBUser: { id: string; email: string; individualProfile?: { displayName: string } | null; companyProfile?: { companyName: string } | null; vendorProfile?: { companyName: string } | null; castProfile?: { displayName: string } | null; locationProfile?: { propertyName: string } | null };
     project: { id: string; title: string; shootDates?: Date[] } | null;
     messages?: { id: string; content: string | null; senderId: string; createdAt: Date; isRead: boolean }[];
   }, currentUserId: string, mainUserId: string | null = null) {
     // Determine the "other" participant
-    let other: { id: string; email: string; individualProfile?: { displayName: string } | null; companyProfile?: { companyName: string } | null; vendorProfile?: { companyName: string } | null; castProfile?: { displayName: string } | null };
+    let other: { id: string; email: string; individualProfile?: { displayName: string } | null; companyProfile?: { companyName: string } | null; vendorProfile?: { companyName: string } | null; castProfile?: { displayName: string } | null; locationProfile?: { propertyName: string } | null };
 
     if (conv.participantA === currentUserId) {
       other = conv.participantBUser;

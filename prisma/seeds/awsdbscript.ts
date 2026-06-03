@@ -40,6 +40,7 @@ const PHONE_PREFIX: Record<UserRole, string> = {
   individual: '9300',
   vendor: '9400',
   cast: '9500', // not seeded here, included for type completeness
+  location: '9600', // not seeded here, included for type completeness
 };
 
 const ROLES_TO_SEED: UserRole[] = [
@@ -62,6 +63,7 @@ function displayNameFor(role: UserRole, i: number): string {
     individual: 'Freelancer',
     vendor: 'Vendor',
     cast: 'Cast',
+    location: 'Location',
   };
   return `${labels[role]} ${i}`;
 }

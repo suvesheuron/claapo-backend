@@ -23,6 +23,7 @@ import { NotificationsModule } from './modules/notifications/notifications.modul
 import { AdminModule } from './modules/admin/admin.module';
 import { ChatModule } from './modules/chat/chat.module';
 import { EquipmentModule } from './modules/equipment/equipment.module';
+import { PropertiesModule } from './modules/properties/properties.module';
 import { ReviewsModule } from './modules/reviews/reviews.module';
 import { AppController } from './app.controller';
 
@@ -75,6 +76,7 @@ import { AppController } from './app.controller';
     AdminModule,
     ChatModule,
     EquipmentModule,
+    PropertiesModule,
     ReviewsModule,
   ],
   controllers: [AppController],

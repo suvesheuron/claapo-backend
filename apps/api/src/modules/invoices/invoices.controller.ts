@@ -27,7 +27,7 @@ export class InvoicesController {
   // issue invoices to the production house that hired them. 'cast' added so
   // actors/models can invoice the company that hired them (with billedTo
   // override routing to the underlying production company when set).
-  @Roles('individual', 'vendor', 'company', 'cast')
+  @Roles('individual', 'vendor', 'company', 'cast', 'location')
   @ApiOperation({ summary: 'Create invoice for project' })
   create(@CurrentUser() user: AuthUser, @Body() dto: CreateInvoiceDto) {
     return this.invoicesService.create(user.id, user.role, dto);
@@ -43,7 +43,7 @@ export class InvoicesController {
 
   @Post('offline/vendor-send')
   @UseGuards(RolesGuard)
-  @Roles('individual', 'vendor', 'cast')
+  @Roles('individual', 'vendor', 'cast', 'location')
   @ApiOperation({ summary: 'Send offline invoice (amount + tax) to production house' })
   sendOfflineVendor(@CurrentUser() user: AuthUser, @Body() dto: SendOfflineVendorInvoiceDto) {
     return this.invoicesService.sendOfflineVendorInvoice(user.id, user.role, dto);
@@ -63,7 +63,7 @@ export class InvoicesController {
 
   @Get(':id/attachments/upload-url')
   @UseGuards(RolesGuard)
-  @Roles('individual', 'vendor', 'company', 'cast')
+  @Roles('individual', 'vendor', 'company', 'cast', 'location')
   @ApiOperation({ summary: 'Get presigned URL to upload an attachment' })
   getAttachmentUploadUrl(
     @CurrentUser() user: AuthUser,
@@ -81,7 +81,7 @@ export class InvoicesController {
 
   @Post(':id/attachments')
   @UseGuards(RolesGuard)
-  @Roles('individual', 'vendor', 'company', 'cast')
+  @Roles('individual', 'vendor', 'company', 'cast', 'location')
   @ApiOperation({ summary: 'Register an attachment after upload' })
   addAttachment(
     @CurrentUser() user: AuthUser,
@@ -93,7 +93,7 @@ export class InvoicesController {
 
   @Delete('attachments/:attachmentId')
   @UseGuards(RolesGuard)
-  @Roles('individual', 'vendor', 'company', 'cast')
+  @Roles('individual', 'vendor', 'company', 'cast', 'location')
   @ApiOperation({ summary: 'Delete an invoice attachment' })
   deleteAttachment(@CurrentUser() user: AuthUser, @Param('attachmentId') attachmentId: string) {
     return this.invoicesService.deleteAttachment(attachmentId, user.id, user.role);
@@ -107,7 +107,7 @@ export class InvoicesController {
 
   @Patch(':id')
   @UseGuards(RolesGuard)
-  @Roles('individual', 'vendor', 'company', 'cast')
+  @Roles('individual', 'vendor', 'company', 'cast', 'location')
   @ApiOperation({ summary: 'Update draft invoice' })
   update(@CurrentUser() user: AuthUser, @Param('id') id: string, @Body() dto: UpdateInvoiceDto) {
     return this.invoicesService.update(id, user.id, user.role, dto);
@@ -115,7 +115,7 @@ export class InvoicesController {
 
   @Post(':id/send')
   @UseGuards(RolesGuard)
-  @Roles('individual', 'vendor', 'company', 'cast')
+  @Roles('individual', 'vendor', 'company', 'cast', 'location')
   @ApiOperation({ summary: 'Send invoice to company' })
   send(@CurrentUser() user: AuthUser, @Param('id') id: string) {
     return this.invoicesService.send(id, user.id, user.role);
@@ -123,7 +123,7 @@ export class InvoicesController {
 
   @Patch(':id/cancel')
   @UseGuards(RolesGuard)
-  @Roles('individual', 'vendor', 'company', 'cast')
+  @Roles('individual', 'vendor', 'company', 'cast', 'location')
   @ApiOperation({ summary: 'Cancel/delete a draft or sent invoice (issuer-side)' })
   cancel(@CurrentUser() user: AuthUser, @Param('id') id: string) {
     return this.invoicesService.cancel(id, user.id, user.role);

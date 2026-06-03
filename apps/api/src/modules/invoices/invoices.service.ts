@@ -67,6 +67,7 @@ export class InvoicesService {
         vendorProfile: { select: { gstNumber: true } },
         companyProfile: { select: { gstNumber: true } },
         castProfile: { select: { gstNumber: true } },
+        locationProfile: { select: { gstNumber: true } },
       },
     });
     if (!issuer) return false;
@@ -75,6 +76,7 @@ export class InvoicesService {
       ?? issuer.vendorProfile?.gstNumber
       ?? issuer.companyProfile?.gstNumber
       ?? issuer.castProfile?.gstNumber
+      ?? issuer.locationProfile?.gstNumber
       ?? null;
     return this.isValidGstNumber(gstNumber);
   }
@@ -165,7 +167,8 @@ export class InvoicesService {
       role !== UserRole.individual &&
       role !== UserRole.vendor &&
       role !== UserRole.company &&
-      role !== UserRole.cast
+      role !== UserRole.cast &&
+      role !== UserRole.location
     ) {
       throw new ForbiddenException('This role cannot issue invoices');
     }
@@ -363,7 +366,7 @@ export class InvoicesService {
   }
 
   async sendOfflineVendorInvoice(userId: string, role: UserRole, dto: SendOfflineVendorInvoiceDto) {
-    if (role !== UserRole.individual && role !== UserRole.vendor && role !== UserRole.cast) {
+    if (role !== UserRole.individual && role !== UserRole.vendor && role !== UserRole.cast && role !== UserRole.location) {
       throw new ForbiddenException('Only individuals, vendors, or cast can send offline invoices');
     }
     const vendorCtx = role === UserRole.vendor ? await this.getVendorAccountContext(userId) : null;
@@ -400,6 +403,7 @@ export class InvoicesService {
       select: {
         individualProfile: { select: { displayName: true } },
         castProfile: { select: { displayName: true } },
+        locationProfile: { select: { propertyName: true } },
         vendorProfile: { select: { companyName: true } },
         companyProfile: { select: { companyName: true } },
       },
@@ -407,6 +411,7 @@ export class InvoicesService {
     const offlineBillingName =
       issuerUser?.individualProfile?.displayName
       ?? issuerUser?.castProfile?.displayName
+      ?? (issuerUser as { locationProfile?: { propertyName?: string } | null } | null)?.locationProfile?.propertyName
       ?? issuerUser?.vendorProfile?.companyName
       ?? issuerUser?.companyProfile?.companyName
       ?? null;
@@ -454,6 +459,7 @@ export class InvoicesService {
                 select: {
                   individualProfile: { select: { displayName: true } },
                   castProfile: { select: { displayName: true } },
+                  locationProfile: { select: { propertyName: true } },
                   companyProfile: { select: { companyName: true } },
                   vendorProfile: { select: { companyName: true } },
                 },
@@ -464,6 +470,7 @@ export class InvoicesService {
         const issuerName =
           invoice.issuer.individualProfile?.displayName ??
           invoice.issuer.castProfile?.displayName ??
+          (invoice.issuer as { locationProfile?: { propertyName?: string } | null }).locationProfile?.propertyName ??
           invoice.issuer.vendorProfile?.companyName ??
           invoice.issuer.companyProfile?.companyName ??
           'A crew member';
@@ -555,6 +562,7 @@ export class InvoicesService {
               companyProfile: { select: { companyName: true } },
               vendorProfile: { select: { companyName: true, vendorServiceCategory: true } },
               castProfile: { select: { displayName: true, roleType: true } },
+              locationProfile: { select: { propertyName: true } },
             },
           },
           recipient: {
@@ -564,6 +572,7 @@ export class InvoicesService {
               companyProfile: { select: { companyName: true } },
               vendorProfile: { select: { companyName: true, vendorServiceCategory: true } },
               castProfile: { select: { displayName: true, roleType: true } },
+              locationProfile: { select: { propertyName: true } },
             },
           },
         },
@@ -653,6 +662,22 @@ export class InvoicesService {
                 extraSkills: true,
               },
             },
+            locationProfile: {
+              select: {
+                propertyName: true,
+                billingName: true,
+                locationCity: true,
+                address: true,
+                panNumber: true,
+                gstNumber: true,
+                sacCode: true,
+                upiId: true,
+                bankAccountName: true,
+                bankAccountNumber: true,
+                ifscCode: true,
+                bankName: true,
+              },
+            },
           },
         },
         recipient: {
@@ -722,6 +747,22 @@ export class InvoicesService {
                 bankName: true,
                 roleType: true,
                 extraSkills: true,
+              },
+            },
+            locationProfile: {
+              select: {
+                propertyName: true,
+                billingName: true,
+                locationCity: true,
+                address: true,
+                panNumber: true,
+                gstNumber: true,
+                sacCode: true,
+                upiId: true,
+                bankAccountName: true,
+                bankAccountNumber: true,
+                ifscCode: true,
+                bankName: true,
               },
             },
           },
@@ -982,6 +1023,7 @@ export class InvoicesService {
       email: string;
       individualProfile?: { displayName: string; billingName?: string | null } | null;
       castProfile?: { displayName: string; billingName?: string | null } | null;
+      locationProfile?: { propertyName: string; billingName?: string | null } | null;
       vendorProfile?: { companyName: string; billingName?: string | null } | null;
       companyProfile?: { companyName: string } | null;
     }) =>
@@ -989,6 +1031,8 @@ export class InvoicesService {
       ?? u.individualProfile?.displayName
       ?? u.castProfile?.billingName
       ?? u.castProfile?.displayName
+      ?? u.locationProfile?.billingName
+      ?? u.locationProfile?.propertyName
       ?? u.vendorProfile?.billingName
       ?? u.vendorProfile?.companyName
       ?? u.companyProfile?.companyName
@@ -996,10 +1040,11 @@ export class InvoicesService {
     const getCity = (u: {
       individualProfile?: { locationCity?: string | null } | null;
       castProfile?: { locationCity?: string | null } | null;
+      locationProfile?: { locationCity?: string | null } | null;
       companyProfile?: { locationCity?: string | null } | null;
       vendorProfile?: { locationCity?: string | null } | null;
     }) =>
-      u.individualProfile?.locationCity ?? u.castProfile?.locationCity ?? u.companyProfile?.locationCity ?? u.vendorProfile?.locationCity ?? null;
+      u.individualProfile?.locationCity ?? u.castProfile?.locationCity ?? u.locationProfile?.locationCity ?? u.companyProfile?.locationCity ?? u.vendorProfile?.locationCity ?? null;
     // Cast profile has the same billing-relevant fields as Individual
     // (displayName, billingName, address, PAN, GST, SAC, bank…). Aliasing
     // it here lets the formatter below treat cast issuers/recipients
@@ -1023,8 +1068,16 @@ export class InvoicesService {
     };
     const issuerCast = (invoice.issuer as { castProfile?: IndShape | null }).castProfile ?? null;
     const recipientCast = (invoice.recipient as { castProfile?: IndShape | null }).castProfile ?? null;
-    const issuerInd: IndShape | null | undefined = invoice.issuer.individualProfile ?? issuerCast;
-    const recipientInd: IndShape | null | undefined = invoice.recipient.individualProfile ?? recipientCast;
+    // Location profiles carry the same billing fields but name the entity
+    // `propertyName`; alias it to `displayName` so the formatter treats a
+    // location issuer/recipient like an individual without a separate branch.
+    type LocationBillingShape = Omit<IndShape, 'displayName'> & { propertyName: string };
+    const toIndShape = (lp: LocationBillingShape | null): IndShape | null =>
+      lp ? { ...lp, displayName: lp.propertyName } : null;
+    const issuerLocation = toIndShape((invoice.issuer as { locationProfile?: LocationBillingShape | null }).locationProfile ?? null);
+    const recipientLocation = toIndShape((invoice.recipient as { locationProfile?: LocationBillingShape | null }).locationProfile ?? null);
+    const issuerInd: IndShape | null | undefined = invoice.issuer.individualProfile ?? issuerCast ?? issuerLocation;
+    const recipientInd: IndShape | null | undefined = invoice.recipient.individualProfile ?? recipientCast ?? recipientLocation;
     const issuerCompany = invoice.issuer.companyProfile;
     const issuerVendor = invoice.issuer.vendorProfile;
     const recipientCompany = invoice.recipient.companyProfile;
@@ -1191,7 +1244,8 @@ export class InvoicesService {
       role !== UserRole.individual &&
       role !== UserRole.vendor &&
       role !== UserRole.company &&
-      role !== UserRole.cast
+      role !== UserRole.cast &&
+      role !== UserRole.location
     ) {
       throw new ForbiddenException('Only issuer can update');
     }
@@ -1254,7 +1308,8 @@ export class InvoicesService {
       role !== UserRole.individual &&
       role !== UserRole.vendor &&
       role !== UserRole.company &&
-      role !== UserRole.cast
+      role !== UserRole.cast &&
+      role !== UserRole.location
     ) {
       throw new ForbiddenException('Only issuer can send');
     }
@@ -1271,6 +1326,7 @@ export class InvoicesService {
           select: {
             individualProfile: { select: { displayName: true } },
             castProfile: { select: { displayName: true } },
+            locationProfile: { select: { propertyName: true } },
             companyProfile: { select: { companyName: true } },
             vendorProfile: { select: { companyName: true } },
           },
@@ -1288,6 +1344,7 @@ export class InvoicesService {
     const issuerName =
       invoice.issuer.individualProfile?.displayName ??
       invoice.issuer.castProfile?.displayName ??
+      (invoice.issuer as { locationProfile?: { propertyName?: string } | null }).locationProfile?.propertyName ??
       invoice.issuer.vendorProfile?.companyName ??
       invoice.issuer.companyProfile?.companyName ??
       'A crew member';
@@ -1359,7 +1416,7 @@ export class InvoicesService {
         await this.ensureProjectAssignedToSubUser(companyCtx.accountOwnerId, userId, invoice.projectId);
       }
     } else {
-      if (role !== UserRole.individual && role !== UserRole.vendor && role !== UserRole.cast) {
+      if (role !== UserRole.individual && role !== UserRole.vendor && role !== UserRole.cast && role !== UserRole.location) {
         throw new ForbiddenException('Only issuer can add attachments');
       }
       const vendorCtx = role === UserRole.vendor ? await this.getVendorAccountContext(userId) : null;
@@ -1400,7 +1457,7 @@ export class InvoicesService {
         await this.ensureProjectAssignedToSubUser(companyCtx.accountOwnerId, userId, invoice.projectId);
       }
     } else {
-      if (role !== UserRole.individual && role !== UserRole.vendor && role !== UserRole.cast) {
+      if (role !== UserRole.individual && role !== UserRole.vendor && role !== UserRole.cast && role !== UserRole.location) {
         throw new ForbiddenException('Only issuer can add attachments');
       }
       const vendorCtx = role === UserRole.vendor ? await this.getVendorAccountContext(userId) : null;
@@ -1471,7 +1528,7 @@ export class InvoicesService {
         await this.ensureProjectAssignedToSubUser(companyCtx.accountOwnerId, userId, attachment.invoice.projectId);
       }
     } else {
-      if (role !== UserRole.individual && role !== UserRole.vendor && role !== UserRole.cast) {
+      if (role !== UserRole.individual && role !== UserRole.vendor && role !== UserRole.cast && role !== UserRole.location) {
         throw new ForbiddenException('Only issuer can delete attachments');
       }
       const vendorCtx = role === UserRole.vendor ? await this.getVendorAccountContext(userId) : null;

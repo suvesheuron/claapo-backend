@@ -10,8 +10,10 @@ import { UpdateIndividualProfileDto } from './dto/update-individual-profile.dto'
 import { UpdateCompanyProfileDto } from './dto/update-company-profile.dto';
 import { UpdateVendorProfileDto } from './dto/update-vendor-profile.dto';
 import { UpdateCastProfileDto } from './dto/update-cast-profile.dto';
+import { UpdateLocationProfileDto } from './dto/update-location-profile.dto';
 import { PresignedUploadDto } from './dto/presigned-upload.dto';
 import { ConfirmUploadDto } from './dto/confirm-upload.dto';
+import { ConfirmPdfUploadDto } from './dto/confirm-pdf-upload.dto';
 import { CreateSubUserDto } from './dto/create-sub-user.dto';
 import { AssignSubUserProjectDto } from './dto/assign-sub-user-project.dto';
 import { ShowcaseUploadUrlDto } from './dto/showcase-upload-url.dto';
@@ -61,6 +63,14 @@ export class ProfilesController {
   @ApiOperation({ summary: 'Update cast profile (actor/model)' })
   updateCast(@CurrentUser() user: AuthUser, @Body() dto: UpdateCastProfileDto) {
     return this.profilesService.updateCast(user.id, dto);
+  }
+
+  @Patch('location')
+  @UseGuards(RolesGuard)
+  @Roles('location')
+  @ApiOperation({ summary: 'Update location provider profile' })
+  updateLocation(@CurrentUser() user: AuthUser, @Body() dto: UpdateLocationProfileDto) {
+    return this.profilesService.updateLocation(user.id, dto);
   }
 
   @Get('sub-users/list')
@@ -113,15 +123,15 @@ export class ProfilesController {
 
   @Post('cover')
   @UseGuards(RolesGuard)
-  @Roles('individual', 'vendor', 'company', 'cast')
-  @ApiOperation({ summary: 'Get presigned URL to upload cover photo/video (individual/vendor/company/cast)' })
+  @Roles('individual', 'vendor', 'company', 'cast', 'location')
+  @ApiOperation({ summary: 'Get presigned URL to upload cover photo/video (individual/vendor/company/cast/location)' })
   getCoverUploadUrl(@CurrentUser() user: AuthUser, @Body() dto: CoverUploadDto) {
     return this.profilesService.getPresignedCoverUrl(user.id, user.role, dto.contentType);
   }
 
   @Post('cover/confirm')
   @UseGuards(RolesGuard)
-  @Roles('individual', 'vendor', 'company', 'cast')
+  @Roles('individual', 'vendor', 'company', 'cast', 'location')
   @ApiOperation({ summary: 'Confirm cover photo upload and set key on profile' })
   confirmCover(@CurrentUser() user: AuthUser, @Body() body: ConfirmUploadDto) {
     return this.profilesService.setCoverKey(user.id, user.role, body.key);
@@ -141,6 +151,22 @@ export class ProfilesController {
   @ApiOperation({ summary: 'Confirm showreel upload and set key on profile' })
   confirmShowreel(@CurrentUser() user: AuthUser, @Body() body: ConfirmUploadDto) {
     return this.profilesService.setShowreelKey(user.id, body.key);
+  }
+
+  @Post('location-pdf')
+  @UseGuards(RolesGuard)
+  @Roles('location')
+  @ApiOperation({ summary: 'Get presigned URL to upload the profile-level detailed PDF (location)' })
+  getDetailPdfUploadUrl(@CurrentUser() user: AuthUser) {
+    return this.profilesService.getPresignedDetailPdfUrl(user.id);
+  }
+
+  @Post('location-pdf/confirm')
+  @UseGuards(RolesGuard)
+  @Roles('location')
+  @ApiOperation({ summary: 'Confirm detailed PDF upload and set key on profile (location)' })
+  confirmDetailPdf(@CurrentUser() user: AuthUser, @Body() body: ConfirmPdfUploadDto) {
+    return this.profilesService.setDetailPdfKey(user.id, body.key, body.fileName);
   }
 
   @Get('showcase/list')

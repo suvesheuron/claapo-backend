@@ -207,9 +207,10 @@ export class BookingsService implements OnApplicationBootstrap {
       target.role !== 'individual' &&
       target.role !== 'vendor' &&
       target.role !== 'company' &&
-      target.role !== 'cast'
+      target.role !== 'cast' &&
+      target.role !== 'location'
     ) {
-      throw new BadRequestException('Target must be individual, vendor, company, or cast');
+      throw new BadRequestException('Target must be individual, vendor, company, cast, or location');
     }
     // Self-booking is nonsense — short-circuit before doing any DB work so the
     // company doesn't end up requester+target on their own booking.
@@ -224,6 +225,9 @@ export class BookingsService implements OnApplicationBootstrap {
     };
     if (target.role === UserRole.vendor && dto.vendorEquipmentId?.trim()) {
       existingWhere.vendorEquipmentId = dto.vendorEquipmentId.trim();
+    }
+    if (target.role === UserRole.location && dto.locationPropertyId?.trim()) {
+      existingWhere.locationPropertyId = dto.locationPropertyId.trim();
     }
     const existing = await this.prisma.bookingRequest.findFirst({ where: existingWhere as any });
     if (existing) {
@@ -242,6 +246,16 @@ export class BookingsService implements OnApplicationBootstrap {
       });
       if (!equipment) throw new BadRequestException('Equipment not found or does not belong to this vendor.');
       vendorEquipmentId = equipment.id;
+    }
+    // Location bookings may target a specific listed property/setup, mirroring
+    // the vendor-equipment link. The property must belong to the target.
+    let locationPropertyId: string | undefined;
+    if (dto.locationPropertyId?.trim()) {
+      const property = await this.prisma.locationProperty.findFirst({
+        where: { id: dto.locationPropertyId.trim(), locationUserId: targetAccountUserId },
+      });
+      if (!property) throw new BadRequestException('Property not found or does not belong to this location provider.');
+      locationPropertyId = property.id;
     }
 
     // Booking is for SPECIFIC dates only — never the full project timeline.
@@ -324,6 +338,7 @@ export class BookingsService implements OnApplicationBootstrap {
         targetUserId: targetAccountUserId,
         projectRoleId: dto.projectRoleId,
         vendorEquipmentId,
+        locationPropertyId,
         rateOffered: dto.rateOffered,
         message: dto.message,
         shootDates,
@@ -400,7 +415,7 @@ export class BookingsService implements OnApplicationBootstrap {
   }
 
   async listIncoming(userId: string, role: UserRole) {
-    if (role !== 'individual' && role !== 'vendor' && role !== 'company' && role !== 'cast') {
+    if (role !== 'individual' && role !== 'vendor' && role !== 'company' && role !== 'cast' && role !== 'location') {
       throw new ForbiddenException('Only crew, vendors, companies, or cast have incoming requests');
     }
     // Resolve target account owner: vendor + company sub-users see the main
@@ -439,6 +454,7 @@ export class BookingsService implements OnApplicationBootstrap {
         requester: { select: { id: true, email: true, companyProfile: true } },
         projectRole: true,
         vendorEquipment: { select: { id: true, name: true } },
+        locationProperty: { select: { id: true, name: true } },
       },
       orderBy: { createdAt: 'desc' },
     });
@@ -539,7 +555,7 @@ export class BookingsService implements OnApplicationBootstrap {
    * into Past Projects on the vendor's side.
    */
   async listPastBookings(userId: string, role: UserRole) {
-    if (role !== 'individual' && role !== 'vendor' && role !== 'company' && role !== 'cast') {
+    if (role !== 'individual' && role !== 'vendor' && role !== 'company' && role !== 'cast' && role !== 'location') {
       throw new ForbiddenException('Only crew, vendors, companies, or cast have past bookings');
     }
     // Resolve target account owner: vendor + company sub-users see the main
@@ -566,6 +582,7 @@ export class BookingsService implements OnApplicationBootstrap {
         requester: { select: { id: true, email: true, companyProfile: { select: { companyName: true } } } },
         projectRole: { select: { id: true, roleName: true } },
         vendorEquipment: { select: { id: true, name: true } },
+        locationProperty: { select: { id: true, name: true } },
       },
       orderBy: { createdAt: 'desc' },
     });
@@ -634,12 +651,16 @@ export class BookingsService implements OnApplicationBootstrap {
             // type (actor/model) so the company-side Project Detail card can
             // render them without a follow-up profile fetch.
             castProfile: { select: { displayName: true, roleType: true } },
+            // Location bookings: surface the provider's property name + type.
+            locationProfile: { select: { propertyName: true, locationType: true } },
           },
         },
         projectRole: true,
         // Vendor bookings carry a specific equipment item — the company UI
         // needs to label which kit it hired, not just the vendor company.
         vendorEquipment: { select: { id: true, name: true } },
+        // Location bookings carry a specific property/setup, mirroring equipment.
+        locationProperty: { select: { id: true, name: true } },
       },
       orderBy: { createdAt: 'desc' },
     });
@@ -695,7 +716,7 @@ export class BookingsService implements OnApplicationBootstrap {
     //   - cast: direct user-id match (no sub-users)
     //   - vendor: resolve to account owner (sub-users act for main account)
     //   - company: resolve to account owner (company→company bookings)
-    if (role !== 'individual' && role !== 'vendor' && role !== 'company' && role !== 'cast') {
+    if (role !== 'individual' && role !== 'vendor' && role !== 'company' && role !== 'cast' && role !== 'location') {
       throw new ForbiddenException('Only crew, vendors, companies, or cast can accept');
     }
     if (role === UserRole.vendor) {
@@ -757,6 +778,30 @@ export class BookingsService implements OnApplicationBootstrap {
           );
           throw new BadRequestException(
             `This equipment is already booked for these dates on project(s): ${conflictingProjects.map((p) => p.project.title).join(', ')}`,
+          );
+        }
+      }
+    } else if (role === UserRole.location) {
+      // Location providers are blocked PROPERTY-wise, not profile-wise — a
+      // provider can list many properties, so a booking on one must not block
+      // the others on the same date. Mirrors the vendor equipment branch with
+      // an effective capacity of 1 per property.
+      if (booking.locationPropertyId) {
+        const conflictingBookings = await this.prisma.bookingRequest.findMany({
+          where: {
+            targetUserId: booking.targetUserId,
+            locationPropertyId: booking.locationPropertyId,
+            status: { in: ['accepted', 'locked'] },
+            id: { not: bookingId },
+          },
+          include: { project: { select: { title: true } } },
+        });
+        const overlapping = conflictingBookings.filter((b) =>
+          this.hasDateOverlap(datesToCheck, this.resolveBookingDates(b as any)),
+        );
+        if (overlapping.length > 0) {
+          throw new BadRequestException(
+            `This property is already booked for these dates on project(s): ${overlapping.map((p) => p.project.title).join(', ')}`,
           );
         }
       }
@@ -845,7 +890,7 @@ export class BookingsService implements OnApplicationBootstrap {
     // Mirrors accept(): individual / vendor / company / cast targets all decline
     // via the same handler, with vendor + company resolving to their account
     // owner so sub-users can act on behalf of the main account.
-    if (role !== 'individual' && role !== 'vendor' && role !== 'company' && role !== 'cast') {
+    if (role !== 'individual' && role !== 'vendor' && role !== 'company' && role !== 'cast' && role !== 'location') {
       throw new ForbiddenException('Only crew, vendors, companies, or cast can decline');
     }
     if (role === UserRole.vendor) {
@@ -962,7 +1007,8 @@ export class BookingsService implements OnApplicationBootstrap {
       role !== UserRole.individual &&
       role !== UserRole.vendor &&
       role !== UserRole.company &&
-      role !== UserRole.cast
+      role !== UserRole.cast &&
+      role !== UserRole.location
     ) {
       throw new ForbiddenException('Only crew, vendors, companies, or cast can mark their booking complete');
     }
@@ -995,7 +1041,7 @@ export class BookingsService implements OnApplicationBootstrap {
     // Crew/vendor/cast can only ever be the target side. Companies can act on
     // either side (requester for outgoing hires, target for company→company
     // bookings where they were hired).
-    if (role === UserRole.individual || role === UserRole.vendor || role === UserRole.cast) {
+    if (role === UserRole.individual || role === UserRole.vendor || role === UserRole.cast || role === UserRole.location) {
       if (!isTarget) throw new ForbiddenException('Not your booking');
     } else if (!isTarget && !isRequester) {
       throw new ForbiddenException('Not your booking');
@@ -1048,7 +1094,9 @@ export class BookingsService implements OnApplicationBootstrap {
               ? 'A production company'
               : role === UserRole.cast
                 ? 'A cast member'
-                : 'A crew member')
+                : role === UserRole.location
+                  ? 'A location provider'
+                  : 'A crew member')
         : 'The production company';
       await this.notifications.createForUser(
         notifyUserId,
@@ -1229,7 +1277,8 @@ export class BookingsService implements OnApplicationBootstrap {
       role !== UserRole.individual &&
       role !== UserRole.vendor &&
       role !== UserRole.company &&
-      role !== UserRole.cast
+      role !== UserRole.cast &&
+      role !== UserRole.location
     ) {
       throw new ForbiddenException('Only crew, vendors, companies, or cast can respond to company cancellation requests');
     }
