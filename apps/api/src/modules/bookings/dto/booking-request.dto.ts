@@ -31,6 +31,11 @@ export class CreateBookingRequestDto {
   @IsString()
   vendorEquipmentId?: string;
 
+  @ApiPropertyOptional({ description: 'Location property ID when booking a specific listed property/setup' })
+  @IsOptional()
+  @IsString()
+  locationPropertyId?: string;
+
   @ApiPropertyOptional({ description: 'Rate offered in INR' })
   @IsOptional()
   @IsInt()

@@ -862,6 +862,34 @@ export class ProjectsService {
           },
         ],
       };
+    } else if (role === UserRole.location) {
+      // Location: projects where they have bookings OR are already in a
+      // conversation on the project (inquiry-before-booking flow — a company
+      // can chat a location provider about a project before any booking
+      // exists). Mirrors the individual/cast/vendor branches; location has no
+      // sub-users so we match on userId directly.
+      whereClause = {
+        OR: [
+          {
+            bookings: {
+              some: {
+                targetUserId: userId,
+                status: { notIn: ['declined', 'expired', 'cancelled'] },
+              },
+            },
+          },
+          {
+            conversations: {
+              some: {
+                OR: [
+                  { participantA: userId },
+                  { participantB: userId },
+                ],
+              },
+            },
+          },
+        ],
+      };
     } else if (role === UserRole.admin) {
       // Admin: all projects
       whereClause = {};

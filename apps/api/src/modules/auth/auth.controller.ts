@@ -9,6 +9,7 @@ import { RegisterIndividualDto } from './dto/register-individual.dto';
 import { RegisterCompanyDto } from './dto/register-company.dto';
 import { RegisterVendorDto } from './dto/register-vendor.dto';
 import { RegisterCastDto } from './dto/register-cast.dto';
+import { RegisterLocationDto } from './dto/register-location.dto';
 import { LoginDto } from './dto/login.dto';
 import { OtpSendDto } from './dto/otp-send.dto';
 import { OtpVerifyDto } from './dto/otp-verify.dto';
@@ -54,6 +55,12 @@ export class AuthController {
   @ApiOperation({ summary: 'Register as cast (actor/model)' })
   async registerCast(@Body() dto: RegisterCastDto) {
     return this.authService.registerCast(dto);
+  }
+
+  @Post('register/location')
+  @ApiOperation({ summary: 'Register as location provider (bungalow/studio/manager)' })
+  async registerLocation(@Body() dto: RegisterLocationDto) {
+    return this.authService.registerLocation(dto);
   }
 
   @Post('otp/send')

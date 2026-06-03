@@ -17,6 +17,7 @@ import { RegisterIndividualDto } from './dto/register-individual.dto';
 import { RegisterCompanyDto } from './dto/register-company.dto';
 import { RegisterVendorDto } from './dto/register-vendor.dto';
 import { RegisterCastDto } from './dto/register-cast.dto';
+import { RegisterLocationDto } from './dto/register-location.dto';
 import { LoginDto } from './dto/login.dto';
 
 const BCRYPT_ROUNDS = 12;
@@ -153,6 +154,29 @@ export class AuthService {
             roleType: dto.roleType,
             age: dto.age ?? null,
             gender: dto.gender ?? null,
+            locationCity: dto.locationCity ?? null,
+          },
+        },
+      },
+    });
+    return { userId: user.id, message: 'Registration successful. Verify OTP to activate.' };
+  }
+
+  async registerLocation(dto: RegisterLocationDto): Promise<{ userId: string; message: string }> {
+    await this.ensureEmailPhoneAvailable(dto.email, dto.phone);
+    const passwordHash = await this.hashPassword(dto.password);
+    const user = await this.prisma.user.create({
+      data: {
+        email: dto.email,
+        phone: dto.phone,
+        passwordHash,
+        role: UserRole.location,
+        displayName: dto.propertyName,
+        locationProfile: {
+          create: {
+            propertyName: dto.propertyName,
+            locationType: dto.locationType,
+            gstNumber: dto.gstNumber?.trim() || null,
             locationCity: dto.locationCity ?? null,
           },
         },

@@ -20,6 +20,7 @@ enum UserRole {
   vendor
   admin
   cast
+  location
 }
 
 enum OtpType {
@@ -58,7 +59,9 @@ model User {
   companyProfile    CompanyProfile?
   vendorProfile     VendorProfile?
   castProfile       CastProfile?
+  locationProfile   LocationProfile?
   vendorEquipment  VendorEquipment[]
+  locationProperties LocationProperty[]
   availabilitySlots AvailabilitySlot[]
   projectsOwned     Project[]         @relation("CompanyProjects")
   projectsBilledTo  Project[]         @relation("ProjectBillingOverride")
@@ -292,6 +295,112 @@ model CastProfile {
   @@map("cast_profiles")
 }
 
+// Profile for `location` role users (shooting-location providers: bungalows/
+// villas/apartments, studio set-ups, location managers). One role discriminated
+// by `locationType`, mirroring how CastProfile uses `roleType`. Properties/setups
+// live in the separate LocationProperty table (the location analogue of
+// VendorEquipment).
+model LocationProfile {
+  id             String   @id @default(uuid()) @db.Uuid
+  userId         String   @unique @map("user_id") @db.Uuid
+
+  propertyName   String   @map("property_name")
+  // 'bungalow_villa_apartment' | 'studio_setup' | 'location_manager'
+  locationType   String   @map("location_type")
+  subTypes       String[] @default([]) @map("sub_types")
+
+  bio            String?
+  aboutUs        String?  @map("about_us")
+
+  // Location + Google map pin
+  address        String?
+  addressLat     Float?   @map("address_lat")
+  addressLng     Float?   @map("address_lng")
+  locationCity   String?  @map("location_city")
+  locationState  String?  @map("location_state")
+
+  // Media
+  logoKey        String?  @map("logo_key")
+  coverKey       String?  @map("cover_key")
+  // Profile-level "detailed PDF" of the location/property.
+  detailPdfKey   String?  @map("detail_pdf_key")
+  detailPdfName  String?  @map("detail_pdf_name")
+
+  // Social links
+  website        String?
+  imdbUrl        String?  @map("imdb_url")
+  instagramUrl   String?  @map("instagram_url")
+  linkedinUrl    String?  @map("linkedin_url")
+  twitterUrl     String?  @map("twitter_url")
+  youtubeUrl     String?  @map("youtube_url")
+  vimeoUrl       String?  @map("vimeo_url")
+
+  // Billing / banking (same shape as other profiles)
+  panNumber          String?  @map("pan_number")
+  billingName        String?  @map("billing_name")
+  gstNumber          String?  @unique @map("gst_number")
+  sacCode            String?  @map("sac_code")
+  upiId              String?  @map("upi_id")
+  bankAccountName    String?  @map("bank_account_name")
+  bankAccountNumber  String?  @map("bank_account_number")
+  ifscCode           String?  @map("ifsc_code")
+  bankName           String?  @map("bank_name")
+
+  isGstVerified  Boolean  @default(false) @map("is_gst_verified")
+  isAvailable    Boolean  @default(true) @map("is_available")
+  createdAt      DateTime @default(now()) @map("created_at")
+  updatedAt      DateTime @updatedAt @map("updated_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("location_profiles")
+}
+
+// A single property / studio set-up listed by a `location` user. Mirror of
+// VendorEquipment (catalog item + date-range availability + booking link).
+model LocationProperty {
+  id             String   @id @default(uuid()) @db.Uuid
+  locationUserId String   @map("location_user_id") @db.Uuid
+  name           String
+  description    String?
+  subTypes       String[] @default([]) @map("sub_types")
+  city           String?
+  address        String?
+  addressLat     Float?   @map("address_lat")
+  addressLng     Float?   @map("address_lng")
+  dailyBudget    Int?     @map("daily_budget") // paise
+  // Multiple photos stored as storage keys; resolved to signed URLs on read.
+  photoKeys      String[] @default([]) @map("photo_keys")
+  pdfKey         String?  @map("pdf_key")
+  pdfName        String?  @map("pdf_name")
+  createdAt      DateTime @default(now()) @map("created_at")
+  updatedAt      DateTime @updatedAt @map("updated_at")
+
+  user            User                          @relation(fields: [locationUserId], references: [id], onDelete: Cascade)
+  availabilities  LocationPropertyAvailability[]
+  bookingRequests BookingRequest[]
+
+  @@index([locationUserId])
+  @@map("location_properties")
+}
+
+model LocationPropertyAvailability {
+  id           String   @id @default(uuid()) @db.Uuid
+  propertyId   String   @map("property_id") @db.Uuid
+  locationCity String   @map("location_city")
+  availableFrom DateTime @map("available_from")
+  availableTo   DateTime @map("available_to")
+  notes        String?
+  createdAt    DateTime @default(now()) @map("created_at")
+  updatedAt    DateTime @updatedAt @map("updated_at")
+
+  property LocationProperty @relation(fields: [propertyId], references: [id], onDelete: Cascade)
+
+  @@index([propertyId, availableFrom, availableTo])
+  @@index([locationCity, availableFrom, availableTo])
+  @@map("location_property_availability")
+}
+
 model VendorEquipment {
   id           String   @id @default(uuid()) @db.Uuid
   vendorUserId String   @map("vendor_user_id") @db.Uuid
@@ -446,6 +555,7 @@ model BookingRequest {
   targetUserId     String        @map("target_user_id") @db.Uuid
   projectRoleId     String?       @map("project_role_id") @db.Uuid
   vendorEquipmentId String?      @map("vendor_equipment_id") @db.Uuid
+  locationPropertyId String?     @map("location_property_id") @db.Uuid
   status            BookingStatus @default(pending)
   rateOffered       Int?          @map("rate_offered")
   message           String?
@@ -485,12 +595,14 @@ model BookingRequest {
   target       User        @relation("TargetBookings", fields: [targetUserId], references: [id])
   projectRole  ProjectRole? @relation(fields: [projectRoleId], references: [id])
   vendorEquipment VendorEquipment? @relation(fields: [vendorEquipmentId], references: [id])
+  locationProperty LocationProperty? @relation(fields: [locationPropertyId], references: [id])
   reviews         Review[]
   contracts       Contract[]
   @@index([projectId])
   @@index([targetUserId, status])
   @@index([requesterUserId, status])
   @@index([vendorEquipmentId])
+  @@index([locationPropertyId])
   // Index for the bookings.expire BullMQ cron — pending rows past their
   // 48 h window are surfaced via (status='pending', expires_at < NOW()).
   @@index([status, expiresAt])

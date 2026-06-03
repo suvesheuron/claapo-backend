@@ -7,6 +7,7 @@ import { UpdateIndividualProfileDto } from './dto/update-individual-profile.dto'
 import { UpdateCompanyProfileDto } from './dto/update-company-profile.dto';
 import { UpdateVendorProfileDto } from './dto/update-vendor-profile.dto';
 import { UpdateCastProfileDto } from './dto/update-cast-profile.dto';
+import { UpdateLocationProfileDto } from './dto/update-location-profile.dto';
 import { CreateSubUserDto } from './dto/create-sub-user.dto';
 import { CreateShowcaseItemDto } from './dto/create-showcase-item.dto';
 
@@ -67,6 +68,7 @@ export class ProfilesService {
         companyProfile: true,
         vendorProfile: true,
         castProfile: true,
+        locationProfile: true,
         vendorEquipment: {
           include: {
             availabilities: {
@@ -95,6 +97,14 @@ export class ProfilesService {
     // Cast members get a Work Showcase (images/videos/documents) on their
     // profile in place of the single-video showreel.
     const showcaseItems = user.role === UserRole.cast ? await this.resolveShowcaseItems(user.id) : undefined;
+    // Location providers embed their listed properties (signed photo/PDF URLs)
+    // plus the profile-level "detailed PDF" so the owner's profile screen can
+    // render everything in one fetch — the location analogue of vendor equipment.
+    const locationProperties = user.role === UserRole.location ? await this.resolveLocationProperties(user.id) : undefined;
+    const detailPdfKey = (profile as { detailPdfKey?: string | null } | null)?.detailPdfKey ?? null;
+    const detailPdfUrl = detailPdfKey
+      ? (await this.storage.getSignedUrl(detailPdfKey)) ?? this.storage.getPublicUrl(detailPdfKey)
+      : null;
     const profilePayload = profile
       ? {
           ...profile,
@@ -107,6 +117,7 @@ export class ProfilesService {
           ...(user.role === UserRole.vendor && (user as { vendorEquipment?: unknown[] }).vendorEquipment
             ? { equipment: (user as { vendorEquipment: unknown[] }).vendorEquipment }
             : {}),
+          ...(user.role === UserRole.location ? { properties: locationProperties ?? [], detailPdfUrl: detailPdfUrl ?? undefined } : {}),
         }
       : null;
     return {
@@ -126,12 +137,14 @@ export class ProfilesService {
     companyProfile: unknown;
     vendorProfile: unknown;
     castProfile?: unknown;
+    locationProfile?: unknown;
     role: UserRole;
   }) {
     if (user.role === UserRole.individual) return user.individualProfile;
     if (user.role === UserRole.company) return user.companyProfile;
     if (user.role === UserRole.vendor) return user.vendorProfile;
     if (user.role === UserRole.cast) return user.castProfile ?? null;
+    if (user.role === UserRole.location) return user.locationProfile ?? null;
     return null;
   }
 
@@ -352,6 +365,113 @@ export class ProfilesService {
     });
   }
 
+  async updateLocation(userId: string, dto: UpdateLocationProfileDto) {
+    await this.ensureRole(userId, UserRole.location);
+    const existing = await this.prisma.locationProfile.findUnique({ where: { userId } });
+    const subTypesNormalized = dto.subTypes?.map((s) => String(s).trim()).filter(Boolean);
+
+    const nextGstNumber = this.normalizeOptionalText(dto.gstNumber) ?? this.normalizeOptionalText(existing?.gstNumber ?? null) ?? null;
+    const nextSacCode = this.normalizeOptionalText(dto.sacCode) ?? this.normalizeOptionalText(existing?.sacCode ?? null) ?? null;
+    this.assertSacCodeRule(nextGstNumber, nextSacCode);
+
+    const normalizedGst = this.normalizeOptionalText(dto.gstNumber);
+    const normalizedSac = normalizedGst === null ? null : this.normalizeOptionalText(dto.sacCode);
+    const data = {
+      propertyName: dto.propertyName,
+      locationType: dto.locationType,
+      subTypes: subTypesNormalized,
+      bio: dto.bio,
+      aboutUs: dto.aboutUs,
+      address: dto.address,
+      addressLat: dto.addressLat,
+      addressLng: dto.addressLng,
+      locationCity: dto.locationCity,
+      locationState: dto.locationState,
+      website: dto.website,
+      imdbUrl: dto.imdbUrl,
+      instagramUrl: dto.instagramUrl,
+      linkedinUrl: dto.linkedinUrl,
+      twitterUrl: dto.twitterUrl,
+      youtubeUrl: dto.youtubeUrl,
+      vimeoUrl: dto.vimeoUrl,
+      isAvailable: dto.isAvailable,
+      panNumber: dto.panNumber,
+      billingName: dto.billingName,
+      gstNumber: normalizedGst,
+      sacCode: normalizedSac,
+      upiId: dto.upiId,
+      bankAccountName: dto.bankAccountName,
+      bankAccountNumber: dto.bankAccountNumber,
+      ifscCode: dto.ifscCode,
+      bankName: dto.bankName,
+    };
+    const filtered = Object.fromEntries(Object.entries(data).filter(([, v]) => v !== undefined));
+    if (existing) {
+      return this.prisma.locationProfile.update({
+        where: { userId },
+        data: filtered,
+      });
+    }
+    return this.prisma.locationProfile.create({
+      data: {
+        userId,
+        propertyName: dto.propertyName ?? 'Unknown',
+        locationType: dto.locationType ?? 'bungalow_villa_apartment',
+        ...filtered,
+      },
+    });
+  }
+
+  // Resolve a location user's listed properties with signed photo/PDF URLs.
+  // Used to embed `properties` on the profile (own + public). Mirrors how vendor
+  // equipment is embedded, but properties carry multiple photos + a PDF.
+  private async resolveLocationProperties(locationUserId: string) {
+    const rows = await this.prisma.locationProperty.findMany({
+      where: { locationUserId },
+      include: { availabilities: { orderBy: { availableFrom: 'asc' } } },
+      orderBy: { name: 'asc' },
+    });
+    return Promise.all(rows.map((row) => this.resolveLocationProperty(row)));
+  }
+
+  private async resolveLocationProperty(row: {
+    id: string;
+    name: string;
+    description: string | null;
+    subTypes: string[];
+    city: string | null;
+    address: string | null;
+    addressLat: number | null;
+    addressLng: number | null;
+    dailyBudget: number | null;
+    photoKeys: string[];
+    pdfKey: string | null;
+    pdfName: string | null;
+    availabilities?: unknown[];
+  }) {
+    const photoUrls = (
+      await Promise.all((row.photoKeys ?? []).map((k) => this.storage.resolveAvatarUrl(k)))
+    ).filter((u): u is string => !!u);
+    const pdfUrl = row.pdfKey
+      ? (await this.storage.getSignedUrl(row.pdfKey)) ?? this.storage.getPublicUrl(row.pdfKey)
+      : null;
+    return {
+      id: row.id,
+      name: row.name,
+      description: row.description,
+      subTypes: row.subTypes ?? [],
+      city: row.city,
+      address: row.address,
+      addressLat: row.addressLat,
+      addressLng: row.addressLng,
+      dailyBudget: row.dailyBudget,
+      photoUrls,
+      pdfUrl,
+      pdfName: row.pdfName,
+      availabilities: row.availabilities ?? [],
+    };
+  }
+
   private async ensureRole(userId: string, role: UserRole) {
     const user = await this.prisma.user.findFirst({
       where: { id: userId, deletedAt: null },
@@ -369,6 +489,7 @@ export class ProfilesService {
         companyProfile: true,
         vendorProfile: true,
         castProfile: true,
+        locationProfile: true,
         vendorEquipment: {
           include: {
             availabilities: {
@@ -404,11 +525,23 @@ export class ProfilesService {
       ? (target as { vendorEquipment: unknown[] }).vendorEquipment
       : undefined;
     const showcaseItems = target.role === UserRole.cast ? await this.resolveShowcaseItems(target.id) : undefined;
+    // Location providers expose their listed properties + profile-level PDF to
+    // viewers (the PDF is meant to be discoverable per the spec).
+    let properties: unknown[] | undefined;
+    let detailPdfUrl: string | null = null;
+    if (target.role === UserRole.location) {
+      properties = await this.resolveLocationProperties(target.id);
+      const detailPdfKey = (base.detailPdfKey as string | null | undefined) ?? null;
+      detailPdfUrl = detailPdfKey
+        ? (await this.storage.getSignedUrl(detailPdfKey)) ?? this.storage.getPublicUrl(detailPdfKey)
+        : null;
+    }
     return {
       id: target.id,
       role: target.role,
+      email: target.email,
       phone: target.phone,
-      profile: { ...sanitized, avatarUrl, coverUrl, coverType: this.coverTypeFromKey(base.coverKey as string | null) ?? undefined, showreelUrl, logoUrl, ...(showcaseItems ? { showcaseItems } : {}), ...(equipment ? { equipment } : {}) },
+      profile: { ...sanitized, avatarUrl, coverUrl, coverType: this.coverTypeFromKey(base.coverKey as string | null) ?? undefined, showreelUrl, logoUrl, ...(showcaseItems ? { showcaseItems } : {}), ...(equipment ? { equipment } : {}), ...(target.role === UserRole.location ? { properties: properties ?? [], detailPdfUrl: detailPdfUrl ?? undefined } : {}) },
     };
   }
 
@@ -493,6 +626,12 @@ export class ProfilesService {
         create: { userId, displayName: 'Unknown', roleType: 'actor', avatarKey: key },
         update: { avatarKey: key },
       });
+    } else if (user.role === UserRole.location) {
+      await this.prisma.locationProfile.upsert({
+        where: { userId },
+        create: { userId, propertyName: 'Unknown', locationType: 'bungalow_villa_apartment', logoKey: key },
+        update: { logoKey: key },
+      });
     }
     return { key };
   }
@@ -509,7 +648,8 @@ export class ProfilesService {
       role !== UserRole.individual &&
       role !== UserRole.vendor &&
       role !== UserRole.company &&
-      role !== UserRole.cast
+      role !== UserRole.cast &&
+      role !== UserRole.location
     ) {
       throw new ForbiddenException('Cover photo is not available for this role');
     }
@@ -546,9 +686,43 @@ export class ProfilesService {
         create: { userId, displayName: 'Unknown', roleType: 'actor', coverKey: key },
         update: { coverKey: key },
       });
+    } else if (role === UserRole.location) {
+      await this.prisma.locationProfile.upsert({
+        where: { userId },
+        create: { userId, propertyName: 'Unknown', locationType: 'bungalow_villa_apartment', coverKey: key },
+        update: { coverKey: key },
+      });
     } else {
       throw new ForbiddenException('Cover photo is not available for this role');
     }
+    return { key };
+  }
+
+  // ── Profile-level "detailed PDF" (location) ───────────────────────────────
+  // A single detailed PDF of the location/property attached to the profile
+  // (separate from per-property PDFs). Two-step: presign → confirm. PDF only.
+
+  async getPresignedDetailPdfUrl(userId: string): Promise<{ uploadUrl: string; key: string }> {
+    await this.ensureRole(userId, UserRole.location);
+    if (!this.storage.isConfigured() && !this.storage.isSupabaseConfigured()) {
+      throw new Error('Storage is not configured. Set AWS_S3_BUCKET or SUPABASE_* env vars.');
+    }
+    const key = `users/${userId}/location-pdf/${Date.now()}.pdf`;
+    return this.storage.getPresignedPutUrl(key, 'application/pdf');
+  }
+
+  async setDetailPdfKey(userId: string, key: string, fileName?: string) {
+    await this.ensureRole(userId, UserRole.location);
+    // Defence-in-depth: never let a caller register a key outside their own namespace.
+    const expectedPrefix = `users/${userId}/location-pdf/`;
+    if (!key.startsWith(expectedPrefix)) {
+      throw new BadRequestException('Invalid storage key for this user.');
+    }
+    await this.prisma.locationProfile.upsert({
+      where: { userId },
+      create: { userId, propertyName: 'Unknown', locationType: 'bungalow_villa_apartment', detailPdfKey: key, detailPdfName: fileName?.trim() || null },
+      update: { detailPdfKey: key, detailPdfName: fileName?.trim() || null },
+    });
     return { key };
   }
 

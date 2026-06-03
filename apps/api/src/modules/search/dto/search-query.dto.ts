@@ -3,7 +3,7 @@ import { IsOptional, IsString, IsInt, Min, IsDateString, IsEnum, IsIn } from 'cl
 import { Type } from 'class-transformer';
 import { VendorType } from '@prisma/client';
 
-export const SEARCH_PEOPLE_CATEGORIES = ['crew', 'vendor', 'company', 'cast'] as const;
+export const SEARCH_PEOPLE_CATEGORIES = ['crew', 'vendor', 'company', 'cast', 'location'] as const;
 export type SearchPeopleCategory = (typeof SEARCH_PEOPLE_CATEGORIES)[number];
 
 export class SearchPeopleQueryDto {
@@ -182,6 +182,66 @@ export class SearchCastQueryDto {
   @IsOptional()
   @IsDateString()
   endDate?: string;
+
+  @ApiPropertyOptional({ default: 1 })
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  page?: number = 1;
+
+  @ApiPropertyOptional({ default: 20 })
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  limit?: number = 20;
+}
+
+export class SearchLocationsQueryDto {
+  @ApiPropertyOptional({ description: 'Search properties available in this city' })
+  @IsOptional()
+  @IsString()
+  city?: string;
+
+  @ApiPropertyOptional({ description: 'Location type filter (bungalow_villa_apartment | studio_setup | location_manager)' })
+  @IsOptional()
+  @IsString()
+  locationType?: string;
+
+  @ApiPropertyOptional({ description: 'Filter by a sub-type tag (e.g. Modern Bungalow)' })
+  @IsOptional()
+  @IsString()
+  subType?: string;
+
+  @ApiPropertyOptional({ description: 'Partial match on a property name' })
+  @IsOptional()
+  @IsString()
+  propertyName?: string;
+
+  @ApiPropertyOptional({ example: '2026-07-10' })
+  @IsOptional()
+  @IsDateString()
+  startDate?: string;
+
+  @ApiPropertyOptional({ example: '2026-07-15' })
+  @IsOptional()
+  @IsDateString()
+  endDate?: string;
+
+  @ApiPropertyOptional({ description: 'Daily price min in paise' })
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(0)
+  rateMin?: number;
+
+  @ApiPropertyOptional({ description: 'Daily price max in paise' })
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(0)
+  rateMax?: number;
 
   @ApiPropertyOptional({ default: 1 })
   @IsOptional()

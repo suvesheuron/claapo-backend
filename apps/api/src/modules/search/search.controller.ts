@@ -11,6 +11,7 @@ import {
   SearchVendorsQueryDto,
   SearchPeopleQueryDto,
   SearchCastQueryDto,
+  SearchLocationsQueryDto,
 } from './dto/search-query.dto';
 
 @ApiTags('search')
@@ -45,6 +46,14 @@ export class SearchController {
   })
   searchCast(@CurrentUser() user: AuthUser, @Query() query: SearchCastQueryDto) {
     return this.searchService.searchCast(user.id, user.role, query);
+  }
+
+  @Get('locations')
+  @UseGuards(RolesGuard)
+  @Roles('company', 'admin')
+  @ApiOperation({ summary: 'Search location providers + properties (city, type, sub-type, date, price)' })
+  searchLocations(@CurrentUser() user: AuthUser, @Query() query: SearchLocationsQueryDto) {
+    return this.searchService.searchLocations(user.id, user.role, query);
   }
 
   @Get('people')

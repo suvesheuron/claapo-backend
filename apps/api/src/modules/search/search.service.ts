@@ -8,6 +8,7 @@ import type {
   SearchVendorsQueryDto,
   SearchPeopleQueryDto,
   SearchCastQueryDto,
+  SearchLocationsQueryDto,
 } from './dto/search-query.dto';
 
 /**
@@ -719,6 +720,175 @@ export class SearchService {
   }
 
   /**
+   * Search location providers + their listed properties/setups. Company-only,
+   * mirroring searchVendors. Filters by city, location type, sub-type, name,
+   * daily price, and a shoot-date window.
+   *
+   * Availability semantics intentionally match CREW (default-discoverable), not
+   * the stricter vendor-equipment rule: a property with NO explicit availability
+   * rows is treated as available everywhere and only removed when it has a hard
+   * booking conflict for the requested dates. This avoids the "freshly listed
+   * property is invisible to dated searches" trap.
+   */
+  async searchLocations(viewerId: string, viewerRole: UserRole, query: SearchLocationsQueryDto) {
+    if (viewerRole !== UserRole.company && viewerRole !== UserRole.admin) {
+      throw new ForbiddenException('Only companies can search locations');
+    }
+    const page = query.page ?? 1;
+    const limit = Math.min(query.limit ?? 20, 50);
+    const skip = (page - 1) * limit;
+    const requestedStart = query.startDate ? new Date(query.startDate) : null;
+    const requestedEnd = query.endDate ? new Date(query.endDate) : null;
+    const requestedCity = query.city?.trim().toLowerCase();
+    const subType = query.subType?.trim().toLowerCase();
+    const propertyName = query.propertyName?.trim().toLowerCase();
+    const rateMin = query.rateMin ?? null;
+    const rateMax = query.rateMax ?? null;
+    const hasPropertyFilter = !!(
+      requestedCity || requestedStart || requestedEnd || subType || propertyName || rateMin != null || rateMax != null
+    );
+    if (rateMin != null && rateMax != null && rateMin > rateMax) {
+      throw new BadRequestException('rateMin cannot be greater than rateMax');
+    }
+
+    const where: Record<string, unknown> = { user: { deletedAt: null, isActive: true } };
+    if (query.locationType?.trim()) {
+      (where as any).locationType = query.locationType.trim();
+    }
+
+    const rawItems = await this.prisma.locationProfile.findMany({
+      where,
+      include: {
+        user: {
+          select: {
+            id: true,
+            email: true,
+            locationProperties: {
+              include: { availabilities: { orderBy: { availableFrom: 'asc' } } },
+            },
+          },
+        },
+      },
+      orderBy: { propertyName: 'asc' },
+    });
+
+    // Hard booking-conflict set: properties already committed (accepted/locked)
+    // on dates overlapping the requested window.
+    const bookedPropertyIds = new Set<string>();
+    if (requestedStart && requestedEnd) {
+      const allPropertyIds = rawItems.flatMap((p) => (p.user.locationProperties ?? []).map((pr) => pr.id));
+      if (allPropertyIds.length > 0) {
+        const assignmentRows = await this.prisma.bookingRequest.findMany({
+          where: {
+            locationPropertyId: { in: allPropertyIds },
+            status: { in: ['accepted', 'locked'] },
+          },
+          select: {
+            locationPropertyId: true,
+            shootDates: true,
+            project: { select: { startDate: true, endDate: true } },
+          },
+        });
+        for (const row of assignmentRows) {
+          const pid = row.locationPropertyId;
+          if (!pid) continue;
+          const range = this.resolveBookingShootRange(row.shootDates, row.project.startDate, row.project.endDate);
+          if (!range) continue;
+          if (range.start <= requestedEnd && range.end >= requestedStart) bookedPropertyIds.add(pid);
+        }
+      }
+    }
+
+    const filteredItems = rawItems
+      .map((p) => {
+        const allProperties = p.user.locationProperties ?? [];
+        const matchedProperties = allProperties.filter((pr) => {
+          if (propertyName && !pr.name.toLowerCase().includes(propertyName)) return false;
+          if (subType && !(pr.subTypes ?? []).some((s) => s.toLowerCase().includes(subType))) return false;
+          if (rateMin != null && (pr.dailyBudget == null || pr.dailyBudget < rateMin)) return false;
+          if (rateMax != null && (pr.dailyBudget == null || pr.dailyBudget > rateMax)) return false;
+          if (bookedPropertyIds.has(pr.id)) return false;
+
+          if (!requestedCity && !requestedStart && !requestedEnd) return true;
+
+          const availabilities = pr.availabilities ?? [];
+          const matchesAvailabilitySlot = (): boolean =>
+            availabilities.some((slot) => {
+              const slotCity = slot.locationCity.trim().toLowerCase();
+              if (requestedCity && slotCity !== requestedCity) return false;
+              if (requestedStart && requestedEnd) {
+                return slot.availableFrom <= requestedEnd && slot.availableTo >= requestedStart;
+              }
+              if (requestedStart) return slot.availableFrom <= requestedStart && slot.availableTo >= requestedStart;
+              if (requestedEnd) return slot.availableFrom <= requestedEnd && slot.availableTo >= requestedEnd;
+              return true;
+            });
+
+          if (availabilities.length > 0 && matchesAvailabilitySlot()) return true;
+
+          // DEFAULT-DISCOVERABLE: no explicit availability rows ⇒ treat as
+          // available (only city is checked against the property's own city).
+          if (availabilities.length === 0) {
+            if (requestedCity) {
+              const prCity = pr.city?.trim().toLowerCase();
+              return prCity === requestedCity;
+            }
+            return true; // date-only filter, no city → still discoverable
+          }
+          return false;
+        });
+
+        const firstCity = matchedProperties[0]?.city ?? null;
+        return {
+          userId: p.userId,
+          propertyName: p.propertyName,
+          locationType: p.locationType,
+          subTypes: p.subTypes ?? [],
+          isGstVerified: p.isGstVerified,
+          email: p.user.email,
+          locationCity: p.locationCity ?? firstCity,
+          properties: matchedProperties,
+          _propertyCount: matchedProperties.length,
+          _logoKey: p.logoKey ?? null,
+        } as const;
+      })
+      .filter((item) => !hasPropertyFilter || item._propertyCount > 0);
+
+    const total = filteredItems.length;
+    const items = filteredItems.slice(skip, skip + limit);
+
+    const avatarUrls = await Promise.all(items.map((p) => this.storage.resolveAvatarUrl(p._logoKey)));
+    // Resolve photo signed URLs for the matched properties on this page.
+    const itemsWithMedia = await Promise.all(
+      items.map(async (p, idx) => {
+        const properties = await Promise.all(
+          p.properties.map(async (pr) => ({
+            id: pr.id,
+            name: pr.name,
+            description: pr.description,
+            subTypes: pr.subTypes ?? [],
+            city: pr.city,
+            address: pr.address,
+            addressLat: pr.addressLat,
+            addressLng: pr.addressLng,
+            dailyBudget: pr.dailyBudget,
+            photoUrls: (
+              await Promise.all((pr.photoKeys ?? []).map((k) => this.storage.resolveAvatarUrl(k)))
+            ).filter((u): u is string => !!u),
+          })),
+        );
+        const { _propertyCount, _logoKey, properties: _p, ...rest } = p;
+        return { ...rest, properties, avatarUrl: avatarUrls[idx] };
+      }),
+    );
+
+    return {
+      items: itemsWithMedia,
+      meta: { total, page, limit, pages: Math.ceil(total / limit) },
+    };
+  }
+
+  /**
    * Simple name-only search across crew (individual), vendor, and company profiles.
    *
    * Returns the minimal public-card data each platform shows in the directory:
@@ -740,7 +910,7 @@ export class SearchService {
 
     type DirectoryItem = {
       userId: string;
-      role: 'individual' | 'vendor' | 'company' | 'cast';
+      role: 'individual' | 'vendor' | 'company' | 'cast' | 'location';
       name: string;
       // For crew this is the first skill ("DOP", "Director"), for vendors the
       // vendorType, for companies the companyType. The UI surfaces this as a
@@ -909,6 +1079,41 @@ export class SearchService {
           locationState: r.locationState ?? null,
           avatarUrl: null,
           avatarKey: r.avatarKey ?? null,
+        })),
+      );
+    }
+
+    if (!category || category === 'location') {
+      const where: any = { user: baseUserWhere };
+      if (q) {
+        where.propertyName = { contains: q, mode: 'insensitive' };
+      }
+      if (cityFilter) {
+        where.locationCity = { contains: cityFilter, mode: 'insensitive' };
+      }
+      const rows = await this.prisma.locationProfile.findMany({
+        where,
+        select: {
+          userId: true,
+          propertyName: true,
+          locationType: true,
+          locationCity: true,
+          locationState: true,
+          logoKey: true,
+        },
+        orderBy: { propertyName: 'asc' },
+        take: limit * 3,
+      });
+      buckets.push(
+        rows.map((r) => ({
+          userId: r.userId,
+          role: 'location' as const,
+          name: r.propertyName ?? '',
+          categoryLabel: r.locationType ?? 'Location',
+          locationCity: r.locationCity ?? null,
+          locationState: r.locationState ?? null,
+          avatarUrl: null,
+          avatarKey: r.logoKey ?? null,
         })),
       );
     }
