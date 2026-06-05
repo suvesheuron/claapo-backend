@@ -12,7 +12,7 @@ import {
 } from 'class-validator';
 import { Type } from 'class-transformer';
 
-export const CAST_ROLE_TYPES = ['actor', 'model'] as const;
+export const CAST_ROLE_TYPES = ['actor', 'model', 'dancer', 'influencer'] as const;
 export type CastRoleType = (typeof CAST_ROLE_TYPES)[number];
 
 export const CAST_GENDERS = ['male', 'female', 'other'] as const;

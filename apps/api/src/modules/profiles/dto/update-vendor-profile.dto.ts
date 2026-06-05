@@ -38,6 +38,11 @@ export class UpdateVendorProfileDto {
   @IsString()
   billingName?: string;
 
+  @ApiPropertyOptional({ description: 'Google Maps share link (https://maps.app.goo.gl/...)' })
+  @IsOptional()
+  @IsString()
+  mapLink?: string;
+
   @ApiPropertyOptional()
   @IsOptional()
   @IsUrl()

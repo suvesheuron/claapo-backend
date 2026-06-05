@@ -10,6 +10,18 @@ import { ChatGateway } from './chat.gateway';
 
 type UserIdentity = { mainUserId: string | null; role: UserRole } | null;
 
+// Shape of a conversation participant as selected for formatConversation —
+// display name + avatar/logo key per profile type.
+type ConvParticipant = {
+  id: string;
+  email: string;
+  individualProfile?: { displayName: string; avatarKey?: string | null } | null;
+  companyProfile?: { companyName: string; logoKey?: string | null } | null;
+  vendorProfile?: { companyName: string; logoKey?: string | null } | null;
+  castProfile?: { displayName: string; avatarKey?: string | null } | null;
+  locationProfile?: { propertyName: string; logoKey?: string | null } | null;
+};
+
 @Injectable()
 export class ChatService {
   constructor(
@@ -156,29 +168,29 @@ export class ChatService {
           select: {
             id: true,
             email: true,
-            individualProfile: { select: { displayName: true } },
-            companyProfile: { select: { companyName: true } },
-            vendorProfile: { select: { companyName: true } },
-            castProfile: { select: { displayName: true } },
-            locationProfile: { select: { propertyName: true } },
+            individualProfile: { select: { displayName: true, avatarKey: true } },
+            companyProfile: { select: { companyName: true, logoKey: true } },
+            vendorProfile: { select: { companyName: true, logoKey: true } },
+            castProfile: { select: { displayName: true, avatarKey: true } },
+            locationProfile: { select: { propertyName: true, logoKey: true } },
           },
         },
         participantBUser: {
           select: {
             id: true,
             email: true,
-            individualProfile: { select: { displayName: true } },
-            companyProfile: { select: { companyName: true } },
-            vendorProfile: { select: { companyName: true } },
-            castProfile: { select: { displayName: true } },
-            locationProfile: { select: { propertyName: true } },
+            individualProfile: { select: { displayName: true, avatarKey: true } },
+            companyProfile: { select: { companyName: true, logoKey: true } },
+            vendorProfile: { select: { companyName: true, logoKey: true } },
+            castProfile: { select: { displayName: true, avatarKey: true } },
+            locationProfile: { select: { propertyName: true, logoKey: true } },
           },
         },
       },
     });
 
     if (existingConv) {
-      return this.formatConversation(existingConv, userId);
+      return await this.formatConversation(existingConv, userId);
     }
 
     // Only create inside a short transaction — just the insert, no heavy reads
@@ -215,22 +227,22 @@ export class ChatService {
           select: {
             id: true,
             email: true,
-            individualProfile: { select: { displayName: true } },
-            companyProfile: { select: { companyName: true } },
-            vendorProfile: { select: { companyName: true } },
-            castProfile: { select: { displayName: true } },
-            locationProfile: { select: { propertyName: true } },
+            individualProfile: { select: { displayName: true, avatarKey: true } },
+            companyProfile: { select: { companyName: true, logoKey: true } },
+            vendorProfile: { select: { companyName: true, logoKey: true } },
+            castProfile: { select: { displayName: true, avatarKey: true } },
+            locationProfile: { select: { propertyName: true, logoKey: true } },
           },
         },
         participantBUser: {
           select: {
             id: true,
             email: true,
-            individualProfile: { select: { displayName: true } },
-            companyProfile: { select: { companyName: true } },
-            vendorProfile: { select: { companyName: true } },
-            castProfile: { select: { displayName: true } },
-            locationProfile: { select: { propertyName: true } },
+            individualProfile: { select: { displayName: true, avatarKey: true } },
+            companyProfile: { select: { companyName: true, logoKey: true } },
+            vendorProfile: { select: { companyName: true, logoKey: true } },
+            castProfile: { select: { displayName: true, avatarKey: true } },
+            locationProfile: { select: { propertyName: true, logoKey: true } },
           },
         },
       },
@@ -240,7 +252,7 @@ export class ChatService {
       throw new NotFoundException('Conversation not found');
     }
 
-    return this.formatConversation(fullConv, userId);
+    return await this.formatConversation(fullConv, userId);
   }
 
   /** Build a WHERE clause for conversations that a user (or their sub-users) can access */
@@ -316,22 +328,22 @@ export class ChatService {
             select: {
               id: true,
               email: true,
-              individualProfile: { select: { displayName: true } },
-              companyProfile: { select: { companyName: true } },
-              vendorProfile: { select: { companyName: true } },
-              castProfile: { select: { displayName: true } },
-              locationProfile: { select: { propertyName: true } },
+              individualProfile: { select: { displayName: true, avatarKey: true } },
+              companyProfile: { select: { companyName: true, logoKey: true } },
+              vendorProfile: { select: { companyName: true, logoKey: true } },
+              castProfile: { select: { displayName: true, avatarKey: true } },
+              locationProfile: { select: { propertyName: true, logoKey: true } },
             },
           },
           participantBUser: {
             select: {
               id: true,
               email: true,
-              individualProfile: { select: { displayName: true } },
-              companyProfile: { select: { companyName: true } },
-              vendorProfile: { select: { companyName: true } },
-              castProfile: { select: { displayName: true } },
-              locationProfile: { select: { propertyName: true } },
+              individualProfile: { select: { displayName: true, avatarKey: true } },
+              companyProfile: { select: { companyName: true, logoKey: true } },
+              vendorProfile: { select: { companyName: true, logoKey: true } },
+              castProfile: { select: { displayName: true, avatarKey: true } },
+              locationProfile: { select: { propertyName: true, logoKey: true } },
             },
           },
           messages: {
@@ -350,7 +362,7 @@ export class ChatService {
     ]);
 
     return {
-      items: items.map((c) => this.formatConversation(c, userId, mainUserId)),
+      items: await Promise.all(items.map((c) => this.formatConversation(c, userId, mainUserId))),
       meta: { total, page, limit, pages: Math.ceil(total / limit) },
     };
   }
@@ -455,11 +467,11 @@ export class ChatService {
             email: true,
             displayName: true,
             mainUserId: true,
-            individualProfile: { select: { displayName: true } },
-            companyProfile: { select: { companyName: true } },
-            vendorProfile: { select: { companyName: true } },
-            castProfile: { select: { displayName: true } },
-            locationProfile: { select: { propertyName: true } },
+            individualProfile: { select: { displayName: true, avatarKey: true } },
+            companyProfile: { select: { companyName: true, logoKey: true } },
+            vendorProfile: { select: { companyName: true, logoKey: true } },
+            castProfile: { select: { displayName: true, avatarKey: true } },
+            locationProfile: { select: { propertyName: true, logoKey: true } },
           },
         },
       },
@@ -516,11 +528,11 @@ export class ChatService {
               mainUserId: true,
               email: true,
               displayName: true,
-              individualProfile: { select: { displayName: true } },
-              companyProfile: { select: { companyName: true } },
-              vendorProfile: { select: { companyName: true } },
-              castProfile: { select: { displayName: true } },
-              locationProfile: { select: { propertyName: true } },
+              individualProfile: { select: { displayName: true, avatarKey: true } },
+              companyProfile: { select: { companyName: true, logoKey: true } },
+              vendorProfile: { select: { companyName: true, logoKey: true } },
+              castProfile: { select: { displayName: true, avatarKey: true } },
+              locationProfile: { select: { propertyName: true, logoKey: true } },
             },
           },
           replyTo: { select: { id: true, content: true, senderId: true } },
@@ -753,11 +765,11 @@ export class ChatService {
             email: true,
             displayName: true,
             mainUserId: true,
-            individualProfile: { select: { displayName: true } },
-            companyProfile: { select: { companyName: true } },
-            vendorProfile: { select: { companyName: true } },
-            castProfile: { select: { displayName: true } },
-            locationProfile: { select: { propertyName: true } },
+            individualProfile: { select: { displayName: true, avatarKey: true } },
+            companyProfile: { select: { companyName: true, logoKey: true } },
+            vendorProfile: { select: { companyName: true, logoKey: true } },
+            castProfile: { select: { displayName: true, avatarKey: true } },
+            locationProfile: { select: { propertyName: true, logoKey: true } },
           },
         },
         replyTo: { select: { id: true, content: true, senderId: true } },
@@ -898,11 +910,11 @@ export class ChatService {
               id: true,
               email: true,
               displayName: true,
-              individualProfile: { select: { displayName: true } },
-              companyProfile: { select: { companyName: true } },
-              vendorProfile: { select: { companyName: true } },
-              castProfile: { select: { displayName: true } },
-              locationProfile: { select: { propertyName: true } },
+              individualProfile: { select: { displayName: true, avatarKey: true } },
+              companyProfile: { select: { companyName: true, logoKey: true } },
+              vendorProfile: { select: { companyName: true, logoKey: true } },
+              castProfile: { select: { displayName: true, avatarKey: true } },
+              locationProfile: { select: { propertyName: true, logoKey: true } },
             },
           },
         },
@@ -963,11 +975,11 @@ export class ChatService {
             id: true,
             email: true,
             displayName: true,
-            individualProfile: { select: { displayName: true } },
-            companyProfile: { select: { companyName: true } },
-            vendorProfile: { select: { companyName: true } },
-            castProfile: { select: { displayName: true } },
-            locationProfile: { select: { propertyName: true } },
+            individualProfile: { select: { displayName: true, avatarKey: true } },
+            companyProfile: { select: { companyName: true, logoKey: true } },
+            vendorProfile: { select: { companyName: true, logoKey: true } },
+            castProfile: { select: { displayName: true, avatarKey: true } },
+            locationProfile: { select: { propertyName: true, logoKey: true } },
           },
         },
         conversation: {
@@ -1078,11 +1090,11 @@ export class ChatService {
             sender: {
               select: {
                 id: true, email: true, displayName: true, mainUserId: true,
-                individualProfile: { select: { displayName: true } },
-                companyProfile: { select: { companyName: true } },
-                vendorProfile: { select: { companyName: true } },
-                castProfile: { select: { displayName: true } },
-                locationProfile: { select: { propertyName: true } },
+                individualProfile: { select: { displayName: true, avatarKey: true } },
+                companyProfile: { select: { companyName: true, logoKey: true } },
+                vendorProfile: { select: { companyName: true, logoKey: true } },
+                castProfile: { select: { displayName: true, avatarKey: true } },
+                locationProfile: { select: { propertyName: true, logoKey: true } },
               },
             },
             conversation: { select: { id: true, participantA: true, participantB: true } },
@@ -1101,11 +1113,11 @@ export class ChatService {
           sender: {
             select: {
               id: true, email: true, displayName: true, mainUserId: true,
-              individualProfile: { select: { displayName: true } },
-              companyProfile: { select: { companyName: true } },
-              vendorProfile: { select: { companyName: true } },
-              castProfile: { select: { displayName: true } },
-              locationProfile: { select: { propertyName: true } },
+              individualProfile: { select: { displayName: true, avatarKey: true } },
+              companyProfile: { select: { companyName: true, logoKey: true } },
+              vendorProfile: { select: { companyName: true, logoKey: true } },
+              castProfile: { select: { displayName: true, avatarKey: true } },
+              locationProfile: { select: { propertyName: true, logoKey: true } },
             },
           },
           conversation: { select: { id: true, participantA: true, participantB: true } },
@@ -1140,11 +1152,11 @@ export class ChatService {
         select: {
           id: true,
           email: true,
-          individualProfile: { select: { displayName: true } },
-          companyProfile: { select: { companyName: true } },
-          vendorProfile: { select: { companyName: true } },
-          castProfile: { select: { displayName: true } },
-          locationProfile: { select: { propertyName: true } },
+          individualProfile: { select: { displayName: true, avatarKey: true } },
+          companyProfile: { select: { companyName: true, logoKey: true } },
+          vendorProfile: { select: { companyName: true, logoKey: true } },
+          castProfile: { select: { displayName: true, avatarKey: true } },
+          locationProfile: { select: { propertyName: true, logoKey: true } },
         },
       });
       for (const p of participants) {
@@ -1253,19 +1265,19 @@ export class ChatService {
     return { accountOwnerId: user.mainUserId ?? user.id, isMainUser: !user.mainUserId };
   }
 
-  private formatConversation(conv: {
+  private async formatConversation(conv: {
     id: string;
     projectId: string | null;
     participantA: string;
     participantB: string;
     lastMessageAt: Date | null;
-    participantAUser: { id: string; email: string; individualProfile?: { displayName: string } | null; companyProfile?: { companyName: string } | null; vendorProfile?: { companyName: string } | null; castProfile?: { displayName: string } | null; locationProfile?: { propertyName: string } | null };
-    participantBUser: { id: string; email: string; individualProfile?: { displayName: string } | null; companyProfile?: { companyName: string } | null; vendorProfile?: { companyName: string } | null; castProfile?: { displayName: string } | null; locationProfile?: { propertyName: string } | null };
+    participantAUser: ConvParticipant;
+    participantBUser: ConvParticipant;
     project: { id: string; title: string; shootDates?: Date[] } | null;
     messages?: { id: string; content: string | null; senderId: string; createdAt: Date; isRead: boolean }[];
   }, currentUserId: string, mainUserId: string | null = null) {
     // Determine the "other" participant
-    let other: { id: string; email: string; individualProfile?: { displayName: string } | null; companyProfile?: { companyName: string } | null; vendorProfile?: { companyName: string } | null; castProfile?: { displayName: string } | null; locationProfile?: { propertyName: string } | null };
+    let other: ConvParticipant;
 
     if (conv.participantA === currentUserId) {
       other = conv.participantBUser;
@@ -1291,7 +1303,16 @@ export class ChatService {
       ?? other.companyProfile?.companyName
       ?? other.vendorProfile?.companyName
       ?? other.castProfile?.displayName
+      ?? other.locationProfile?.propertyName
       ?? other.email;
+    const avatarKey =
+      other.individualProfile?.avatarKey
+      ?? other.companyProfile?.logoKey
+      ?? other.vendorProfile?.logoKey
+      ?? other.castProfile?.avatarKey
+      ?? other.locationProfile?.logoKey
+      ?? null;
+    const avatarUrl = await this.storage.resolveAvatarUrl(avatarKey);
     const lastMsg = conv.messages?.[0] ?? null;
     return {
       id: conv.id,
@@ -1305,7 +1326,7 @@ export class ChatService {
               : [],
           }
         : null,
-      otherParticipant: { id: other.id, email: other.email, displayName },
+      otherParticipant: { id: other.id, email: other.email, displayName, avatarUrl },
       lastMessageAt: conv.lastMessageAt,
       lastMessage: lastMsg
         ? { id: lastMsg.id, content: lastMsg.content, senderId: lastMsg.senderId, createdAt: lastMsg.createdAt, isRead: lastMsg.isRead }

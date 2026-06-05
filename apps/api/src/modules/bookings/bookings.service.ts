@@ -651,8 +651,8 @@ export class BookingsService implements OnApplicationBootstrap {
             // type (actor/model) so the company-side Project Detail card can
             // render them without a follow-up profile fetch.
             castProfile: { select: { displayName: true, roleType: true } },
-            // Location bookings: surface the provider's property name + type.
-            locationProfile: { select: { propertyName: true, locationType: true } },
+            // Location bookings: surface the provider's property name + type + logo.
+            locationProfile: { select: { propertyName: true, locationType: true, logoKey: true } },
           },
         },
         projectRole: true,

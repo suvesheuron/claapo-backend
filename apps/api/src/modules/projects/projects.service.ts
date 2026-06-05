@@ -955,6 +955,12 @@ export class ProjectsService {
     } else if (role === UserRole.individual) {
       // Individual should see only invoices they sent.
       invoiceWhere.issuerUserId = userId;
+    } else if (role === UserRole.cast || role === UserRole.location) {
+      // Cast and location issue invoices; the project stats should count only
+      // the invoices THEY sent — not every invoice on the project. Without this
+      // they saw an inflated count (e.g. "7 invoices") while their own detail
+      // list was empty. No sub-users, so match on userId directly.
+      invoiceWhere.issuerUserId = userId;
     }
 
     const invoiceAggregates =
