@@ -2,7 +2,6 @@ import { Injectable, ForbiddenException, BadRequestException } from '@nestjs/com
 import { UserRole } from '@prisma/client';
 import { PrismaService } from '../../database/prisma.service';
 import { StorageService } from '../storage/storage.service';
-import { isCastingDirector } from '../profiles/company-type.constants';
 import type {
   SearchCrewQueryDto,
   SearchVendorsQueryDto,
@@ -579,35 +578,13 @@ export class SearchService {
    * Agency plan" upgrade hint.
    */
   async searchCast(viewerId: string, viewerRole: UserRole, query: SearchCastQueryDto) {
+    // Cast search is open to ALL company accounts (previously restricted to
+    // Casting Director / Agency companies). Only the broad role gate remains.
     if (viewerRole !== UserRole.company && viewerRole !== UserRole.admin) {
       throw new ForbiddenException({
         message: 'Only companies can use cast search',
         code: 'CAST_SEARCH_FORBIDDEN',
       });
-    }
-    if (viewerRole === UserRole.company) {
-      const viewer = await this.prisma.user.findUnique({
-        where: { id: viewerId },
-        select: {
-          mainUserId: true,
-          companyProfile: { select: { companyType: true } },
-        },
-      });
-      // Resolve to the account owner so sub-users inherit the casting-director
-      // permission of their parent account.
-      const ownerId = viewer?.mainUserId ?? viewerId;
-      const owner = viewer?.mainUserId
-        ? await this.prisma.user.findUnique({
-            where: { id: ownerId },
-            select: { companyProfile: { select: { companyType: true } } },
-          })
-        : viewer;
-      if (!isCastingDirector(owner?.companyProfile?.companyType ?? null)) {
-        throw new ForbiddenException({
-          message: 'Cast Search is available only for Casting Director / Agency accounts',
-          code: 'CAST_SEARCH_LOCKED',
-        });
-      }
     }
 
     const page = query.page ?? 1;
@@ -802,40 +779,39 @@ export class SearchService {
     const filteredItems = rawItems
       .map((p) => {
         const allProperties = p.user.locationProperties ?? [];
+        // Properties inherit the provider's profile city (per-property city was
+        // removed from the listing form), so a city search matches when the
+        // requested city equals the provider's city OR the property's own city.
+        const providerCity = p.locationCity?.trim().toLowerCase() ?? null;
+        const cityMatches = (pr: { city?: string | null }) => {
+          if (!requestedCity) return true;
+          const prCity = pr.city?.trim().toLowerCase() ?? null;
+          return prCity === requestedCity || providerCity === requestedCity;
+        };
+        const providerNameMatches = !propertyName || p.propertyName.toLowerCase().includes(propertyName);
         const matchedProperties = allProperties.filter((pr) => {
-          if (propertyName && !pr.name.toLowerCase().includes(propertyName)) return false;
+          // Name query matches the property name OR the provider's name, so
+          // searching "Ellora" surfaces all of Ellora's properties while
+          // searching "Parsi Bungalow" (a sub-type) narrows to that property.
+          if (propertyName && !pr.name.toLowerCase().includes(propertyName) && !providerNameMatches) return false;
           if (subType && !(pr.subTypes ?? []).some((s) => s.toLowerCase().includes(subType))) return false;
           if (rateMin != null && (pr.dailyBudget == null || pr.dailyBudget < rateMin)) return false;
           if (rateMax != null && (pr.dailyBudget == null || pr.dailyBudget > rateMax)) return false;
           if (bookedPropertyIds.has(pr.id)) return false;
+          if (!cityMatches(pr)) return false;
 
-          if (!requestedCity && !requestedStart && !requestedEnd) return true;
+          if (!requestedStart && !requestedEnd) return true;
 
+          // Date window (optional) — match an availability slot when present,
+          // otherwise default-discoverable (no slots ⇒ treat as available).
           const availabilities = pr.availabilities ?? [];
-          const matchesAvailabilitySlot = (): boolean =>
-            availabilities.some((slot) => {
-              const slotCity = slot.locationCity.trim().toLowerCase();
-              if (requestedCity && slotCity !== requestedCity) return false;
-              if (requestedStart && requestedEnd) {
-                return slot.availableFrom <= requestedEnd && slot.availableTo >= requestedStart;
-              }
-              if (requestedStart) return slot.availableFrom <= requestedStart && slot.availableTo >= requestedStart;
-              if (requestedEnd) return slot.availableFrom <= requestedEnd && slot.availableTo >= requestedEnd;
-              return true;
-            });
-
-          if (availabilities.length > 0 && matchesAvailabilitySlot()) return true;
-
-          // DEFAULT-DISCOVERABLE: no explicit availability rows ⇒ treat as
-          // available (only city is checked against the property's own city).
-          if (availabilities.length === 0) {
-            if (requestedCity) {
-              const prCity = pr.city?.trim().toLowerCase();
-              return prCity === requestedCity;
-            }
-            return true; // date-only filter, no city → still discoverable
-          }
-          return false;
+          if (availabilities.length === 0) return true;
+          return availabilities.some((slot) => {
+            if (requestedStart && requestedEnd) return slot.availableFrom <= requestedEnd && slot.availableTo >= requestedStart;
+            if (requestedStart) return slot.availableFrom <= requestedStart && slot.availableTo >= requestedStart;
+            if (requestedEnd) return slot.availableFrom <= requestedEnd && slot.availableTo >= requestedEnd;
+            return true;
+          });
         });
 
         const firstCity = matchedProperties[0]?.city ?? null;

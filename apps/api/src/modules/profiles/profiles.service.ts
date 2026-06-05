@@ -128,8 +128,25 @@ export class ProfilesService {
       mainUserId: user.mainUserId ?? null,
       isMainUser: !user.mainUserId,
       isVerified: user.isVerified,
+      // Contact-visibility toggles — the owner sees the current state so the
+      // edit page can render the Public/Private switches.
+      isEmailPublic: user.isEmailPublic,
+      isPhonePublic: user.isPhonePublic,
       profile: profilePayload,
     };
+  }
+
+  /** Toggle whether email / phone appear on the user's public profile. */
+  async updateContactVisibility(userId: string, dto: { isEmailPublic?: boolean; isPhonePublic?: boolean }) {
+    const data: { isEmailPublic?: boolean; isPhonePublic?: boolean } = {};
+    if (dto.isEmailPublic !== undefined) data.isEmailPublic = dto.isEmailPublic;
+    if (dto.isPhonePublic !== undefined) data.isPhonePublic = dto.isPhonePublic;
+    const user = await this.prisma.user.update({
+      where: { id: userId },
+      data,
+      select: { isEmailPublic: true, isPhonePublic: true },
+    });
+    return user;
   }
 
   private getProfileByRole(user: {
@@ -220,6 +237,7 @@ export class ProfilesService {
       panNumber: dto.panNumber,
       companyType: dto.companyType,
       skills: skillsNormalized,
+      mapLink: dto.mapLink,
       website: dto.website,
       imdbUrl: dto.imdbUrl,
       instagramUrl: dto.instagramUrl,
@@ -268,6 +286,7 @@ export class ProfilesService {
       sacCode: normalizedSac,
       panNumber: dto.panNumber,
       billingName: dto.billingName,
+      mapLink: dto.mapLink,
       website: dto.website,
       imdbUrl: dto.imdbUrl,
       instagramUrl: dto.instagramUrl,
@@ -385,6 +404,7 @@ export class ProfilesService {
       address: dto.address,
       addressLat: dto.addressLat,
       addressLng: dto.addressLng,
+      mapLink: dto.mapLink,
       locationCity: dto.locationCity,
       locationState: dto.locationState,
       website: dto.website,
@@ -539,8 +559,10 @@ export class ProfilesService {
     return {
       id: target.id,
       role: target.role,
-      email: target.email,
-      phone: target.phone,
+      // Respect the target's contact-visibility toggles — hidden contact
+      // fields are simply omitted from the public payload.
+      email: target.isEmailPublic ? target.email : undefined,
+      phone: target.isPhonePublic ? target.phone : undefined,
       profile: { ...sanitized, avatarUrl, coverUrl, coverType: this.coverTypeFromKey(base.coverKey as string | null) ?? undefined, showreelUrl, logoUrl, ...(showcaseItems ? { showcaseItems } : {}), ...(equipment ? { equipment } : {}), ...(target.role === UserRole.location ? { properties: properties ?? [], detailPdfUrl: detailPdfUrl ?? undefined } : {}) },
     };
   }

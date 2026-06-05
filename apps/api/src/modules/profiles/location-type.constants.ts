@@ -31,37 +31,85 @@ export const LOCATION_TYPE_LABELS: Record<LocationType, string> = {
 };
 
 /**
- * Starter sub-type options per location type. Free-form — providers may also
- * store values outside this list. Swap in the official catalog when it lands.
+ * Bungalow / villa / apartment sub-types. These also appear as common base
+ * options in studio_setup and location_manager (see below).
+ */
+const BUNGALOW_LIST = [
+  'Luxury Villa',
+  'Modern Villa',
+  'Colonial Bungalow',
+  'Vintage Bungalow',
+  'Heritage Villa',
+  'Palace',
+  'Old Traditional House',
+  'Row House',
+  'Parsi Bungalow',
+  'Sea-Facing Bungalow',
+  'Haveli',
+  'Flat Apartment',
+  'High Rise Building',
+];
+
+/** Studio-setup-specific sub-types (combined with BUNGALOW_LIST at runtime). */
+const STUDIO_LIST = [
+  'Penthouse',
+  'Empty Floor',
+  'Green Screen Studio',
+  'Podcast Studio',
+  'Virtual Studio',
+  'Rehearsal Studio',
+  'Post Production Studio',
+  'Office Setup',
+  'Cafe Setup',
+  'Restaurant Setup',
+  'Street Side / Road Side',
+  'Market Setup',
+  'Metro / Train Setup',
+  'Police / Court / Jail Setup',
+  'Hospital Setup',
+  'Roadside Area',
+  'Temple',
+];
+
+/** Location-manager-specific sub-types (combined with BUNGALOW_LIST at runtime). */
+const LOCATION_MANAGER_LIST = [
+  'Market / Street',
+  'Roadside',
+  'Grocery Shops / Bakery / Cafe',
+  'Office / Corporate Building',
+  'School / College / Hostel',
+  'Park / Garden',
+  'Mall / Gym',
+  'Temple / Mosque / Church',
+  'Factories / Warehouse / Mill',
+  'Airport',
+  'Dockyard / Pge',
+  'Fort / Heritage Building',
+  'Government Buildings',
+  'Hotels',
+  'Riverside',
+  'Village Side',
+  'Fields / Open Land',
+  'Waterfalls',
+  'Jungle Area',
+  'Mountains',
+  'River',
+  'Village',
+  'WaterFall',
+  'Desert',
+];
+
+/**
+ * Sub-type options per location type. Free-form — providers may also
+ * store values outside this list.
+ *
+ * Studio Setup and Location Manager each include the Bungalow list as a
+ * shared base, so the same residential sub-types are available everywhere.
  */
 export const LOCATION_SUBTYPES_BY_TYPE: Record<LocationType, string[]> = {
-  [LOCATION_TYPE_BUNGALOW]: [
-    'Modern Bungalow',
-    'Parsi Bungalow',
-    'Heritage Villa',
-    'Sea-facing Villa',
-    'Apartment',
-    'Penthouse',
-    'Farmhouse',
-    'Cottage',
-  ],
-  [LOCATION_TYPE_STUDIO]: [
-    'Market Setup',
-    'Hospital Set',
-    'Court Set',
-    'Office Set',
-    'Police Station Set',
-    'Chroma / Green Screen',
-    'Cyclorama',
-    'White Studio',
-    'Black Studio',
-  ],
-  [LOCATION_TYPE_MANAGER]: [
-    'City Coverage',
-    'Outstation Coverage',
-    'Permissions & Liaison',
-    'Recce Services',
-  ],
+  [LOCATION_TYPE_BUNGALOW]: [...BUNGALOW_LIST],
+  [LOCATION_TYPE_STUDIO]: [...STUDIO_LIST, ...BUNGALOW_LIST],
+  [LOCATION_TYPE_MANAGER]: [...LOCATION_MANAGER_LIST, ...BUNGALOW_LIST],
 };
 
 export function isValidLocationType(value: string | null | undefined): value is LocationType {

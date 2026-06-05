@@ -14,6 +14,7 @@ import { UpdateLocationProfileDto } from './dto/update-location-profile.dto';
 import { PresignedUploadDto } from './dto/presigned-upload.dto';
 import { ConfirmUploadDto } from './dto/confirm-upload.dto';
 import { ConfirmPdfUploadDto } from './dto/confirm-pdf-upload.dto';
+import { UpdateContactVisibilityDto } from './dto/update-contact-visibility.dto';
 import { CreateSubUserDto } from './dto/create-sub-user.dto';
 import { AssignSubUserProjectDto } from './dto/assign-sub-user-project.dto';
 import { ShowcaseUploadUrlDto } from './dto/showcase-upload-url.dto';
@@ -71,6 +72,12 @@ export class ProfilesController {
   @ApiOperation({ summary: 'Update location provider profile' })
   updateLocation(@CurrentUser() user: AuthUser, @Body() dto: UpdateLocationProfileDto) {
     return this.profilesService.updateLocation(user.id, dto);
+  }
+
+  @Patch('contact-visibility')
+  @ApiOperation({ summary: 'Toggle public visibility of email / phone (any role)' })
+  updateContactVisibility(@CurrentUser() user: AuthUser, @Body() dto: UpdateContactVisibilityDto) {
+    return this.profilesService.updateContactVisibility(user.id, dto);
   }
 
   @Get('sub-users/list')

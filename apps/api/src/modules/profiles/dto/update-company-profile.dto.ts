@@ -42,6 +42,11 @@ export class UpdateCompanyProfileDto {
   @IsString({ each: true })
   skills?: string[];
 
+  @ApiPropertyOptional({ description: 'Google Maps share link (https://maps.app.goo.gl/...)' })
+  @IsOptional()
+  @IsString()
+  mapLink?: string;
+
   @ApiPropertyOptional()
   @IsOptional()
   @Transform(normalizeUrl)

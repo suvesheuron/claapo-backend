@@ -47,6 +47,11 @@ model User {
   role         UserRole
   isVerified   Boolean   @default(false) @map("is_verified")
   isActive     Boolean   @default(true) @map("is_active")
+  // Whether email / phone are shown on the PUBLIC profile. Owner always sees
+  // their own; viewers only when the flag is true. Default public to preserve
+  // existing behaviour.
+  isEmailPublic Boolean  @default(true) @map("is_email_public")
+  isPhonePublic Boolean  @default(true) @map("is_phone_public")
   fcmToken              String?   @map("fcm_token")
   notificationPreferences Json?   @map("notification_preferences")
   createdAt    DateTime  @default(now()) @map("created_at")
@@ -185,6 +190,9 @@ model CompanyProfile {
   // Banner image for the company profile page. Same upload pipeline as
   // individual/vendor cover photos; lives at users/<userId>/cover/<ts>.<ext> in S3.
   coverKey       String?  @map("cover_key")
+  // Optional Google Maps share link (e.g. https://maps.app.goo.gl/...) — shown
+  // to users who search for this company. Stored verbatim, opened as-is.
+  mapLink        String?  @map("map_link")
   isGstVerified  Boolean  @default(false) @map("is_gst_verified")
   createdAt      DateTime @default(now()) @map("created_at")
   updatedAt      DateTime @updatedAt @map("updated_at")
@@ -224,6 +232,8 @@ model VendorProfile {
   upiId          String?    @map("upi_id")
   bio            String?
   aboutUs        String?  @map("about_us")
+  // Optional Google Maps share link — shown to companies who search vendors.
+  mapLink        String?  @map("map_link")
   createdAt      DateTime   @default(now()) @map("created_at")
   updatedAt      DateTime   @updatedAt @map("updated_at")
 
@@ -316,6 +326,8 @@ model LocationProfile {
   address        String?
   addressLat     Float?   @map("address_lat")
   addressLng     Float?   @map("address_lng")
+  // Google Maps share link (preferred over lat/lng) — paste-a-link approach.
+  mapLink        String?  @map("map_link")
   locationCity   String?  @map("location_city")
   locationState  String?  @map("location_state")
 

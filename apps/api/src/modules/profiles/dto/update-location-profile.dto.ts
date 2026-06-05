@@ -71,6 +71,11 @@ export class UpdateLocationProfileDto {
   @Max(180)
   addressLng?: number;
 
+  @ApiPropertyOptional({ description: 'Google Maps share link (https://maps.app.goo.gl/...)' })
+  @IsOptional()
+  @IsString()
+  mapLink?: string;
+
   @ApiPropertyOptional()
   @IsOptional()
   @IsString()
